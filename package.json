@@ -2,7 +2,7 @@
 	"name": "@edgeproc/browser",
 	"version": "0.1.0",
 	"type": "module",
-	"description": "For web developers: load data into a browser tab only if it's provably yours and unaltered, then keep using it offline.",
+	"description": "For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.",
 	"keywords": [
 		"local-first",
 		"offline-first",

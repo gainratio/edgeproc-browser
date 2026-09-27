@@ -1,7 +1,8 @@
 # Contributing
 
 Thanks for taking a look. This is a small library and the bar is simple: a
-change ships with a test, and `pnpm gate` is green.
+change ships with a test, and `pnpm gate` is green. New here? Start with
+[Getting started for developers](docs/GETTING_STARTED.md).
 
 ## Setup
 
@@ -45,9 +46,9 @@ is a bug worth reporting.
   error classes consumers catch by identity, like `SignatureError` and
   `RollbackError` — is a public API contract. Deprecate and add; never rename in
   place.
-- **Adding a runtime dependency.** There are exactly two (`@noble/ed25519`,
-  `@hpcc-js/wasm-zstd`), both doing cryptography or decompression that has no
-  business being hand-rolled. A third needs the same justification: make the
+- **Adding a runtime dependency.** There are exactly three (`@noble/ed25519`,
+  `@hpcc-js/wasm-zstd`, `idb-keyval`), each doing signatures, decompression, or
+  IndexedDB access that has no business being hand-rolled. A third needs the same justification: make the
   case in the issue before writing the code.
 - **Widening the surface without a use case.** New exports need a caller.
 
