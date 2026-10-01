@@ -2,7 +2,7 @@
 // BOUNDED concurrency (not one at a time), results keep manifest order, and a
 // single bad chunk still fails the whole sync closed with a named error.
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { verifyEd25519 } from "./crypto.js";
 import { catalogFetch, latestBytes, pubkeyRaw } from "./fixtures.js";
 import { IntegrityError } from "./integrity.js";
@@ -111,15 +111,23 @@ class ObservedStore implements CacheStore {
 	}
 }
 
-async function primedStore(): Promise<MemoryCacheStore> {
-	const store = new MemoryCacheStore();
+// Priming decompresses and verifies the whole 728-file fixture, so it runs
+// once. Every test only READS the primed store (ObservedStore never forwards a
+// poisoned read, and re-promoting the same pointer is idempotent).
+let primed: MemoryCacheStore;
+
+beforeAll(async () => {
+	primed = new MemoryCacheStore();
 	await syncIndex({
 		baseUrl: "/cat",
-		store,
+		store: primed,
 		fetchBytes: catalogFetch().fetchBytes,
 		verify,
 	});
-	return store;
+}, 60_000);
+
+function primedStore(): MemoryCacheStore {
+	return primed;
 }
 
 function pointer(): VersionPointer {
@@ -146,7 +154,7 @@ describe("warm sync re-verifies cached chunks concurrently", () => {
 	});
 
 	it("saturates, but never exceeds, the bounded read concurrency", async () => {
-		const store = new ObservedStore(await primedStore());
+		const store = new ObservedStore(primedStore());
 		const result = await warmSync(store);
 		expect(result.chunksFetched).toBe(0);
 		expect(store.maxInFlightReads).toBe(8);
@@ -154,13 +162,13 @@ describe("warm sync re-verifies cached chunks concurrently", () => {
 	});
 
 	it("probes the cache for missing chunks concurrently, bounded", async () => {
-		const store = new ObservedStore(await primedStore());
+		const store = new ObservedStore(primedStore());
 		await warmSync(store);
 		expect(store.maxInFlightProbes).toBe(8);
 	});
 
 	it("reassembles files in manifest order when reads finish out of order", async () => {
-		const inner = await primedStore();
+		const inner = primedStore();
 		const manifest = await manifestOf(inner);
 		const big = manifest.files.reduce((a, b) =>
 			b.chunks.length > a.chunks.length ? b : a,
@@ -178,15 +186,13 @@ describe("warm sync re-verifies cached chunks concurrently", () => {
 		const plain = await Promise.all(
 			big.chunks.map((ref) => inner.getChunk(ref.hash, ref.size)),
 		);
-		let offset = 0;
-		for (const part of plain) {
-			expect(bytes.subarray(offset, offset + part.byteLength)).toEqual(part);
-			offset += part.byteLength;
-		}
+		// Byte-exact against the chunks joined in manifest order (Buffer.equals
+		// rather than a per-element deep equality, which is slow on megabytes).
+		expect(Buffer.from(bytes).equals(Buffer.concat(plain))).toBe(true);
 	});
 
 	it("one bad cached chunk fails the whole sync with that chunk's IntegrityError", async () => {
-		const inner = await primedStore();
+		const inner = primedStore();
 		const manifest = await manifestOf(inner);
 		const victim = manifest.files.at(-1)?.chunks[0]?.hash as string;
 		const before = await inner.readActive();
@@ -205,7 +211,7 @@ describe("warm sync re-verifies cached chunks concurrently", () => {
 	});
 
 	it("stops scheduling reads once a chunk has failed", async () => {
-		const inner = await primedStore();
+		const inner = primedStore();
 		const manifest = await manifestOf(inner);
 		const victim = manifest.files[0]?.chunks[0]?.hash as string;
 		const total = new Set(
