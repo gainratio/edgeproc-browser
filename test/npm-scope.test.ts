@@ -2,10 +2,9 @@
 // not creep back into anything that decides what gets published.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const ROOT = join(import.meta.dirname, "..");
 const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
 const WORKFLOWS = readdirSync(join(ROOT, ".github/workflows"))
 	.filter((name) => name.endsWith(".yml"))
