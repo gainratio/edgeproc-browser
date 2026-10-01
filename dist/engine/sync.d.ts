@@ -71,6 +71,10 @@ export declare class PointerExpiredError extends IntegrityError {
  * `signature`, and without any optional field that is null or absent — so a
  * pointer that predates an optional field keeps its original preimage. */
 export declare function pointerSigningBytes(pointer: VersionPointer): Uint8Array;
+/** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
+ * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * chunk), not by hashing; awaiting them one at a time serialised that latency. */
+export declare const MAX_CONCURRENT_CHUNK_READS = 8;
 /**
  * Sync the signed bundle at `baseUrl` into `store`, verified by exactly one
  * of `verify` (a single verifier) or `keyring` (key selection + revocation).

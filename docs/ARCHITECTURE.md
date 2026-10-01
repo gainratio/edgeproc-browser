@@ -143,6 +143,8 @@ failures are verdicts and are never retried.
 | A tampered chunk or wrong key is refused | `pnpm demo` step 4 (one bit flipped in the key gives `SignatureError`); the unit suite under `src/` |
 | A second sync over a filled store downloads nothing | `pnpm demo` step 3 (`chunks fetched 0 (reused 783)`) |
 | The built Worker enforces raw-key, keyring, and revoked-signer trust roots | `pnpm test:browser`, `test/browser/engine-keyring.spec.ts` in real Chromium |
+| A cached chunk rewritten at rest by same-origin code is refused, never served, and re-fetched | `pnpm test:browser`, `test/browser/warm-sync.spec.ts` in real Chromium OPFS |
+| Warm boot re-verifies every cached chunk with bounded concurrency | `src/engine/syncConcurrency.test.ts`; timings from `test/browser/warm-sync.spec.ts` |
 | SQLite state and vectors persist in OPFS across restarts with zero external requests | `pnpm test:browser`, `test/browser/sqlite-vector.spec.ts` |
 | The published `dist/` matches the source | `pnpm verify:dist` plus `test/dist-contract.test.ts`, both in `pnpm gate` |
 | A Vite app emits exactly one engine Worker | `test/vite-consumer.test.ts` |

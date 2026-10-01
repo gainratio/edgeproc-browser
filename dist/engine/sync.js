@@ -378,11 +378,9 @@ async function missingChunks(files, store) {
         for (const ref of entry.chunks)
             wanted.set(ref.hash, ref);
     }
-    const missing = [];
-    for (const ref of wanted.values()) {
-        if (!(await store.hasChunk(ref.hash)))
-            missing.push(ref);
-    }
+    const refs = [...wanted.values()];
+    const present = await mapBounded(refs, MAX_CONCURRENT_CHUNK_READS, (ref) => store.hasChunk(ref.hash));
+    const missing = refs.filter((_, index) => !present[index]);
     return { missing, reused: wanted.size - missing.length };
 }
 function totalFetchLimit(args) {
@@ -477,6 +475,77 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
         throw failure;
     return total;
 }
+/** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
+ * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * chunk), not by hashing; awaiting them one at a time serialised that latency. */
+export const MAX_CONCURRENT_CHUNK_READS = 8;
+/** Order-preserving map with at most `limit` calls in flight. After the first
+ * failure no new call starts, and every started call settles before the
+ * rejection, so no store access outlives the caller or its cache lock. */
+async function mapBounded(items, limit, operation) {
+    const results = new Array(items.length);
+    let next = 0;
+    let failed = false;
+    let failure;
+    const worker = async () => {
+        while (!failed && next < items.length) {
+            const index = next;
+            next += 1;
+            try {
+                results[index] = await operation(items[index]);
+            }
+            catch (error) {
+                if (!failed)
+                    failure = error;
+                failed = true;
+            }
+        }
+    };
+    const workers = Math.min(limit, items.length);
+    await Promise.all(Array.from({ length: workers }, worker));
+    if (failed)
+        throw failure;
+    return results;
+}
+/** Verified chunk reads shared by one reassembly pass: at most
+ * MAX_CONCURRENT_CHUNK_READS in flight in total, never two reads of the same
+ * chunk at once (OPFS sync access handles are exclusive per file), and once
+ * any read fails every queued read rejects with that same error unread. */
+function chunkReader(store) {
+    let active = 0;
+    let failure = null;
+    const waiting = [];
+    const inFlight = new Map();
+    const run = async (ref) => {
+        while (active >= MAX_CONCURRENT_CHUNK_READS) {
+            await new Promise((resolve) => waiting.push(resolve));
+        }
+        if (failure !== null) {
+            waiting.shift()?.();
+            throw failure.error;
+        }
+        active += 1;
+        try {
+            return await store.getChunk(ref.hash, ref.size);
+        }
+        catch (error) {
+            failure ??= { error };
+            throw error;
+        }
+        finally {
+            active -= 1;
+            waiting.shift()?.();
+        }
+    };
+    return (ref) => {
+        const pending = inFlight.get(ref.hash);
+        if (pending !== undefined)
+            return pending;
+        const read = run(ref).finally(() => inFlight.delete(ref.hash));
+        inFlight.set(ref.hash, read);
+        return read;
+    };
+}
 function concat(parts, expected) {
     const out = new Uint8Array(expected);
     let offset = 0;
@@ -486,11 +555,10 @@ function concat(parts, expected) {
     }
     return out;
 }
-async function reassemble(entry, store) {
-    const parts = [];
-    for (const ref of entry.chunks) {
-        parts.push(await store.getChunk(ref.hash, ref.size));
-    }
+async function reassemble(entry, read) {
+    // Every chunk is still read from storage, decompressed and re-hashed
+    // (`getChunk` is fail-closed); only the waiting is overlapped.
+    const parts = await mapBounded(entry.chunks, MAX_CONCURRENT_CHUNK_READS, read);
     const blob = concat(parts, entry.size);
     if ((await sha256Hex(blob)) !== entry.file_sha256) {
         throw new IntegrityError(`file ${entry.path} failed reassembly check`);
@@ -498,8 +566,8 @@ async function reassemble(entry, store) {
     return blob;
 }
 async function verifyReassembly(files, store) {
-    for (const entry of files)
-        await reassemble(entry, store);
+    const read = chunkReader(store);
+    await mapBounded(files, MAX_CONCURRENT_CHUNK_READS, (entry) => reassemble(entry, read));
 }
 function distinctChunks(files) {
     return new Set(files.flatMap((entry) => entry.chunks.map((ref) => ref.hash)))
@@ -647,6 +715,6 @@ function fileEntry(manifest, path) {
     return entry;
 }
 export async function materializeFile(store, manifest, path) {
-    return reassemble(fileEntry(manifest, path), store);
+    return reassemble(fileEntry(manifest, path), chunkReader(store));
 }
 //# sourceMappingURL=sync.js.map

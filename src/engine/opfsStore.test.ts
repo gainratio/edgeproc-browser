@@ -10,6 +10,7 @@ import {
 	catalogMetaChunkHash,
 	catalogMetaChunkSize,
 	chunkBytes,
+	signedChunkRefs,
 } from "./fixtures.js";
 import { IntegrityError } from "./integrity.js";
 import {
@@ -27,13 +28,28 @@ const REAL_CHUNK_SIZE = catalogMetaChunkSize();
 class FakeFile {
 	public bytes = new Uint8Array();
 	public handleFailure: Error | undefined;
+	/** Real OPFS semantics: a sync access handle is EXCLUSIVE per file. */
+	public handleOpen = false;
+	public syncHandlesOpened = 0;
 	public createSyncAccessHandle(): Promise<FileSystemSyncAccessHandle> {
 		if (this.handleFailure !== undefined) {
 			return Promise.reject(this.handleFailure);
 		}
+		if (this.handleOpen) {
+			return Promise.reject(
+				new DOMException("handle held", "NoModificationAllowedError"),
+			);
+		}
+		this.handleOpen = true;
+		this.syncHandlesOpened += 1;
 		return Promise.resolve(
 			new FakeSyncHandle(this) as unknown as FileSystemSyncAccessHandle,
 		);
+	}
+	/** A read-only snapshot; takes no lock (as in Chromium, even while a sync
+	 * access handle is held). */
+	public getFile(): Promise<Blob> {
+		return Promise.resolve(new Blob([this.bytes.slice()]));
 	}
 }
 
@@ -65,7 +81,9 @@ class FakeSyncHandle {
 		this.#file.bytes = this.#file.bytes.slice(0, size);
 	}
 	public flush(): void {}
-	public close(): void {}
+	public close(): void {
+		this.#file.handleOpen = false;
+	}
 }
 
 /** A minimal in-memory OPFS directory: files by name, child dirs, removeEntry. */
@@ -163,6 +181,69 @@ describe("OpfsCacheStore self-heal on a corrupt chunk", () => {
 		expect(
 			(await store.getChunk(REAL_CHUNK, REAL_CHUNK_SIZE)).byteLength,
 		).toBeGreaterThan(0);
+	});
+
+	it("reads and probes a cached chunk without taking its exclusive sync access handle", async () => {
+		// Sync access handles are exclusive and Chromium serialises their
+		// creation, so taking one per cached chunk made warm boot a queue of
+		// round trips. Reads use the lock-free snapshot API instead; the
+		// content-address check on the returned bytes is unchanged.
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		await store.putChunkCompressed(
+			REAL_CHUNK,
+			chunkBytes(REAL_CHUNK),
+			REAL_CHUNK_SIZE,
+		);
+		const file = root.dirs.get("chunk")?.files.get(REAL_CHUNK);
+		if (file === undefined) throw new Error("chunk file missing");
+		const opened = file.syncHandlesOpened;
+
+		const [first, second, present] = await Promise.all([
+			store.getChunk(REAL_CHUNK, REAL_CHUNK_SIZE),
+			store.getChunk(REAL_CHUNK, REAL_CHUNK_SIZE),
+			store.hasChunk(REAL_CHUNK),
+		]);
+
+		expect(first.byteLength).toBe(REAL_CHUNK_SIZE);
+		expect(second).toEqual(first);
+		expect(present).toBe(true);
+		expect(file.syncHandlesOpened).toBe(opened);
+	});
+
+	it("still refuses a tampered chunk read through the snapshot API", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		await store.putChunkCompressed(
+			REAL_CHUNK,
+			chunkBytes(REAL_CHUNK),
+			REAL_CHUNK_SIZE,
+		);
+		const file = root.dirs.get("chunk")?.files.get(REAL_CHUNK);
+		if (file === undefined) throw new Error("chunk file missing");
+		// A different VALID chunk under this name: decompresses fine, wrong hash.
+		const other = signedChunkRefs().find((ref) => ref.hash !== REAL_CHUNK);
+		if (other === undefined) throw new Error("fixture has one chunk");
+		file.bytes = new Uint8Array(chunkBytes(other.hash));
+
+		await expect(store.getChunk(REAL_CHUNK, other.size)).rejects.toThrow(
+			`chunk ${REAL_CHUNK} failed content-address check`,
+		);
+		expect(root.dirs.get("chunk")?.files.has(REAL_CHUNK)).toBe(false);
+	});
+
+	it("refuses an oversized cached chunk before buffering it", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		const chunkDir = root.dirs.get("chunk");
+		if (chunkDir === undefined) throw new Error("chunk directory missing");
+		const huge = new FakeFile();
+		huge.bytes = new Uint8Array(2 * 1024 * 1024 + 1);
+		chunkDir.files.set(REAL_CHUNK, huge);
+
+		await expect(store.getChunk(REAL_CHUNK, REAL_CHUNK_SIZE)).rejects.toThrow(
+			"OPFS object is 2097153 bytes, over the 2097152-byte read cap",
+		);
 	});
 
 	it("leaves a healthy chunk in place across repeated reads (no spurious eviction)", async () => {

@@ -76,16 +76,20 @@ export function canPromotePointer(
 	return samePointer(current, incoming);
 }
 
-function readHandle(
-	handle: FileSystemSyncAccessHandle,
-	maxBytes: number,
-): Uint8Array {
-	const size = handle.getSize();
+function assertWithinReadCap(size: number, maxBytes: number): void {
 	if (size > maxBytes) {
 		throw new IntegrityError(
 			`OPFS object is ${size} bytes, over the ${maxBytes}-byte read cap`,
 		);
 	}
+}
+
+function readHandle(
+	handle: FileSystemSyncAccessHandle,
+	maxBytes: number,
+): Uint8Array {
+	const size = handle.getSize();
+	assertWithinReadCap(size, maxBytes);
 	const buffer = new Uint8Array(size);
 	handle.read(buffer, { at: 0 });
 	return buffer;
@@ -119,12 +123,7 @@ export class OpfsCacheStore implements CacheStore {
 	public async hasChunk(chunkHash: string): Promise<boolean> {
 		try {
 			const file = await this.#chunkDir.getFileHandle(chunkHash);
-			const handle = await file.createSyncAccessHandle();
-			try {
-				if (handle.getSize() > 0) return true;
-			} finally {
-				handle.close();
-			}
+			if ((await file.getFile()).size > 0) return true;
 			await this.evict(this.#chunkDir, chunkHash);
 			return false;
 		} catch {
@@ -149,7 +148,7 @@ export class OpfsCacheStore implements CacheStore {
 		chunkHash: string,
 		expectedSize: number,
 	): Promise<Uint8Array> {
-		const compressed = await this.readFile(
+		const compressed = await this.readSnapshot(
 			this.#chunkDir,
 			chunkHash,
 			MAX_COMPRESSED_CHUNK_BYTES,
@@ -365,6 +364,19 @@ export class OpfsCacheStore implements CacheStore {
 		for await (const [name] of dir.entries()) {
 			if (!keep.has(name)) await this.evict(dir, name);
 		}
+	}
+
+	/** Read-only snapshot read (`getFile`). Unlike a sync access handle it takes
+	 * no exclusive lock, and Chromium does not serialise it, so warm-boot chunk
+	 * reads overlap. Trust is unchanged: callers verify every byte returned. */
+	private async readSnapshot(
+		dir: FileSystemDirectoryHandle,
+		name: string,
+		maxBytes: number,
+	): Promise<Uint8Array> {
+		const file = await (await dir.getFileHandle(name)).getFile();
+		assertWithinReadCap(file.size, maxBytes);
+		return new Uint8Array(await file.arrayBuffer());
 	}
 
 	private async readFile(

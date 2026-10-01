@@ -74,7 +74,15 @@ or SQLite:
 
 ```bash
 pnpm exec playwright install chromium   # once, about 2 s if cached
-pnpm test:browser                       # about 9 s; ends with "3 passed"
+pnpm test:browser                       # about 9 s; ends with "1 skipped, 4 passed"
+```
+
+The skipped test is the warm-boot benchmark. Point it at a real bundle (a directory with
+`latest`, `manifest/`, `chunk/` and `public.key`) to get cold and warm sync timings:
+
+```bash
+EDGEPROC_BENCH_BUNDLE=/path/to/bundle EDGEPROC_BENCH_OUT=bench.json \
+  pnpm exec playwright test warm-sync
 ```
 
 ## 4. Map of the code
