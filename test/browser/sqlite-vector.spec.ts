@@ -1,12 +1,18 @@
 import { expect, test } from "@playwright/test";
 
+// The OPFS async proxy is spawned from a same-origin Blob URL; a blob URL's
+// own hostname is empty, so judge it by the origin it was minted for.
+function isExternal(url: URL): boolean {
+	const origin = url.protocol === "blob:" ? new URL(url.pathname) : url;
+	return origin.hostname !== "127.0.0.1";
+}
+
 test("persists exact vector search in OPFS across a Worker restart", async ({
 	page,
 }) => {
 	const externalRequests: string[] = [];
 	page.on("request", (request) => {
-		const url = new URL(request.url());
-		if (url.hostname !== "127.0.0.1") {
+		if (isExternal(new URL(request.url()))) {
 			externalRequests.push(request.url());
 		}
 	});
@@ -40,8 +46,8 @@ test("exports, validates, atomically imports, and reopens application state", as
 }) => {
 	const externalRequests: string[] = [];
 	page.on("request", (request) => {
-		const url = new URL(request.url());
-		if (url.hostname !== "127.0.0.1") externalRequests.push(request.url());
+		if (isExternal(new URL(request.url())))
+			externalRequests.push(request.url());
 	});
 	await page.goto("/test/browser/fixture.html");
 	await expect(page.locator("#ready")).toHaveText("ready");

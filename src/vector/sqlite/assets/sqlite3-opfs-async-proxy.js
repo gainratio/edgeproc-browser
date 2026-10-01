@@ -52,7 +52,10 @@
 
 "use strict";
 const urlParams = new URL(globalThis.location.href).searchParams;
-const vfsName = urlParams.get('vfs');
+/* edgeproc patch (see README.md "Local patches"): when this script is spawned
+   from a Blob URL there is no query string, so the VFS name arrives as the
+   Worker's name instead. */
+const vfsName = urlParams.get('vfs') || globalThis.name;
 if( !vfsName ){
   throw new Error("Expecting vfs=opfs|opfs-wl URL argument for this worker");
 }
@@ -62,8 +65,15 @@ if( !vfsName ){
    VFS or both the "opfs" and "opfs-wl" VFSes.
 */
 const workerId = (Math.random() * 10000000) | 0;
-const isWebLocker = 'opfs-wl'===urlParams.get('vfs');
+const isWebLocker = 'opfs-wl'===vfsName;
 const wPost = (type,...args)=>postMessage({type, payload:args});
+/* edgeproc patch (see README.md "Local patches"): tell the installer this
+   script is running before anything slow happens. Its zombie timer exists
+   for a Worker whose load fails without resolving or rejecting; once this
+   message arrives that cannot be the case, so a slow OPFS root (a busy
+   low-end device, or OPFS contended by other work) is waited on rather than
+   mistaken for a dead Worker. A refused root is reported below. */
+wPost('opfs-async-alive');
 const installAsyncProxy = function(){
   const toss = function(...args){throw new Error(args.join(' '))};
   if(globalThis.window === globalThis){
@@ -1081,7 +1091,13 @@ const initS11n = function(){
       }
     };
     wPost('opfs-async-loaded');
-  }).catch((e)=>error("error initializing OPFS asyncer:",e));
+  }).catch((e)=>{
+    error("error initializing OPFS asyncer:",e);
+    /* edgeproc patch (see README.md "Local patches"): a refused root used to
+       be reported only by the installer's zombie timer, 4 s later and with
+       no reason. Name it, promptly. */
+    wPost('opfs-unavailable', "OPFS root directory refused:", String(e));
+  });
 }/*installAsyncProxy()*/;
 if(globalThis.window === globalThis){
   wPost('opfs-unavailable',

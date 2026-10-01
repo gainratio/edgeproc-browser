@@ -7,6 +7,7 @@ import {
 	SqliteDatabaseVectorIndex,
 	wrapSqliteDatabase,
 } from "./database.js";
+import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
 import type {
 	SqliteVectorWorkerOptions,
 	SqliteVectorWorkerRequest,
@@ -96,6 +97,7 @@ async function dispatch(request: SqliteVectorWorkerRequest): Promise<unknown> {
 async function openIndex(
 	options: SqliteVectorWorkerOptions,
 ): Promise<SqliteDatabaseVectorIndex> {
+	configureInlineOpfsProxy();
 	const sqlite = await sqlite3InitModule({
 		print: () => undefined,
 		printErr: (...args) => console.error(...args),

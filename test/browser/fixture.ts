@@ -32,12 +32,72 @@ export interface StateBrowserProof {
 	readonly resetCount: number;
 }
 
+import type {
+	OpfsInstallProbe,
+	OpfsInstallResult,
+} from "./opfs-install-worker.js";
+
+export interface OpfsOpenProof {
+	readonly persistence: string;
+	readonly error: string | undefined;
+	readonly elapsedMs: number;
+}
+
 declare global {
 	interface Window {
 		runSqliteVectorProof(name: string): Promise<BrowserProof>;
 		runSqliteStateProof(name: string): Promise<StateBrowserProof>;
+		runSqliteOpfsOpenProof(name: string): Promise<OpfsOpenProof>;
+		runOpfsInstallProbe(probe: OpfsInstallProbe): Promise<OpfsInstallResult>;
 	}
 }
+
+/** Run sqlite3.mjs once in a fresh Worker with a doctored async proxy. */
+window.runOpfsInstallProbe = (probe): Promise<OpfsInstallResult> =>
+	new Promise((resolve, reject) => {
+		const worker = new Worker(
+			new URL("./opfs-install-worker.ts", import.meta.url),
+			{ type: "module" },
+		);
+		worker.addEventListener(
+			"message",
+			(event: MessageEvent<OpfsInstallResult>) => {
+				worker.terminate();
+				resolve(event.data);
+			},
+		);
+		worker.addEventListener("error", (event) => {
+			worker.terminate();
+			reject(new Error(event.message));
+		});
+		worker.postMessage(probe);
+	});
+
+/** Open the durable (OPFS) state store once and report how that went. */
+window.runSqliteOpfsOpenProof = async (name): Promise<OpfsOpenProof> => {
+	const started = performance.now();
+	const elapsed = () => Math.round(performance.now() - started);
+	try {
+		const store = await createSqliteStateStore({
+			name,
+			initialSchemaVersion: 1,
+			persistence: "opfs",
+		});
+		const info = await store.runtimeInfo();
+		await store.dispose();
+		return {
+			persistence: info.persistence,
+			error: undefined,
+			elapsedMs: elapsed(),
+		};
+	} catch (error) {
+		return {
+			persistence: "failed",
+			error: error instanceof Error ? error.message : String(error),
+			elapsedMs: elapsed(),
+		};
+	}
+};
 
 window.runSqliteVectorProof = async (name): Promise<BrowserProof> => {
 	const first = await createSqliteVectorIndex({

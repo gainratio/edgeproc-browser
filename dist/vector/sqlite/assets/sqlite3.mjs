@@ -18411,7 +18411,11 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
         );
       }
     }
-    options.proxyUri ??= opfsUtil.proxyUri;
+    /* edgeproc patch 1/3 (see README.md "Local patches"): an embedding Worker
+       may hand the async proxy over through sqlite3ApiConfig.opfsProxyUri,
+       typically a same-origin Blob URL of the inline copy, so installing the
+       VFS needs no network fetch. */
+    options.proxyUri ??= sqlite3.config.opfsProxyUri ?? opfsUtil.proxyUri;
     if('function' === typeof options.proxyUri){
       options.proxyUri = options.proxyUri();
     }
@@ -19186,6 +19190,20 @@ const initS11n = function(){
         const options = opfsUtil.options;
         const W = opfsVfs.worker =
               (()=>{
+                /* edgeproc patch 2/3 (see README.md "Local patches"): spawn
+                   the proxy from the configured URI when one was given. The
+                   VFS name travels as the Worker's name because a Blob URL
+                   carries no query string. If the browser refuses that Worker
+                   (e.g. a CSP without blob:), fall through to upstream's
+                   networked formulation. */
+                if( sqlite3.config.opfsProxyUri ){
+                  try{
+                    return new Worker(options.proxyUri, {name: vfsName});
+                  }catch(e){
+                    sqlite3.config.warn(vfsName, "falling back to the networked",
+                                        "OPFS async proxy:", e);
+                  }
+                }
                 /* _Sigh_... */
                 /* Discussion explaining this formulation:
                    https://github.com/sqlite/sqlite-wasm/pull/159 */
@@ -19288,6 +19306,15 @@ const initS11n = function(){
               /* Async proxy has determined that OPFS is unavailable. There's
                  nothing more for us to do here. */
               promiseReject(new Error(data.payload.join(' ')));
+              break;
+            case 'opfs-async-alive':
+              /* edgeproc patch 3/3 (see README.md "Local patches"): the
+                 proxy script is running, so the silently-failed Worker
+                 load the zombie timer guards against cannot happen any
+                 more. From here a slow OPFS root is waited on, and a
+                 refused one arrives as 'opfs-unavailable'. */
+              clearTimeout(zombieTimer);
+              zombieTimer = null;
               break;
             case 'opfs-async-loaded':
               /* Arrives as soon as the asyc proxy finishes loading.
