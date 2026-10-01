@@ -59,7 +59,17 @@ await client.clear(); // same cross-tab lock as sync and read
 
 `wantedPaths: undefined` syncs every signed file. `wantedPaths: []` checks and promotes only
 the signed pointer and manifest, so an app can look at the catalog first and fetch a chosen
-directory later. Every checked chunk reports progress and resets the client's idle timer.
+directory later.
+
+`onProgress` is called per phase (`pointer`, `manifest`, `chunks`, `verify`, `promoted`), and
+during `chunks` on every network read (at most 4 times a second) and on every checked chunk.
+A `chunks` event carries `bytesDone` / `bytesTotal` (uncompressed bytes, exact from the signed
+manifest), so an app can draw a real progress bar. A chunk fetch that fails or stalls (no
+bytes for 30 s, `FETCH_STALL_TIMEOUT_MS`) is retried with bounded backoff and reported as a
+`chunkRetry` event with the reason; chunks already verified and stored are never fetched
+again, so a sync that fails mid-way resumes from the cache. Every progress event resets the
+client's idle timer, so a slow link is not a dead link: only a Worker that stays silent for
+`idleTimeoutMs` is terminated.
 
 `expectedBundleId` and `expectedChannel` only work if the publisher signed them into the
 pointer (`edgeproc publish --bind-identity --channel stable`). `undefined` skips a pin;
@@ -251,8 +261,9 @@ There are no environment variables or config files. Everything is an argument:
 | `client.sync(baseUrl, pubkeyUrl, options)` | `baseUrl`, `pubkeyUrl` | Where the bundle is, and the trust root (raw key or keyring) |
 | `client.sync` options | `expectedBundleId`, `expectedChannel` | Identity pins; `undefined` skips a pin, `null` requires the field to be absent |
 | `client.sync` options | `wantedPaths` | `undefined` = every file; `[]` = pointer and manifest only; paths or `dir/` prefixes = a subset |
-| `client.sync` options | `onProgress` | Called per phase and per checked chunk |
-| `new EngineClient(worker, options)` | `idleTimeoutMs` | How long a silent Worker may go before `WorkerTimeoutError` |
+| `client.sync` options | `onProgress` | Called per phase, per network read (rate-limited), per checked chunk, per retried chunk, per verified file |
+| `new EngineClient(worker, options)` | `idleTimeoutMs` | How long a Worker may go without any progress before `WorkerTimeoutError` (default 60 s) |
+| `fetchBytes(url, options)` | `onBytes`, `FETCH_STALL_TIMEOUT_MS` | Streaming byte progress; a request with no bytes for 30 s is a stall (`NetworkError`), a slow one is never cut off |
 | `syncIndex(...)` | `keyring` or `verify`, `now` | Trust root for direct use; `now` injects the expiry clock |
 | Persistent store | `indexedDbLayout` | Reuse an existing IndexedDB database, store and key layout |
 | `createSqliteVectorIndex` / `createSqliteStateStore` | `name`, `dimension`, `initialSchemaVersion` | Which local database to open, and its shape |

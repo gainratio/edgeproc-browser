@@ -95,6 +95,10 @@ export interface FetchBytesOptions {
     /** Maximum response bytes to buffer. The transport enforces this while
      * streaming, and sync re-checks injected transports after resolution. */
     readonly maxBytes?: number;
+    /** Streaming progress: cumulative bytes received so far and the declared
+     * Content-Length (null when the server sent none). Called on every network
+     * read, so a caller can show real progress and tell "slow" from "stalled". */
+    readonly onBytes?: (received: number, total: number | null) => void;
 }
 export type FetchBytes = (url: string, options?: FetchBytesOptions) => Promise<Uint8Array>;
 /** Fail-closed ed25519 verifier: resolves on a valid signature, else throws. */
