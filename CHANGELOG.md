@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+### Changed
+
+- **Renamed to `@gainratio/browser`; old name deprecated.** New releases ship
+  only as `@gainratio/browser`, published by CI with npm provenance.
+  `@edgeproc/browser` 0.1.0 keeps installing. Change
+  `npm install @edgeproc/browser` to `npm install @gainratio/browser` and update
+  imports, including subpaths such as `@gainratio/browser/worker`.
+
+0.1.0 was published by hand from an earlier `main` and has no entry of its own;
+the entries below cover everything on `main` up to 0.1.1.
+
 ### Added
 
 - **A portable SQLite application-state Lego.** The opt-in

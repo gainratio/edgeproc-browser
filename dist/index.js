@@ -1,4 +1,4 @@
-// @edgeproc/browser — the local-processing substrate of edge-proc, for the tab.
+// @gainratio/browser — the local-processing substrate of edge-proc, for the tab.
 //
 // WHAT THIS IS: everything needed to pull a signed, content-addressed bundle
 // into a browser and prove it arrived intact — and nothing about what you then

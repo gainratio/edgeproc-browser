@@ -1,6 +1,6 @@
 {
-	"name": "@edgeproc/browser",
-	"version": "0.1.0",
+	"name": "@gainratio/browser",
+	"version": "0.1.1",
 	"type": "module",
 	"description": "For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.",
 	"keywords": [

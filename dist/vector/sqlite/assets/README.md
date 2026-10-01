@@ -1,7 +1,7 @@
 # Minimal SQLite + sqlite-vector browser runtime
 
-These runtime files are shared by `@edgeproc/browser/vector/sqlite` and
-`@edgeproc/browser/sqlite`:
+These runtime files are shared by `@gainratio/browser/vector/sqlite` and
+`@gainratio/browser/sqlite`:
 
 - `sqlite3.mjs`: the official SQLite bundler-friendly JavaScript loader.
 - `sqlite3.wasm`: SQLite 3.53.4 with only sqlite-vector 1.1.2 statically linked.

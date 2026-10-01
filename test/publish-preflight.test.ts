@@ -327,7 +327,7 @@ function typecheckPaths(): Record<string, string[]> {
 describe("the publish gate survives the dist that preflight deletes", () => {
 	it("finds public entry points to check (guards against a vacuous pass)", () => {
 		expect(publicSpecifiers().length).toBeGreaterThan(1);
-		expect(publicSpecifiers()).toContain("@edgeproc/browser");
+		expect(publicSpecifiers()).toContain("@gainratio/browser");
 	});
 
 	it("resolves every public entry point from source, not from dist", () => {

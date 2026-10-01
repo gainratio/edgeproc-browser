@@ -40,12 +40,12 @@ describe("Vite consumer Worker contract", () => {
 		);
 		writeFileSync(
 			join(root, "src", "edgeproc.worker.ts"),
-			'import "@edgeproc/browser/worker";\n',
+			'import "@gainratio/browser/worker";\n',
 		);
 		writeFileSync(
 			join(root, "src", "main.ts"),
 			[
-				'import { EngineClient } from "@edgeproc/browser";',
+				'import { EngineClient } from "@gainratio/browser";',
 				'import EdgeProcWorker from "./edgeproc.worker?worker";',
 				"const client = new EngineClient(new EdgeProcWorker());",
 				"client.dispose();",
