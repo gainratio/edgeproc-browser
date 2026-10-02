@@ -7,7 +7,7 @@ import {
 	EngineClient,
 	EngineOperationError,
 	type SyncProgress,
-} from "@edgeproc/browser";
+} from "@gainratio/browser";
 
 export interface BootTiming {
 	readonly syncMs: number;
