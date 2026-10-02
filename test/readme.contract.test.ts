@@ -38,7 +38,8 @@ const SCREENSHOTS = [
 	"docs/assets/try-it-verified.png",
 	"docs/assets/try-it-refused.png",
 ];
-// Real output from running the Try it steps against @edgeproc/browser 0.1.0
+// Real output from running the Try it steps against @edgeproc/browser 0.1.0 (same code as
+// @gainratio/browser 0.1.1)
 // from npm, in headless Chromium and in Node.
 const REAL_OUTPUT = [
 	"verified v1 (1 fetched, 0 reused)",
@@ -149,7 +150,7 @@ describe("README contract", () => {
 
 	it("installs from npm and names the published version it documents", () => {
 		expect(section("## Install")).toContain(`npm install ${PACKAGE.name}`);
-		expect(README).toContain("0.1.0");
+		expect(README).toContain("0.1.1");
 	});
 
 	it("links Getting started from Develop", () => {

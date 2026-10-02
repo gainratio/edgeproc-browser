@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-`@edgeproc/browser/sqlite` stores namespaced byte values in one real SQLite
+`@gainratio/browser/sqlite` stores namespaced byte values in one real SQLite
 database. Writes are transactional, every committed change advances a monotonic
 epoch, stale compare-and-swap writes fail closed, and backup restore is a
 validate-then-commit operation. Callers never receive an arbitrary SQL API.
@@ -17,7 +17,7 @@ in the application; keep persistence mechanics here.
 import {
   createSqliteStateStore,
   SqliteStateConflictError,
-} from "@edgeproc/browser/sqlite";
+} from "@gainratio/browser/sqlite";
 
 const state = await createSqliteStateStore({
   name: "acme-console",

@@ -1,11 +1,11 @@
 import {
 	createSqliteStateStore,
 	type SqliteStateRuntimeInfo,
-} from "@edgeproc/browser/sqlite";
+} from "@gainratio/browser/sqlite";
 import {
 	createSqliteVectorIndex,
 	type SqliteVectorRuntimeInfo,
-} from "@edgeproc/browser/vector/sqlite";
+} from "@gainratio/browser/vector/sqlite";
 
 export interface BrowserProof {
 	readonly runtime: SqliteVectorRuntimeInfo;

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic cross-runtime keyring vectors.
 //
-// edge-proc (Python) and @edgeproc/browser (TypeScript) must agree byte for
+// edge-proc (Python) and @gainratio/browser (TypeScript) must agree byte for
 // byte on the key identity, the signing preimage of every VersionPointer shape,
 // the signatures, and the verdicts. This script derives every value from FIXED
 // seeds with RFC 8032 (deterministic) Ed25519, so it has no randomness and no

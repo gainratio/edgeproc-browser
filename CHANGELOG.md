@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+0.1.0 was published by hand from an earlier `main` and has no entry of its own;
+the entries below cover everything on `main` up to 0.1.1.
+
+### Changed
+
+- **Renamed to `@gainratio/browser`; old name deprecated.** New releases ship
+  only as `@gainratio/browser`, published by CI with npm provenance.
+  `@edgeproc/browser` 0.1.0 keeps installing. Change
+  `npm install @edgeproc/browser` to `npm install @gainratio/browser` and update
+  imports, including subpaths such as `@gainratio/browser/worker`.
+
+- **Warm boot is about 2.4x faster, and still re-verifies every byte.** A reload
+  used to read, decompress and hash each cached chunk one at a time, then read
+  them all again when the app loaded the files. Profiling in real Chromium showed
+  the hashing was never the cost (about 25 ms of 430 ms for the 552-chunk
+  almamesh bundle): the cost was one exclusive OPFS sync access handle per chunk,
+  which Chromium creates one at a time. Chunk reads and presence probes now use
+  the lock-free `getFile()` snapshot, and sync reads up to 8 chunks at once
+  (`MAX_CONCURRENT_CHUNK_READS`). Every chunk is still decompressed and checked
+  against its content address, and every file against its signed hash, on every
+  boot. A cached chunk rewritten at rest is refused and re-fetched; a real-OPFS
+  test proves it. Local Chromium, almamesh bundle: warm sync 428 ms to 173 ms,
+  reading all 8 files 258 ms to 103 ms (medians).
+
 ### Fixed
 
 - **A slow mobile link no longer kills the sync.** On a slow-4G connection
@@ -32,20 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before serving the cache, where it used to wait 15 s. `FETCH_TIMEOUT_MS` is
   gone; the equivalent export is `FETCH_STALL_TIMEOUT_MS`.
 
-### Changed
-
-- **Warm boot is about 2.4x faster, and still re-verifies every byte.** A reload
-  used to read, decompress and hash each cached chunk one at a time, then read
-  them all again when the app loaded the files. Profiling in real Chromium showed
-  the hashing was never the cost (about 25 ms of 430 ms for the 552-chunk
-  almamesh bundle): the cost was one exclusive OPFS sync access handle per chunk,
-  which Chromium creates one at a time. Chunk reads and presence probes now use
-  the lock-free `getFile()` snapshot, and sync reads up to 8 chunks at once
-  (`MAX_CONCURRENT_CHUNK_READS`). Every chunk is still decompressed and checked
-  against its content address, and every file against its signed hash, on every
-  boot. A cached chunk rewritten at rest is refused and re-fetched; a real-OPFS
-  test proves it. Local Chromium, almamesh bundle: warm sync 428 ms to 173 ms,
-  reading all 8 files 258 ms to 103 ms (medians).
 
 ### Added
 
