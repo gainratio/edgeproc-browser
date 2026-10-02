@@ -1,19 +1,19 @@
 # API guide
 
-How to use `@edgeproc/browser` 0.1.0 in an app. For how it works inside, see
+How to use `@gainratio/browser` 0.1.1 in an app. For how it works inside, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What you import
 
 | Import | What it gives you |
 | --- | --- |
-| `@edgeproc/browser` | `EngineClient` (talks to the Worker), `syncIndex` and `MemoryCacheStore` (the checking core, also usable in Node), error classes, keyring helpers, the network monitor channel |
-| `@edgeproc/browser/worker` | The Worker entry. Import it from your own worker file |
-| `@edgeproc/browser/spawn` | `spawnEngineClient()` for unbundled browser ESM, where you have no bundler to own the Worker URL |
-| `@edgeproc/browser/vector` | `FlatVectorIndex` and `PackedVectorIndex`, exact in-memory similarity search |
-| `@edgeproc/browser/vector/sqlite` | `createSqliteVectorIndex`, a vector index kept in SQLite in OPFS |
-| `@edgeproc/browser/vector/sqlite/node` | `createNodeSqliteVectorIndex`, the same SQLite runtime in Node, in memory |
-| `@edgeproc/browser/sqlite` | `createSqliteStateStore`, app state in one real SQLite file |
+| `@gainratio/browser` | `EngineClient` (talks to the Worker), `syncIndex` and `MemoryCacheStore` (the checking core, also usable in Node), error classes, keyring helpers, the network monitor channel |
+| `@gainratio/browser/worker` | The Worker entry. Import it from your own worker file |
+| `@gainratio/browser/spawn` | `spawnEngineClient()` for unbundled browser ESM, where you have no bundler to own the Worker URL |
+| `@gainratio/browser/vector` | `FlatVectorIndex` and `PackedVectorIndex`, exact in-memory similarity search |
+| `@gainratio/browser/vector/sqlite` | `createSqliteVectorIndex`, a vector index kept in SQLite in OPFS |
+| `@gainratio/browser/vector/sqlite/node` | `createNodeSqliteVectorIndex`, the same SQLite runtime in Node, in memory |
+| `@gainratio/browser/sqlite` | `createSqliteStateStore`, app state in one real SQLite file |
 
 ## Publish a bundle
 
@@ -37,12 +37,12 @@ With Vite, keep the Worker entry in your own source so the bundler owns its URL:
 
 ```ts
 // src/edgeproc.worker.ts
-import "@edgeproc/browser/worker";
+import "@gainratio/browser/worker";
 ```
 
 ```ts
 // main thread
-import { EngineClient } from "@edgeproc/browser";
+import { EngineClient } from "@gainratio/browser";
 import EdgeProcWorker from "./edgeproc.worker?worker";
 
 const client = new EngineClient(new EdgeProcWorker(), { idleTimeoutMs: 60_000 });
@@ -59,7 +59,17 @@ await client.clear(); // same cross-tab lock as sync and read
 
 `wantedPaths: undefined` syncs every signed file. `wantedPaths: []` checks and promotes only
 the signed pointer and manifest, so an app can look at the catalog first and fetch a chosen
-directory later. Every checked chunk reports progress and resets the client's idle timer.
+directory later.
+
+`onProgress` is called per phase (`pointer`, `manifest`, `chunks`, `verify`, `promoted`), and
+during `chunks` on every network read (at most 4 times a second) and on every checked chunk.
+A `chunks` event carries `bytesDone` / `bytesTotal` (uncompressed bytes, exact from the signed
+manifest), so an app can draw a real progress bar. A chunk fetch that fails or stalls (no
+bytes for 30 s, `FETCH_STALL_TIMEOUT_MS`) is retried with bounded backoff and reported as a
+`chunkRetry` event with the reason; chunks already verified and stored are never fetched
+again, so a sync that fails mid-way resumes from the cache. Every progress event resets the
+client's idle timer, so a slow link is not a dead link: only a Worker that stays silent for
+`idleTimeoutMs` is terminated.
 
 `expectedBundleId` and `expectedChannel` only work if the publisher signed them into the
 pointer (`edgeproc publish --bind-identity --channel stable`). `undefined` skips a pin;
@@ -75,7 +85,7 @@ The root `EngineClient` export contains no Worker URL, so Vite does not emit a s
 Worker next to yours. Without a bundler, use the separate spawn helper:
 
 ```ts
-import { spawnEngineClient } from "@edgeproc/browser/spawn";
+import { spawnEngineClient } from "@gainratio/browser/spawn";
 
 const client = spawnEngineClient({ idleTimeoutMs: 60_000 });
 ```
@@ -89,7 +99,7 @@ engine Worker is emitted.
 also runs in Node for tests and build scripts:
 
 ```js
-import { MemoryCacheStore, materializeFile, syncIndex, verifyEd25519 } from "@edgeproc/browser";
+import { MemoryCacheStore, materializeFile, syncIndex, verifyEd25519 } from "@gainratio/browser";
 
 const store = new MemoryCacheStore();
 const result = await syncIndex({ baseUrl: "/bundle", store, fetchBytes, verify });
@@ -146,7 +156,7 @@ throughout. See [SECURITY.md](../SECURITY.md) for the policy.
 ## Counting what the Worker fetched
 
 ```ts
-import { NETWORK_SENTINEL_CHANNEL, isNetworkSentinelReport } from "@edgeproc/browser";
+import { NETWORK_SENTINEL_CHANNEL, isNetworkSentinelReport } from "@gainratio/browser";
 
 const channel = new BroadcastChannel(NETWORK_SENTINEL_CHANNEL);
 channel.onmessage = (event) => {
@@ -161,7 +171,7 @@ The vector API is a small interface, not a ranking framework. Use the exact in-m
 for small data, or SQLite in OPFS when the index must survive a reload:
 
 ```ts
-import { createSqliteVectorIndex } from "@edgeproc/browser/vector/sqlite";
+import { createSqliteVectorIndex } from "@gainratio/browser/vector/sqlite";
 
 const index = await createSqliteVectorIndex({ name: "my-catalog", dimension: 384 });
 
@@ -180,7 +190,7 @@ parameterized equality checks ANDed together. SQLite runs in its own Worker, and
 mode uses the OPFS SAH-pool VFS. One index has one owner: a second tab gets a clear open error
 after a bounded retry instead of silently sharing a file handle.
 
-For small or throwaway data, import `FlatVectorIndex` from `@edgeproc/browser/vector`: same
+For small or throwaway data, import `FlatVectorIndex` from `@gainratio/browser/vector`: same
 contract, no WASM startup. For an immutable FLOAT32 matrix that already came from a signed
 bundle, use the synchronous `PackedVectorIndex`: it copies and validates the matrix, computes
 exact cosine similarity, keeps producer order on ties, and zeroes its storage on disposal.
@@ -191,7 +201,7 @@ For a Node evaluation job that must use the same SQLite runtime (not a JavaScrip
 fallback), use the Node-only entry. It is in memory by design:
 
 ```ts
-import { createNodeSqliteVectorIndex } from "@edgeproc/browser/vector/sqlite/node";
+import { createNodeSqliteVectorIndex } from "@gainratio/browser/vector/sqlite/node";
 
 const index = await createNodeSqliteVectorIndex({ name: "recall-eval", dimension: 384 });
 // insert/search/searchByIds/deleteWhere/clear work the same way.
@@ -200,12 +210,12 @@ await index.dispose();
 
 ## App state in one SQLite file, without raw SQL
 
-`@edgeproc/browser/sqlite` stores app state in the same SQLite Worker and OPFS runtime.
+`@gainratio/browser/sqlite` stores app state in the same SQLite Worker and OPFS runtime.
 Values are bytes: you own the encoding (JSON, MessagePack, Protobuf), the package owns
 durability, transactions, schema versions and portable database files.
 
 ```ts
-import { createSqliteStateStore } from "@edgeproc/browser/sqlite";
+import { createSqliteStateStore } from "@gainratio/browser/sqlite";
 
 const state = await createSqliteStateStore({ name: "my-app", initialSchemaVersion: 1 });
 
@@ -251,8 +261,9 @@ There are no environment variables or config files. Everything is an argument:
 | `client.sync(baseUrl, pubkeyUrl, options)` | `baseUrl`, `pubkeyUrl` | Where the bundle is, and the trust root (raw key or keyring) |
 | `client.sync` options | `expectedBundleId`, `expectedChannel` | Identity pins; `undefined` skips a pin, `null` requires the field to be absent |
 | `client.sync` options | `wantedPaths` | `undefined` = every file; `[]` = pointer and manifest only; paths or `dir/` prefixes = a subset |
-| `client.sync` options | `onProgress` | Called per phase and per checked chunk |
-| `new EngineClient(worker, options)` | `idleTimeoutMs` | How long a silent Worker may go before `WorkerTimeoutError` |
+| `client.sync` options | `onProgress` | Called per phase, per network read (rate-limited), per checked chunk, per retried chunk, per verified file |
+| `new EngineClient(worker, options)` | `idleTimeoutMs` | How long a Worker may go without any progress before `WorkerTimeoutError` (default 60 s) |
+| `fetchBytes(url, options)` | `onBytes`, `FETCH_STALL_TIMEOUT_MS` | Streaming byte progress; a request with no bytes for 30 s is a stall (`NetworkError`), a slow one is never cut off |
 | `syncIndex(...)` | `keyring` or `verify`, `now` | Trust root for direct use; `now` injects the expiry clock |
 | Persistent store | `indexedDbLayout` | Reuse an existing IndexedDB database, store and key layout |
 | `createSqliteVectorIndex` / `createSqliteStateStore` | `name`, `dimension`, `initialSchemaVersion` | Which local database to open, and its shape |

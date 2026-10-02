@@ -1,4 +1,4 @@
-// @edgeproc/browser — the local-processing substrate of edge-proc, for the tab.
+// @gainratio/browser — the local-processing substrate of edge-proc, for the tab.
 //
 // WHAT THIS IS: everything needed to pull a signed, content-addressed bundle
 // into a browser and prove it arrived intact — and nothing about what you then
@@ -24,8 +24,8 @@ export { EngineClient, } from "./engine/client.js";
 // --- ed25519 + sha256: the primitives the whole chain rests on ---
 export { SignatureError, sha256Hex, verifyEd25519 } from "./engine/crypto.js";
 export { classifyEngineError, EngineOperationError, } from "./engine/engineError.js";
-// --- the network edge: size-capped, timeout-bounded byte fetch ---
-export { DEFAULT_MAX_FETCH_BYTES, FETCH_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
+// --- the network edge: size-capped, stall-bounded byte fetch ---
+export { DEFAULT_MAX_FETCH_BYTES, FETCH_STALL_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
 export { IndexedDbCacheStore, resolveIndexedDbLayout, } from "./engine/indexedDbStore.js";
 // --- integrity: bounded decompression + content-address verification ---
 export { decompressAndVerify, IntegrityError, MAX_DECOMPRESSED_CHUNK_BYTES, verifyPlaintext, } from "./engine/integrity.js";

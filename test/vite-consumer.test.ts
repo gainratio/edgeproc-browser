@@ -28,10 +28,10 @@ describe("Vite consumer Worker contract", () => {
 		const root = mkdtempSync(join(tmpdir(), "edgeproc-vite-consumer-"));
 		scratch.push(root);
 		mkdirSync(join(root, "src"));
-		mkdirSync(join(root, "node_modules", "@edgeproc"), { recursive: true });
+		mkdirSync(join(root, "node_modules", "@gainratio"), { recursive: true });
 		symlinkSync(
 			ROOT,
-			join(root, "node_modules", "@edgeproc", "browser"),
+			join(root, "node_modules", "@gainratio", "browser"),
 			"dir",
 		);
 		writeFileSync(
@@ -40,12 +40,12 @@ describe("Vite consumer Worker contract", () => {
 		);
 		writeFileSync(
 			join(root, "src", "edgeproc.worker.ts"),
-			'import "@edgeproc/browser/worker";\n',
+			'import "@gainratio/browser/worker";\n',
 		);
 		writeFileSync(
 			join(root, "src", "main.ts"),
 			[
-				'import { EngineClient } from "@edgeproc/browser";',
+				'import { EngineClient } from "@gainratio/browser";',
 				'import EdgeProcWorker from "./edgeproc.worker?worker";',
 				"const client = new EngineClient(new EdgeProcWorker());",
 				"client.dispose();",

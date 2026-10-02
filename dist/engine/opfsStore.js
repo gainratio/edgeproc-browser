@@ -62,11 +62,14 @@ export function canPromotePointer(current, incoming) {
         return false;
     return samePointer(current, incoming);
 }
-function readHandle(handle, maxBytes) {
-    const size = handle.getSize();
+function assertWithinReadCap(size, maxBytes) {
     if (size > maxBytes) {
         throw new IntegrityError(`OPFS object is ${size} bytes, over the ${maxBytes}-byte read cap`);
     }
+}
+function readHandle(handle, maxBytes) {
+    const size = handle.getSize();
+    assertWithinReadCap(size, maxBytes);
     const buffer = new Uint8Array(size);
     handle.read(buffer, { at: 0 });
     return buffer;
@@ -92,14 +95,8 @@ export class OpfsCacheStore {
     async hasChunk(chunkHash) {
         try {
             const file = await this.#chunkDir.getFileHandle(chunkHash);
-            const handle = await file.createSyncAccessHandle();
-            try {
-                if (handle.getSize() > 0)
-                    return true;
-            }
-            finally {
-                handle.close();
-            }
+            if ((await file.getFile()).size > 0)
+                return true;
             await this.evict(this.#chunkDir, chunkHash);
             return false;
         }
@@ -116,7 +113,7 @@ export class OpfsCacheStore {
         await this.writeFile(this.#chunkDir, chunkHash, compressed);
     }
     async getChunk(chunkHash, expectedSize) {
-        const compressed = await this.readFile(this.#chunkDir, chunkHash, MAX_COMPRESSED_CHUNK_BYTES);
+        const compressed = await this.readSnapshot(this.#chunkDir, chunkHash, MAX_COMPRESSED_CHUNK_BYTES);
         try {
             return await decompressAndVerify(chunkHash, compressed, expectedSize);
         }
@@ -281,6 +278,14 @@ export class OpfsCacheStore {
             if (!keep.has(name))
                 await this.evict(dir, name);
         }
+    }
+    /** Read-only snapshot read (`getFile`). Unlike a sync access handle it takes
+     * no exclusive lock, and Chromium does not serialise it, so warm-boot chunk
+     * reads overlap. Trust is unchanged: callers verify every byte returned. */
+    async readSnapshot(dir, name, maxBytes) {
+        const file = await (await dir.getFileHandle(name)).getFile();
+        assertWithinReadCap(file.size, maxBytes);
+        return new Uint8Array(await file.arrayBuffer());
     }
     async readFile(dir, name, maxBytes) {
         const fileHandle = await dir.getFileHandle(name);

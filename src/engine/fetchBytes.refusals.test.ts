@@ -13,7 +13,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	DEFAULT_MAX_FETCH_BYTES,
-	FETCH_TIMEOUT_MS,
+	FETCH_STALL_TIMEOUT_MS,
 	fetchBytes,
 	NetworkError,
 	ResponseTooLargeError,
@@ -228,11 +228,13 @@ describe("fetchBytes accepts", () => {
 });
 
 describe("the transport's shape is pinned, not merely asserted against itself", () => {
-	it("caps responses at 2 MiB and times out at 15s by default", () => {
+	it("caps responses at 2 MiB and declares a stall after 30 s without bytes", () => {
 		// Literals, not `EXPECTED === CONSTANT`: a test that compares a constant
-		// to itself passes at any value. These are the numbers the README states.
+		// to itself passes at any value. These are the numbers the docs state.
+		// 30 s is sized for bad mobile links (radio gaps, cell handovers), not for
+		// a healthy wire: a shorter window turned slow 4G into a sync outage.
 		expect(DEFAULT_MAX_FETCH_BYTES).toBe(2 * 1024 * 1024);
-		expect(FETCH_TIMEOUT_MS).toBe(15_000);
+		expect(FETCH_STALL_TIMEOUT_MS).toBe(30_000);
 	});
 
 	it("classifies an oversized response as an integrity failure, not an outage", () => {
@@ -243,7 +245,7 @@ describe("the transport's shape is pinned, not merely asserted against itself", 
 		expect(new NetworkError("x")).not.toBeInstanceOf(IntegrityError);
 	});
 
-	it("aborts the in-flight request when the deadline fires", async () => {
+	it("aborts the in-flight request when the stall window closes", async () => {
 		vi.useFakeTimers();
 		let observed: AbortSignal | undefined;
 		vi.stubGlobal(
@@ -257,7 +259,7 @@ describe("the transport's shape is pinned, not merely asserted against itself", 
 		);
 		const pending = fetchBytes(URL_UNDER_TEST);
 		const assertion = expect(pending).rejects.toBeInstanceOf(NetworkError);
-		await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 1);
+		await vi.advanceTimersByTimeAsync(FETCH_STALL_TIMEOUT_MS + 1);
 		await assertion;
 		expect(observed?.aborted).toBe(true);
 	});

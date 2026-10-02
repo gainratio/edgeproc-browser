@@ -2,7 +2,7 @@ export { canonicalBytes, type JsonValue } from "./engine/canonical.js";
 export { EngineClient, type EngineClientOptions, type EngineStorageOptions, type EngineSyncOptions, type EngineWorkerLike, } from "./engine/client.js";
 export { SignatureError, sha256Hex, verifyEd25519 } from "./engine/crypto.js";
 export { classifyEngineError, type EngineErrorCode, type EngineErrorDetail, EngineOperationError, } from "./engine/engineError.js";
-export { DEFAULT_MAX_FETCH_BYTES, FETCH_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
+export { DEFAULT_MAX_FETCH_BYTES, FETCH_STALL_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
 export { IndexedDbCacheStore, type IndexedDbLayout, type IndexedDbLayoutOptions, resolveIndexedDbLayout, } from "./engine/indexedDbStore.js";
 export { decompressAndVerify, IntegrityError, MAX_DECOMPRESSED_CHUNK_BYTES, verifyPlaintext, } from "./engine/integrity.js";
 export { assertKeyring, deriveKeyId, KEYRING_SCHEMA, KeyRevokedError, type Keyring, KeyringError, loadTrustRoot, MAX_TRUST_ROOT_BYTES, parseTrustRoot, type TrustedKey, UnknownKeyError, verifyWithKeyring, } from "./engine/keyring.js";

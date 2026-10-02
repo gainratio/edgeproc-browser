@@ -53,6 +53,7 @@ describe("consumer sync contract", () => {
 			"pointer",
 			"manifest",
 			"chunks",
+			"verify",
 			"promoted",
 		]);
 		const manifest = activeManifest();

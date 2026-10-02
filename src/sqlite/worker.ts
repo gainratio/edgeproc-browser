@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
+import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import {
 	type SqliteStateDatabase,
 	type SqliteStateDatabaseHandle,
@@ -87,6 +88,7 @@ async function dispatch(request: SqliteStateWorkerRequest): Promise<unknown> {
 async function openStore(
 	options: ConstructorParameters<typeof SqliteStateStoreDatabase>[0],
 ): Promise<SqliteStateStoreDatabase> {
+	configureInlineOpfsProxy();
 	const loaded = await sqlite3InitModule({
 		print: () => undefined,
 		printErr: (...args) => console.error(...args),

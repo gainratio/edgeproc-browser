@@ -1,4 +1,4 @@
-// @edgeproc/browser — the local-processing substrate of edge-proc, for the tab.
+// @gainratio/browser — the local-processing substrate of edge-proc, for the tab.
 //
 // WHAT THIS IS: everything needed to pull a signed, content-addressed bundle
 // into a browser and prove it arrived intact — and nothing about what you then
@@ -36,10 +36,10 @@ export {
 	type EngineErrorDetail,
 	EngineOperationError,
 } from "./engine/engineError.js";
-// --- the network edge: size-capped, timeout-bounded byte fetch ---
+// --- the network edge: size-capped, stall-bounded byte fetch ---
 export {
 	DEFAULT_MAX_FETCH_BYTES,
-	FETCH_TIMEOUT_MS,
+	FETCH_STALL_TIMEOUT_MS,
 	fetchBytes,
 	NetworkError,
 	ResponseTooLargeError,

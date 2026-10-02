@@ -1,11 +1,11 @@
-# @edgeproc/browser
+# @gainratio/browser
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @edgeproc/browser`** (version 0.1.0 on npm)
+**`npm install @gainratio/browser`** (version 0.1.1; the same code was `@edgeproc/browser` 0.1.0)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@edgeproc/browser)](https://www.npmjs.com/package/@edgeproc/browser)
+[![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
 [![License](https://img.shields.io/github/license/hseshadr/edgeproc-browser)](LICENSE)
 
 Many web apps download data files and work with them inside the page: a product catalog, a
@@ -31,7 +31,7 @@ that signs the data. This takes about a minute.
    ```bash
    mkdir signed-data-demo && cd signed-data-demo
    npm init -y
-   npm install @edgeproc/browser vite
+   npm install @gainratio/browser vite
    ```
 
 2. Sign a folder of data with the `edgeproc` command from the Python
@@ -57,13 +57,13 @@ that signs the data. This takes about a minute.
    `edgeproc.worker.js`
 
    ```js
-   import "@edgeproc/browser/worker";
+   import "@gainratio/browser/worker";
    ```
 
    `main.js`
 
    ```js
-   import { EngineClient } from "@edgeproc/browser";
+   import { EngineClient } from "@gainratio/browser";
    import EdgeProcWorker from "./edgeproc.worker.js?worker";
 
    const out = document.querySelector("#out");
@@ -122,7 +122,7 @@ files, and the second run flips one byte in each piece it serves:
 
 ```js
 import { readFile } from "node:fs/promises";
-import { MemoryCacheStore, materializeFile, syncIndex, verifyEd25519 } from "@edgeproc/browser";
+import { MemoryCacheStore, materializeFile, syncIndex, verifyEd25519 } from "@gainratio/browser";
 
 const key = new Uint8Array(await readFile("public/public.key"));
 const verify = (message, signature) => verifyEd25519(key, message, signature);
@@ -178,8 +178,9 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
   site, not from the same mirror as the data. Keep the private key off the web server.
 - **Tested in Chromium only.** CI runs real-browser tests in Chromium. Other modern browsers
   with Web Workers should work, but are not tested.
-- **Early release.** 0.1.0 is the first version on npm. It was published without npm
-  provenance; later releases add it.
+- **Early release.** 0.1.1 is the first version under `@gainratio/browser` and the first
+  published by CI with npm provenance. `@edgeproc/browser` 0.1.0 was published by hand
+  without provenance; that name is deprecated.
 - The optional SQLite app-state store needs a cross-origin-isolated page (COOP and COEP
   headers). The rest of the package does not.
 
@@ -197,10 +198,10 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
 ## Install
 
 ```bash
-npm install @edgeproc/browser
+npm install @gainratio/browser
 ```
 
-This README documents 0.1.0, the version on npm today, which is the same code as `main` at
+This README documents 0.1.1, which is the same code as `main` at
 the time of writing. pnpm and Bun work too. To pin an exact commit instead:
 `pnpm add github:hseshadr/edgeproc-browser#<commit-sha>`.
 

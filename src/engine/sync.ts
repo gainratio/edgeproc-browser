@@ -28,10 +28,40 @@ export type SyncProgress =
 			readonly selectedFiles: number;
 	  }
 	| {
+			/** Reported on every network read (rate-limited) and on every
+			 * verified chunk, so a consumer can draw a real progress bar and an
+			 * idle timer can tell "slow" from "stalled". */
 			readonly phase: "chunks";
+			/** Chunks fetched, verified and stored so far. */
 			readonly fetchedChunks: number;
+			/** Chunks this sync has to fetch (missing from the cache). */
 			readonly totalChunks: number;
+			/** Compressed (on-the-wire) bytes of the completed chunks. */
 			readonly bytesFetched: number;
+			/** Uncompressed bytes of every chunk this sync fetches: exact, from
+			 * the signed manifest, known before the first byte arrives. */
+			readonly bytesTotal: number;
+			/** Uncompressed-byte progress: completed chunks plus the received
+			 * fraction of in-flight ones. Reaches `bytesTotal` exactly. */
+			readonly bytesDone: number;
+	  }
+	| {
+			/** One chunk fetch failed as a network outage or stall and is being
+			 * retried after `delayMs`. Bytes already verified are kept. */
+			readonly phase: "chunkRetry";
+			readonly hash: string;
+			/** Attempts made so far (1 = the first attempt just failed). */
+			readonly attempt: number;
+			readonly maxAttempts: number;
+			readonly delayMs: number;
+			readonly reason: string;
+	  }
+	| {
+			/** Every chunk is in; files are being reassembled and checked
+			 * against their signed hashes. */
+			readonly phase: "verify";
+			readonly verifiedFiles: number;
+			readonly totalFiles: number;
 	  }
 	| { readonly phase: "promoted"; readonly result: SyncResult };
 
@@ -82,6 +112,9 @@ const MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_CONCURRENT_CHUNK_FETCHES = 8;
 const CHUNK_FETCH_ATTEMPTS = 6;
 const CHUNK_RETRY_BASE_DELAY_MS = 250;
+/** Byte-level progress is rate-limited to this interval; chunk completions
+ * and retries are always reported. */
+const PROGRESS_INTERVAL_MS = 250;
 
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export const MAX_CHUNK_RETRY_BUDGET_MS =
@@ -609,10 +642,11 @@ async function missingChunks(
 	for (const entry of files) {
 		for (const ref of entry.chunks) wanted.set(ref.hash, ref);
 	}
-	const missing: ChunkRef[] = [];
-	for (const ref of wanted.values()) {
-		if (!(await store.hasChunk(ref.hash))) missing.push(ref);
-	}
+	const refs = [...wanted.values()];
+	const present = await mapBounded(refs, MAX_CONCURRENT_CHUNK_READS, (ref) =>
+		store.hasChunk(ref.hash),
+	);
+	const missing = refs.filter((_, index) => !present[index]);
 	return { missing, reused: wanted.size - missing.length };
 }
 
@@ -627,26 +661,111 @@ function totalFetchLimit(args: SyncArgs | KeyringSyncArgs): number {
 	return Math.min(requested, MAX_TOTAL_FETCH_BYTES);
 }
 
+interface ChunkTransfer {
+	/** Streaming bytes of the current attempt (cumulative, declared total). */
+	readonly onBytes: (received: number, total: number | null) => void;
+	/** A network failure or stall on this chunk; the next attempt follows. */
+	readonly onRetry: (attempt: number, delayMs: number, error: Error) => void;
+}
+
 async function fetchChunkWithRetry(
 	url: string,
 	fetchBytes: FetchBytes,
 	maxBytes: number,
 	sleep: (milliseconds: number) => Promise<void>,
+	transfer: ChunkTransfer,
 ): Promise<Uint8Array> {
 	let lastError: NetworkError | undefined;
 	for (let attempt = 0; attempt < CHUNK_FETCH_ATTEMPTS; attempt += 1) {
 		try {
-			return await fetchCapped(fetchBytes, url, maxBytes);
+			return await fetchCapped(fetchBytes, url, maxBytes, {
+				onBytes: transfer.onBytes,
+			});
 		} catch (error) {
 			if (!(error instanceof NetworkError)) throw error;
 			lastError = error;
 			if (attempt + 1 < CHUNK_FETCH_ATTEMPTS) {
 				const backoff = CHUNK_RETRY_BASE_DELAY_MS * 2 ** attempt;
-				await sleep(backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS);
+				const delay = backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS;
+				transfer.onRetry(attempt + 1, delay, error);
+				await sleep(delay);
 			}
 		}
 	}
 	throw lastError ?? new NetworkError(`chunk ${url} is unreachable`);
+}
+
+/**
+ * Progress accounting for one fetch pass, in uncompressed bytes (the only
+ * size the signed manifest states): completed chunks count in full, in-flight
+ * chunks count by the fraction of their declared wire size received so far.
+ */
+class ChunkProgress {
+	readonly #total: number;
+	readonly #count: number;
+	readonly #report: (progress: SyncProgress) => void;
+	readonly #inFlight = new Map<string, number>();
+	#done = 0;
+	#completed = 0;
+	#wireBytes = 0;
+	#lastReport = Number.NEGATIVE_INFINITY;
+
+	public constructor(
+		missing: ReadonlyArray<ChunkRef>,
+		report: (progress: SyncProgress) => void,
+	) {
+		this.#total = missing.reduce((sum, ref) => sum + ref.size, 0);
+		this.#count = missing.length;
+		this.#report = report;
+	}
+
+	public transfer(ref: ChunkRef): ChunkTransfer {
+		return {
+			onBytes: (received, declared) => {
+				const fraction =
+					declared === null || declared <= 0
+						? Math.min(ref.size, received)
+						: ref.size * Math.min(1, received / declared);
+				this.#inFlight.set(ref.hash, fraction);
+				this.#emit(false);
+			},
+			onRetry: (attempt, delayMs, error) => {
+				this.#inFlight.delete(ref.hash);
+				this.#report({
+					phase: "chunkRetry",
+					hash: ref.hash,
+					attempt,
+					maxAttempts: CHUNK_FETCH_ATTEMPTS,
+					delayMs,
+					reason: error.message,
+				});
+			},
+		};
+	}
+
+	public completed(ref: ChunkRef, wireBytes: number): void {
+		this.#inFlight.delete(ref.hash);
+		this.#done += ref.size;
+		this.#completed += 1;
+		this.#wireBytes += wireBytes;
+		this.#emit(true);
+	}
+
+	#emit(force: boolean): void {
+		const now = Date.now();
+		if (!force && now - this.#lastReport < PROGRESS_INTERVAL_MS) return;
+		this.#lastReport = now;
+		let partial = 0;
+		for (const fraction of this.#inFlight.values()) partial += fraction;
+		this.#report({
+			phase: "chunks",
+			fetchedChunks: this.#completed,
+			totalChunks: this.#count,
+			bytesFetched: this.#wireBytes,
+			bytesTotal: this.#total,
+			bytesDone: this.#done + Math.floor(partial),
+		});
+	}
 }
 
 async function fetchMissing(
@@ -655,14 +774,13 @@ async function fetchMissing(
 	fetchBytes: FetchBytes,
 	store: CacheStore,
 	maxTotalBytes: number,
-	onChunk: (completed: number, total: number, bytesFetched: number) => void,
+	progress: ChunkProgress,
 	sleep: (milliseconds: number) => Promise<void>,
 ): Promise<number> {
 	let next = 0;
 	let total = 0;
 	let remaining = maxTotalBytes;
 	let inFlight = 0;
-	let completed = 0;
 	const budgetWaiters: Array<() => void> = [];
 	let failure: unknown;
 	const reserve = async (): Promise<number> => {
@@ -701,13 +819,13 @@ async function fetchMissing(
 					fetchBytes,
 					reservation,
 					sleep,
+					progress.transfer(ref),
 				);
 				if (failure !== undefined) return;
 				consumed = compressed.byteLength;
 				total += consumed;
 				await store.putChunkCompressed(ref.hash, compressed, ref.size);
-				completed += 1;
-				onChunk(completed, missing.length, total);
+				progress.completed(ref, consumed);
 			} catch (error) {
 				failure ??=
 					error instanceof SyncCapError
@@ -730,6 +848,80 @@ async function fetchMissing(
 	return total;
 }
 
+/** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
+ * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * chunk), not by hashing; awaiting them one at a time serialised that latency. */
+export const MAX_CONCURRENT_CHUNK_READS = 8;
+
+/** Order-preserving map with at most `limit` calls in flight. After the first
+ * failure no new call starts, and every started call settles before the
+ * rejection, so no store access outlives the caller or its cache lock. */
+async function mapBounded<T, R>(
+	items: ReadonlyArray<T>,
+	limit: number,
+	operation: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	let failed = false;
+	let failure: unknown;
+	const worker = async (): Promise<void> => {
+		while (!failed && next < items.length) {
+			const index = next;
+			next += 1;
+			try {
+				results[index] = await operation(items[index] as T);
+			} catch (error) {
+				if (!failed) failure = error;
+				failed = true;
+			}
+		}
+	};
+	const workers = Math.min(limit, items.length);
+	await Promise.all(Array.from({ length: workers }, worker));
+	if (failed) throw failure;
+	return results;
+}
+
+type ChunkReader = (ref: ChunkRef) => Promise<Uint8Array>;
+
+/** Verified chunk reads shared by one reassembly pass: at most
+ * MAX_CONCURRENT_CHUNK_READS in flight in total, never two reads of the same
+ * chunk at once (OPFS sync access handles are exclusive per file), and once
+ * any read fails every queued read rejects with that same error unread. */
+function chunkReader(store: CacheStore): ChunkReader {
+	let active = 0;
+	let failure: { readonly error: unknown } | null = null;
+	const waiting: Array<() => void> = [];
+	const inFlight = new Map<string, Promise<Uint8Array>>();
+	const run = async (ref: ChunkRef): Promise<Uint8Array> => {
+		while (active >= MAX_CONCURRENT_CHUNK_READS) {
+			await new Promise<void>((resolve) => waiting.push(resolve));
+		}
+		if (failure !== null) {
+			waiting.shift()?.();
+			throw failure.error;
+		}
+		active += 1;
+		try {
+			return await store.getChunk(ref.hash, ref.size);
+		} catch (error) {
+			failure ??= { error };
+			throw error;
+		} finally {
+			active -= 1;
+			waiting.shift()?.();
+		}
+	};
+	return (ref) => {
+		const pending = inFlight.get(ref.hash);
+		if (pending !== undefined) return pending;
+		const read = run(ref).finally(() => inFlight.delete(ref.hash));
+		inFlight.set(ref.hash, read);
+		return read;
+	};
+}
+
 function concat(
 	parts: ReadonlyArray<Uint8Array>,
 	expected: number,
@@ -745,12 +937,15 @@ function concat(
 
 async function reassemble(
 	entry: FileEntry,
-	store: CacheStore,
+	read: ChunkReader,
 ): Promise<Uint8Array> {
-	const parts: Uint8Array[] = [];
-	for (const ref of entry.chunks) {
-		parts.push(await store.getChunk(ref.hash, ref.size));
-	}
+	// Every chunk is still read from storage, decompressed and re-hashed
+	// (`getChunk` is fail-closed); only the waiting is overlapped.
+	const parts = await mapBounded(
+		entry.chunks,
+		MAX_CONCURRENT_CHUNK_READS,
+		read,
+	);
 	const blob = concat(parts, entry.size);
 	if ((await sha256Hex(blob)) !== entry.file_sha256) {
 		throw new IntegrityError(`file ${entry.path} failed reassembly check`);
@@ -761,8 +956,15 @@ async function reassemble(
 async function verifyReassembly(
 	files: ReadonlyArray<FileEntry>,
 	store: CacheStore,
+	args: SyncArgs | KeyringSyncArgs,
 ): Promise<void> {
-	for (const entry of files) await reassemble(entry, store);
+	const read = chunkReader(store);
+	let verifiedFiles = 0;
+	await mapBounded(files, MAX_CONCURRENT_CHUNK_READS, async (entry) => {
+		await reassemble(entry, read);
+		verifiedFiles += 1;
+		report(args, { phase: "verify", verifiedFiles, totalFiles: files.length });
+	});
 }
 
 function distinctChunks(files: ReadonlyArray<FileEntry>): number {
@@ -797,7 +999,7 @@ async function syncFromCache(
 		totalFiles: manifest.files.length,
 		selectedFiles: files.length,
 	});
-	await verifyReassembly(files, store);
+	await verifyReassembly(files, store, args);
 	return {
 		version: active.version,
 		manifestHash: active.manifest_hash,
@@ -885,16 +1087,10 @@ export async function syncIndex(
 			fetchBytes,
 			store,
 			totalFetchLimit(args),
-			(fetchedChunks, totalChunks, fetchedBytes) =>
-				report(args, {
-					phase: "chunks",
-					fetchedChunks,
-					totalChunks,
-					bytesFetched: fetchedBytes,
-				}),
+			new ChunkProgress(missing, (progress) => report(args, progress)),
 			args.sleep ?? realSleep,
 		);
-		await verifyReassembly(files, store);
+		await verifyReassembly(files, store, args);
 		await store.promote(pointer);
 		const result = {
 			version: pointer.version,
@@ -930,5 +1126,5 @@ export async function materializeFile(
 	manifest: IndexManifest,
 	path: string,
 ): Promise<Uint8Array> {
-	return reassemble(fileEntry(manifest, path), store);
+	return reassemble(fileEntry(manifest, path), chunkReader(store));
 }

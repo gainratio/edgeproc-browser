@@ -9,10 +9,38 @@ export type SyncProgress = {
     readonly totalFiles: number;
     readonly selectedFiles: number;
 } | {
+    /** Reported on every network read (rate-limited) and on every
+     * verified chunk, so a consumer can draw a real progress bar and an
+     * idle timer can tell "slow" from "stalled". */
     readonly phase: "chunks";
+    /** Chunks fetched, verified and stored so far. */
     readonly fetchedChunks: number;
+    /** Chunks this sync has to fetch (missing from the cache). */
     readonly totalChunks: number;
+    /** Compressed (on-the-wire) bytes of the completed chunks. */
     readonly bytesFetched: number;
+    /** Uncompressed bytes of every chunk this sync fetches: exact, from
+     * the signed manifest, known before the first byte arrives. */
+    readonly bytesTotal: number;
+    /** Uncompressed-byte progress: completed chunks plus the received
+     * fraction of in-flight ones. Reaches `bytesTotal` exactly. */
+    readonly bytesDone: number;
+} | {
+    /** One chunk fetch failed as a network outage or stall and is being
+     * retried after `delayMs`. Bytes already verified are kept. */
+    readonly phase: "chunkRetry";
+    readonly hash: string;
+    /** Attempts made so far (1 = the first attempt just failed). */
+    readonly attempt: number;
+    readonly maxAttempts: number;
+    readonly delayMs: number;
+    readonly reason: string;
+} | {
+    /** Every chunk is in; files are being reassembled and checked
+     * against their signed hashes. */
+    readonly phase: "verify";
+    readonly verifiedFiles: number;
+    readonly totalFiles: number;
 } | {
     readonly phase: "promoted";
     readonly result: SyncResult;
@@ -71,6 +99,10 @@ export declare class PointerExpiredError extends IntegrityError {
  * `signature`, and without any optional field that is null or absent — so a
  * pointer that predates an optional field keeps its original preimage. */
 export declare function pointerSigningBytes(pointer: VersionPointer): Uint8Array;
+/** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
+ * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * chunk), not by hashing; awaiting them one at a time serialised that latency. */
+export declare const MAX_CONCURRENT_CHUNK_READS = 8;
 /**
  * Sync the signed bundle at `baseUrl` into `store`, verified by exactly one
  * of `verify` (a single verifier) or `keyring` (key selection + revocation).

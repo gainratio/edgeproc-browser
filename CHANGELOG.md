@@ -7,7 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+0.1.0 was published by hand from an earlier `main` and has no entry of its own;
+the entries below cover everything on `main` up to 0.1.1.
+
+### Changed
+
+- **Renamed to `@gainratio/browser`; old name deprecated.** New releases ship
+  only as `@gainratio/browser`, published by CI with npm provenance.
+  `@edgeproc/browser` 0.1.0 keeps installing. Change
+  `npm install @edgeproc/browser` to `npm install @gainratio/browser` and update
+  imports, including subpaths such as `@gainratio/browser/worker`.
+
+- **Warm boot is about 2.4x faster, and still re-verifies every byte.** A reload
+  used to read, decompress and hash each cached chunk one at a time, then read
+  them all again when the app loaded the files. Profiling in real Chromium showed
+  the hashing was never the cost (about 25 ms of 430 ms for the 552-chunk
+  almamesh bundle): the cost was one exclusive OPFS sync access handle per chunk,
+  which Chromium creates one at a time. Chunk reads and presence probes now use
+  the lock-free `getFile()` snapshot, and sync reads up to 8 chunks at once
+  (`MAX_CONCURRENT_CHUNK_READS`). Every chunk is still decompressed and checked
+  against its content address, and every file against its signed hash, on every
+  boot. A cached chunk rewritten at rest is refused and re-fetched; a real-OPFS
+  test proves it. Local Chromium, almamesh bundle: warm sync 428 ms to 173 ms,
+  reading all 8 files 258 ms to 103 ms (medians).
+
+### Fixed
+
+- **A slow mobile link no longer kills the sync.** On a slow-4G connection
+  (about 180 KB/s) the cold sync of an 18 MB bundle tripped the client's 60 s
+  idle deadline on every attempt, so the app never started. Two things were
+  wrong. The transport had a 15 s wall clock per request that started at
+  `fetch()` and covered connection queueing plus the whole body, so a chunk that
+  was merely slow was aborted and silently retried; and progress was reported
+  only when a whole chunk had been fetched, verified and stored, so the idle
+  deadline (re-armed by progress) heard nothing while fetches sat in retry.
+  Now `fetchBytes` has a stall window instead of a wall clock
+  (`FETCH_STALL_TIMEOUT_MS`, 30 s with no bytes; re-armed on every network
+  read and on headers), a transfer that keeps moving is never cut off, each
+  stall is retried with the existing bounded backoff and reported as a
+  `chunkRetry` progress event, and `chunks` progress moves on every network
+  read (rate-limited to 4/s). Chunks already verified and stored are never
+  re-downloaded: a sync that fails mid-way resumes from the cache. A real-
+  Chromium test holds every chunk request for 75 s mid-sync (longer than the
+  idle deadline) and proves the sync survives, names the stall, and re-fetches
+  only the chunks that were in flight. Security is unchanged: every chunk is
+  still hash-verified before it is stored or served. One side effect: on a
+  black-hole network (no error, no bytes) an offline warm boot now waits 30 s
+  before serving the cache, where it used to wait 15 s. `FETCH_TIMEOUT_MS` is
+  gone; the equivalent export is `FETCH_STALL_TIMEOUT_MS`.
+
+
 ### Added
+
+- **Progress an app can draw.** The `chunks` progress event carries
+  `bytesTotal` (the uncompressed size of everything this sync fetches, exact,
+  from the signed manifest) and `bytesDone` (completed chunks plus the received
+  fraction of in-flight ones), so a consumer can show a real bar instead of a
+  spinner. Two new phases: `chunkRetry` (a chunk fetch failed or stalled and is
+  being retried after `delayMs`, with the `reason`) and `verify` (per file, while
+  the reassembled files are checked against their signed hashes). The transport
+  takes an `onBytes(received, total)` callback.
 
 - **A portable SQLite application-state Lego.** The opt-in
   `@edgeproc/browser/sqlite` export provides namespaced byte rows, bounded

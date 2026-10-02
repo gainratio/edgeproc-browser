@@ -25,6 +25,9 @@ const MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_CONCURRENT_CHUNK_FETCHES = 8;
 const CHUNK_FETCH_ATTEMPTS = 6;
 const CHUNK_RETRY_BASE_DELAY_MS = 250;
+/** Byte-level progress is rate-limited to this interval; chunk completions
+ * and retries are always reported. */
+const PROGRESS_INTERVAL_MS = 250;
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export const MAX_CHUNK_RETRY_BUDGET_MS = CHUNK_RETRY_BASE_DELAY_MS * (2 ** (CHUNK_FETCH_ATTEMPTS - 1) - 1) +
     CHUNK_RETRY_BASE_DELAY_MS * (CHUNK_FETCH_ATTEMPTS - 1);
@@ -378,11 +381,9 @@ async function missingChunks(files, store) {
         for (const ref of entry.chunks)
             wanted.set(ref.hash, ref);
     }
-    const missing = [];
-    for (const ref of wanted.values()) {
-        if (!(await store.hasChunk(ref.hash)))
-            missing.push(ref);
-    }
+    const refs = [...wanted.values()];
+    const present = await mapBounded(refs, MAX_CONCURRENT_CHUNK_READS, (ref) => store.hasChunk(ref.hash));
+    const missing = refs.filter((_, index) => !present[index]);
     return { missing, reused: wanted.size - missing.length };
 }
 function totalFetchLimit(args) {
@@ -394,11 +395,13 @@ function totalFetchLimit(args) {
     }
     return Math.min(requested, MAX_TOTAL_FETCH_BYTES);
 }
-async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep) {
+async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep, transfer) {
     let lastError;
     for (let attempt = 0; attempt < CHUNK_FETCH_ATTEMPTS; attempt += 1) {
         try {
-            return await fetchCapped(fetchBytes, url, maxBytes);
+            return await fetchCapped(fetchBytes, url, maxBytes, {
+                onBytes: transfer.onBytes,
+            });
         }
         catch (error) {
             if (!(error instanceof NetworkError))
@@ -406,18 +409,85 @@ async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep) {
             lastError = error;
             if (attempt + 1 < CHUNK_FETCH_ATTEMPTS) {
                 const backoff = CHUNK_RETRY_BASE_DELAY_MS * 2 ** attempt;
-                await sleep(backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS);
+                const delay = backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS;
+                transfer.onRetry(attempt + 1, delay, error);
+                await sleep(delay);
             }
         }
     }
     throw lastError ?? new NetworkError(`chunk ${url} is unreachable`);
 }
-async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, onChunk, sleep) {
+/**
+ * Progress accounting for one fetch pass, in uncompressed bytes (the only
+ * size the signed manifest states): completed chunks count in full, in-flight
+ * chunks count by the fraction of their declared wire size received so far.
+ */
+class ChunkProgress {
+    #total;
+    #count;
+    #report;
+    #inFlight = new Map();
+    #done = 0;
+    #completed = 0;
+    #wireBytes = 0;
+    #lastReport = Number.NEGATIVE_INFINITY;
+    constructor(missing, report) {
+        this.#total = missing.reduce((sum, ref) => sum + ref.size, 0);
+        this.#count = missing.length;
+        this.#report = report;
+    }
+    transfer(ref) {
+        return {
+            onBytes: (received, declared) => {
+                const fraction = declared === null || declared <= 0
+                    ? Math.min(ref.size, received)
+                    : ref.size * Math.min(1, received / declared);
+                this.#inFlight.set(ref.hash, fraction);
+                this.#emit(false);
+            },
+            onRetry: (attempt, delayMs, error) => {
+                this.#inFlight.delete(ref.hash);
+                this.#report({
+                    phase: "chunkRetry",
+                    hash: ref.hash,
+                    attempt,
+                    maxAttempts: CHUNK_FETCH_ATTEMPTS,
+                    delayMs,
+                    reason: error.message,
+                });
+            },
+        };
+    }
+    completed(ref, wireBytes) {
+        this.#inFlight.delete(ref.hash);
+        this.#done += ref.size;
+        this.#completed += 1;
+        this.#wireBytes += wireBytes;
+        this.#emit(true);
+    }
+    #emit(force) {
+        const now = Date.now();
+        if (!force && now - this.#lastReport < PROGRESS_INTERVAL_MS)
+            return;
+        this.#lastReport = now;
+        let partial = 0;
+        for (const fraction of this.#inFlight.values())
+            partial += fraction;
+        this.#report({
+            phase: "chunks",
+            fetchedChunks: this.#completed,
+            totalChunks: this.#count,
+            bytesFetched: this.#wireBytes,
+            bytesTotal: this.#total,
+            bytesDone: this.#done + Math.floor(partial),
+        });
+    }
+}
+async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, progress, sleep) {
     let next = 0;
     let total = 0;
     let remaining = maxTotalBytes;
     let inFlight = 0;
-    let completed = 0;
     const budgetWaiters = [];
     let failure;
     const reserve = async () => {
@@ -452,14 +522,13 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
             }
             let consumed = 0;
             try {
-                const compressed = await fetchChunkWithRetry(`${baseUrl}/chunk/${ref.hash}`, fetchBytes, reservation, sleep);
+                const compressed = await fetchChunkWithRetry(`${baseUrl}/chunk/${ref.hash}`, fetchBytes, reservation, sleep, progress.transfer(ref));
                 if (failure !== undefined)
                     return;
                 consumed = compressed.byteLength;
                 total += consumed;
                 await store.putChunkCompressed(ref.hash, compressed, ref.size);
-                completed += 1;
-                onChunk(completed, missing.length, total);
+                progress.completed(ref, consumed);
             }
             catch (error) {
                 failure ??=
@@ -477,6 +546,77 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
         throw failure;
     return total;
 }
+/** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
+ * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * chunk), not by hashing; awaiting them one at a time serialised that latency. */
+export const MAX_CONCURRENT_CHUNK_READS = 8;
+/** Order-preserving map with at most `limit` calls in flight. After the first
+ * failure no new call starts, and every started call settles before the
+ * rejection, so no store access outlives the caller or its cache lock. */
+async function mapBounded(items, limit, operation) {
+    const results = new Array(items.length);
+    let next = 0;
+    let failed = false;
+    let failure;
+    const worker = async () => {
+        while (!failed && next < items.length) {
+            const index = next;
+            next += 1;
+            try {
+                results[index] = await operation(items[index]);
+            }
+            catch (error) {
+                if (!failed)
+                    failure = error;
+                failed = true;
+            }
+        }
+    };
+    const workers = Math.min(limit, items.length);
+    await Promise.all(Array.from({ length: workers }, worker));
+    if (failed)
+        throw failure;
+    return results;
+}
+/** Verified chunk reads shared by one reassembly pass: at most
+ * MAX_CONCURRENT_CHUNK_READS in flight in total, never two reads of the same
+ * chunk at once (OPFS sync access handles are exclusive per file), and once
+ * any read fails every queued read rejects with that same error unread. */
+function chunkReader(store) {
+    let active = 0;
+    let failure = null;
+    const waiting = [];
+    const inFlight = new Map();
+    const run = async (ref) => {
+        while (active >= MAX_CONCURRENT_CHUNK_READS) {
+            await new Promise((resolve) => waiting.push(resolve));
+        }
+        if (failure !== null) {
+            waiting.shift()?.();
+            throw failure.error;
+        }
+        active += 1;
+        try {
+            return await store.getChunk(ref.hash, ref.size);
+        }
+        catch (error) {
+            failure ??= { error };
+            throw error;
+        }
+        finally {
+            active -= 1;
+            waiting.shift()?.();
+        }
+    };
+    return (ref) => {
+        const pending = inFlight.get(ref.hash);
+        if (pending !== undefined)
+            return pending;
+        const read = run(ref).finally(() => inFlight.delete(ref.hash));
+        inFlight.set(ref.hash, read);
+        return read;
+    };
+}
 function concat(parts, expected) {
     const out = new Uint8Array(expected);
     let offset = 0;
@@ -486,20 +626,24 @@ function concat(parts, expected) {
     }
     return out;
 }
-async function reassemble(entry, store) {
-    const parts = [];
-    for (const ref of entry.chunks) {
-        parts.push(await store.getChunk(ref.hash, ref.size));
-    }
+async function reassemble(entry, read) {
+    // Every chunk is still read from storage, decompressed and re-hashed
+    // (`getChunk` is fail-closed); only the waiting is overlapped.
+    const parts = await mapBounded(entry.chunks, MAX_CONCURRENT_CHUNK_READS, read);
     const blob = concat(parts, entry.size);
     if ((await sha256Hex(blob)) !== entry.file_sha256) {
         throw new IntegrityError(`file ${entry.path} failed reassembly check`);
     }
     return blob;
 }
-async function verifyReassembly(files, store) {
-    for (const entry of files)
-        await reassemble(entry, store);
+async function verifyReassembly(files, store, args) {
+    const read = chunkReader(store);
+    let verifiedFiles = 0;
+    await mapBounded(files, MAX_CONCURRENT_CHUNK_READS, async (entry) => {
+        await reassemble(entry, read);
+        verifiedFiles += 1;
+        report(args, { phase: "verify", verifiedFiles, totalFiles: files.length });
+    });
 }
 function distinctChunks(files) {
     return new Set(files.flatMap((entry) => entry.chunks.map((ref) => ref.hash)))
@@ -529,7 +673,7 @@ async function syncFromCache(store, args, authenticate) {
         totalFiles: manifest.files.length,
         selectedFiles: files.length,
     });
-    await verifyReassembly(files, store);
+    await verifyReassembly(files, store, args);
     return {
         version: active.version,
         manifestHash: active.manifest_hash,
@@ -607,13 +751,8 @@ export async function syncIndex(args) {
             selectedFiles: files.length,
         });
         const { missing, reused } = await missingChunks(files, store);
-        const bytesFetched = await fetchMissing(baseUrl, missing, fetchBytes, store, totalFetchLimit(args), (fetchedChunks, totalChunks, fetchedBytes) => report(args, {
-            phase: "chunks",
-            fetchedChunks,
-            totalChunks,
-            bytesFetched: fetchedBytes,
-        }), args.sleep ?? realSleep);
-        await verifyReassembly(files, store);
+        const bytesFetched = await fetchMissing(baseUrl, missing, fetchBytes, store, totalFetchLimit(args), new ChunkProgress(missing, (progress) => report(args, progress)), args.sleep ?? realSleep);
+        await verifyReassembly(files, store, args);
         await store.promote(pointer);
         const result = {
             version: pointer.version,
@@ -647,6 +786,6 @@ function fileEntry(manifest, path) {
     return entry;
 }
 export async function materializeFile(store, manifest, path) {
-    return reassemble(fileEntry(manifest, path), store);
+    return reassemble(fileEntry(manifest, path), chunkReader(store));
 }
 //# sourceMappingURL=sync.js.map

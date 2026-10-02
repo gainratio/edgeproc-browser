@@ -1,0 +1,102 @@
+diff --git a/src/vector/sqlite/assets/sqlite3-opfs-async-proxy.js b/src/vector/sqlite/assets/sqlite3-opfs-async-proxy.js
+index e09bbbd..3714273 100644
+--- a/src/vector/sqlite/assets/sqlite3-opfs-async-proxy.js
++++ b/src/vector/sqlite/assets/sqlite3-opfs-async-proxy.js
+@@ -52,7 +52,10 @@
+ 
+ "use strict";
+ const urlParams = new URL(globalThis.location.href).searchParams;
+-const vfsName = urlParams.get('vfs');
++/* edgeproc patch (see README.md "Local patches"): when this script is spawned
++   from a Blob URL there is no query string, so the VFS name arrives as the
++   Worker's name instead. */
++const vfsName = urlParams.get('vfs') || globalThis.name;
+ if( !vfsName ){
+   throw new Error("Expecting vfs=opfs|opfs-wl URL argument for this worker");
+ }
+@@ -62,8 +65,15 @@ if( !vfsName ){
+    VFS or both the "opfs" and "opfs-wl" VFSes.
+ */
+ const workerId = (Math.random() * 10000000) | 0;
+-const isWebLocker = 'opfs-wl'===urlParams.get('vfs');
++const isWebLocker = 'opfs-wl'===vfsName;
+ const wPost = (type,...args)=>postMessage({type, payload:args});
++/* edgeproc patch (see README.md "Local patches"): tell the installer this
++   script is running before anything slow happens. Its zombie timer exists
++   for a Worker whose load fails without resolving or rejecting; once this
++   message arrives that cannot be the case, so a slow OPFS root (a busy
++   low-end device, or OPFS contended by other work) is waited on rather than
++   mistaken for a dead Worker. A refused root is reported below. */
++wPost('opfs-async-alive');
+ const installAsyncProxy = function(){
+   const toss = function(...args){throw new Error(args.join(' '))};
+   if(globalThis.window === globalThis){
+@@ -1081,7 +1091,13 @@ const initS11n = function(){
+       }
+     };
+     wPost('opfs-async-loaded');
+-  }).catch((e)=>error("error initializing OPFS asyncer:",e));
++  }).catch((e)=>{
++    error("error initializing OPFS asyncer:",e);
++    /* edgeproc patch (see README.md "Local patches"): a refused root used to
++       be reported only by the installer's zombie timer, 4 s later and with
++       no reason. Name it, promptly. */
++    wPost('opfs-unavailable', "OPFS root directory refused:", String(e));
++  });
+ }/*installAsyncProxy()*/;
+ if(globalThis.window === globalThis){
+   wPost('opfs-unavailable',
+diff --git a/src/vector/sqlite/assets/sqlite3.mjs b/src/vector/sqlite/assets/sqlite3.mjs
+index e722c77..717b7ab 100644
+--- a/src/vector/sqlite/assets/sqlite3.mjs
++++ b/src/vector/sqlite/assets/sqlite3.mjs
+@@ -18411,7 +18411,11 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
+         );
+       }
+     }
+-    options.proxyUri ??= opfsUtil.proxyUri;
++    /* edgeproc patch 1/3 (see README.md "Local patches"): an embedding Worker
++       may hand the async proxy over through sqlite3ApiConfig.opfsProxyUri,
++       typically a same-origin Blob URL of the inline copy, so installing the
++       VFS needs no network fetch. */
++    options.proxyUri ??= sqlite3.config.opfsProxyUri ?? opfsUtil.proxyUri;
+     if('function' === typeof options.proxyUri){
+       options.proxyUri = options.proxyUri();
+     }
+@@ -19186,6 +19190,20 @@ const initS11n = function(){
+         const options = opfsUtil.options;
+         const W = opfsVfs.worker =
+               (()=>{
++                /* edgeproc patch 2/3 (see README.md "Local patches"): spawn
++                   the proxy from the configured URI when one was given. The
++                   VFS name travels as the Worker's name because a Blob URL
++                   carries no query string. If the browser refuses that Worker
++                   (e.g. a CSP without blob:), fall through to upstream's
++                   networked formulation. */
++                if( sqlite3.config.opfsProxyUri ){
++                  try{
++                    return new Worker(options.proxyUri, {name: vfsName});
++                  }catch(e){
++                    sqlite3.config.warn(vfsName, "falling back to the networked",
++                                        "OPFS async proxy:", e);
++                  }
++                }
+                 /* _Sigh_... */
+                 /* Discussion explaining this formulation:
+                    https://github.com/sqlite/sqlite-wasm/pull/159 */
+@@ -19289,6 +19307,15 @@ const initS11n = function(){
+                  nothing more for us to do here. */
+               promiseReject(new Error(data.payload.join(' ')));
+               break;
++            case 'opfs-async-alive':
++              /* edgeproc patch 3/3 (see README.md "Local patches"): the
++                 proxy script is running, so the silently-failed Worker
++                 load the zombie timer guards against cannot happen any
++                 more. From here a slow OPFS root is waited on, and a
++                 refused one arrives as 'opfs-unavailable'. */
++              clearTimeout(zombieTimer);
++              zombieTimer = null;
++              break;
+             case 'opfs-async-loaded':
+               /* Arrives as soon as the asyc proxy finishes loading.
+                  Pass our config and shared state on to the async

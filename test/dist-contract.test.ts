@@ -74,13 +74,22 @@ describe("published artefact contract", () => {
 		expect(readFileSync(worker, "utf8")).toContain(
 			'import sqlite3InitModule from "./assets/sqlite3.mjs"',
 		);
+		// Both SQLite Workers hand the loader the inline OPFS async proxy, so
+		// installing the OPFS VFS never waits on a network fetch.
+		for (const entry of [worker, join(DIST, "sqlite", "worker.js")]) {
+			expect(readFileSync(entry, "utf8")).toContain(
+				"configureInlineOpfsProxy()",
+			);
+		}
+		expect(existsSync(join(assets, "opfsAsyncProxySource.js"))).toBe(true);
 
+		// Upstream 3.53.4 plus the local patch set documented in assets/README.md.
 		const expected = [
 			{
 				file: "sqlite3.mjs",
-				bytes: 809_712,
+				bytes: 811_287,
 				sha256:
-					"b96e0c4faa11f7220e4916788208302944bd995ba79d01c9f2ba726280b0fbc3",
+					"7111103823ce7e51c165724bee0bf66e8048fb7fb9bfbce69c7f2ee664e4a5fa",
 			},
 			{
 				file: "sqlite3.wasm",
@@ -90,9 +99,9 @@ describe("published artefact contract", () => {
 			},
 			{
 				file: "sqlite3-opfs-async-proxy.js",
-				bytes: 41_758,
+				bytes: 42_696,
 				sha256:
-					"0afe66f23424456c0eb1de5f599075fd676d869044a017a1058888007e2dbf92",
+					"e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7",
 			},
 		] as const;
 		for (const artifact of expected) {

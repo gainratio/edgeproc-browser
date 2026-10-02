@@ -25,6 +25,10 @@ export declare class OpfsCacheStore implements CacheStore {
     private withMutationLock;
     private writeFile;
     private removeExcept;
+    /** Read-only snapshot read (`getFile`). Unlike a sync access handle it takes
+     * no exclusive lock, and Chromium does not serialise it, so warm-boot chunk
+     * reads overlap. Trust is unchanged: callers verify every byte returned. */
+    private readSnapshot;
     private readFile;
 }
 //# sourceMappingURL=opfsStore.d.ts.map

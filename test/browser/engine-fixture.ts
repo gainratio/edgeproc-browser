@@ -8,7 +8,7 @@ import {
 	EngineClient,
 	EngineOperationError,
 	KEYRING_SCHEMA,
-} from "@edgeproc/browser";
+} from "@gainratio/browser";
 
 export interface EngineKeyringProof {
 	readonly legacyVersion: string;

@@ -14,7 +14,14 @@ export class ResponseTooLargeError extends IntegrityError {
         this.name = "ResponseTooLargeError";
     }
 }
-export const FETCH_TIMEOUT_MS = 15_000;
+/**
+ * How long a request may go with NO bytes arriving before it is declared
+ * stalled and aborted. This is a stall window, not a wall clock: a transfer
+ * that keeps delivering bytes is never cut off, however slow the link. Sized
+ * for bad mobile links (radio gaps, cell handovers), where a 15 s wall clock
+ * turned a 64 KB chunk that legitimately takes 40 s into a retry storm.
+ */
+export const FETCH_STALL_TIMEOUT_MS = 30_000;
 export const DEFAULT_MAX_FETCH_BYTES = 2 * 1024 * 1024;
 function requestInit(signal, options) {
     return options?.cache === undefined
@@ -28,19 +35,30 @@ function responseLimit(options) {
     }
     return limit;
 }
-function timedOut(url) {
-    return new NetworkError(`fetch ${url} failed: timed out after ${FETCH_TIMEOUT_MS}ms`);
+function stalled(url) {
+    return new NetworkError(`fetch ${url} failed: stalled: no bytes for ${FETCH_STALL_TIMEOUT_MS}ms`);
 }
-async function raceTimeout(operation, url, controller) {
+/**
+ * Run `operation` under a stall watchdog. The watchdog is armed at the start
+ * and re-armed on every `touch`; it fires only after FETCH_STALL_TIMEOUT_MS
+ * of silence, aborting the request so no socket outlives the rejection.
+ */
+async function raceStall(operation, url, controller) {
     let timer;
-    const timeout = new Promise((_resolve, reject) => {
+    let fail = () => undefined;
+    const stall = new Promise((_resolve, reject) => {
+        fail = reject;
+    });
+    const touch = () => {
+        clearTimeout(timer);
         timer = setTimeout(() => {
             controller.abort();
-            reject(timedOut(url));
-        }, FETCH_TIMEOUT_MS);
-    });
+            fail(stalled(url));
+        }, FETCH_STALL_TIMEOUT_MS);
+    };
+    touch();
     try {
-        return await Promise.race([operation, timeout]);
+        return await Promise.race([operation(touch), stall]);
     }
     finally {
         clearTimeout(timer);
@@ -62,7 +80,16 @@ function join(parts, total) {
     }
     return output;
 }
-async function readCapped(response, limit) {
+/** Progress sink for one response body: every read re-arms the stall window
+ * and is reported to the caller as (cumulative received, declared total). */
+function progressSink(response, touch, options) {
+    const declared = contentLength(response);
+    return (received) => {
+        touch();
+        options?.onBytes?.(received, declared);
+    };
+}
+async function readCapped(response, limit, onRead) {
     const declared = contentLength(response);
     if (declared !== null && declared > limit) {
         throw new ResponseTooLargeError(`response Content-Length ${declared} exceeds ${limit}-byte cap`);
@@ -72,6 +99,7 @@ async function readCapped(response, limit) {
         if (bytes.byteLength > limit) {
             throw new ResponseTooLargeError(`response body exceeds ${limit}-byte cap`);
         }
+        onRead(bytes.byteLength);
         return bytes;
     }
     const reader = response.body.getReader();
@@ -87,10 +115,11 @@ async function readCapped(response, limit) {
             throw new ResponseTooLargeError(`response body exceeds ${limit}-byte cap`);
         }
         parts.push(value);
+        onRead(total);
     }
     return join(parts, total);
 }
-async function fetchAndRead(url, controller, options) {
+async function fetchAndRead(url, controller, touch, options) {
     let response;
     try {
         response = await fetch(url, requestInit(controller.signal, options));
@@ -100,13 +129,15 @@ async function fetchAndRead(url, controller, options) {
             cause,
         });
     }
+    // Headers arriving is progress; the body read re-arms from here on.
+    touch();
     if (!response.ok) {
         throw new NetworkError(`fetch ${url} failed: ${response.status} ${response.statusText}`);
     }
-    return readCapped(response, responseLimit(options));
+    return readCapped(response, responseLimit(options), progressSink(response, touch, options));
 }
 export const fetchBytes = (url, options) => {
     const controller = new AbortController();
-    return raceTimeout(fetchAndRead(url, controller, options), url, controller);
+    return raceStall((touch) => fetchAndRead(url, controller, touch, options), url, controller);
 };
 //# sourceMappingURL=fetchBytes.js.map

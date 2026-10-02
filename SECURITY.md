@@ -25,7 +25,7 @@ ships, the latest minor of the current major will be supported as well.
 
 ## Threat model
 
-`@edgeproc/browser` deliberately performs network and browser-storage I/O. Its
+`@gainratio/browser` deliberately performs network and browser-storage I/O. Its
 security boundary is a signed, monotonic pointer: the Worker fetches a pinned
 trust root (a public key or a keyring) without HTTP-cache reuse, verifies the
 pointer, content-addresses the

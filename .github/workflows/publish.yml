@@ -1,6 +1,6 @@
 # edgeproc-browser — .github/workflows/publish.yml
 #
-# npm release of `@edgeproc/browser` via OIDC Trusted Publishing. Pushing a `v*` tag is the
+# npm release of `@gainratio/browser` via OIDC Trusted Publishing. Pushing a `v*` tag is the
 # whole trigger. There is NO npm write token in this repository, and there must never be one:
 # the credential is a short-lived OIDC token GitHub mints for this job, which npm verifies
 # against a trusted publisher registered as {hseshadr, edgeproc-browser, publish.yml}.
@@ -12,27 +12,17 @@
 # a name that has never been published has nothing to attach it to. This is a fact about npm,
 # not a gap in this workflow, and no amount of retrying a tag push will get around it.
 #
-# So `@edgeproc/browser@0.1.0` has to go out ONCE by hand, from an authenticated session
-# (`npm publish --access public`). Only after the package exists can the trusted publisher be
-# registered — and from then on every release is a `v*` tag push through here, token-free.
-#
-# The bootstrap, in order:
-#   1. Make this repository PUBLIC. `provenance: true` below signs each release into a
-#      PUBLIC transparency log, which npm refuses to do for a private source repo. Flip it
-#      before tagging or the publish fails.
-#   2. `npm login`, then publish 0.1.0 by hand. (One time, for this package name only.)
-#   3. Register the trusted publisher. As of npm 11.17 this is a CLI, not browser-only:
-#        npm trust github @edgeproc/browser --file publish.yml \
+# So the name is claimed ONCE by hand with a throwaway placeholder, `0.0.0-bootstrap.0` under
+# the `bootstrap` dist-tag (ops/npm_gainratio_bootstrap.py does this for every @gainratio
+# package), and the trusted publisher is registered against that:
+#        npm trust github @gainratio/browser --file publish.yml \
 #          --repo hseshadr/edgeproc-browser --allow-publish
-#      It prompts for an OTP via a URL. `npm access` does NOT cover trusted publishers.
-#   4. Every release after that: bump the version, land it on `main`, push `vX.Y.Z`.
-#   5. Branch protection LAST, and only while the repo has 0 open PRs — protecting with PRs
-#      open leaves each one BLOCKED with no way to self-approve.
+# It prompts for a security-key tap via a URL. `npm access` does NOT cover trusted publishers.
+# Every real version, starting with 0.1.1, is then a `v*` tag push through here, with
+# provenance. (0.1.0, under the old @edgeproc scope, was published by hand and has none.)
 #
-# Consequence worth stating plainly: if 0.1.0 is bootstrapped manually, it will permanently
-# carry NO provenance, because a published version is immutable. The first release through
-# this rail should then be a PATCH (0.1.1) whose only change IS the provenance — that is what
-# `errors` did, and `^0.1.0` consumers would pick it up with no code change.
+# Branch protection LAST, and only while the repo has 0 open PRs: protecting with PRs open
+# leaves each one BLOCKED with no way to self-approve.
 #
 # Two more npm truths this caller encodes (see ts-publish.yml in hseshadr/ci):
 #   * Re-tagging v0.1.0 just 403s. The next release must carry a HIGHER version.

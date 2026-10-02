@@ -1,6 +1,6 @@
 # Architecture
 
-How `@edgeproc/browser` gets signed data into a browser tab, what it checks, what it
+How `@gainratio/browser` gets signed data into a browser tab, what it checks, what it
 refuses, and what the tests prove. For the API itself, see [API.md](API.md). For setting up
 the repo, see [GETTING_STARTED.md](GETTING_STARTED.md).
 
@@ -82,7 +82,7 @@ Sync, read and clear share one cross-tab lock, so two tabs never write the same 
 
 Three small runtime dependencies, each doing work that should not be hand-rolled:
 `@noble/ed25519` (signatures), `@hpcc-js/wasm-zstd` (decompression) and `idb-keyval`
-(IndexedDB). The opt-in `@edgeproc/browser/sqlite` and `@edgeproc/browser/vector/sqlite`
+(IndexedDB). The opt-in `@gainratio/browser/sqlite` and `@gainratio/browser/vector/sqlite`
 exports share one self-hosted SQLite 3.53.4 WASM build with the Apache-2.0 sqlite-vector
 1.1.2 extension statically linked. See [dependencies.md](dependencies.md) and
 [`src/vector/sqlite/assets/README.md`](../src/vector/sqlite/assets/README.md) for pins,
@@ -101,8 +101,9 @@ hashes and licenses.
   rights), an attacker who controls the public-key URL itself (serve it over HTTPS, separately
   from the bundle), a stolen signing key before you revoke it, and what your app does with the
   data after it is checked.
-- **Checking a release:** 0.1.0 on npm was a first bootstrap publish and carries no npm
-  provenance (`npm view @edgeproc/browser@0.1.0 dist.attestations` is empty). Later releases
+- **Checking a release:** 0.1.0, published under the old name `@edgeproc/browser`, was a
+  hand-published bootstrap and carries no npm provenance
+  (`npm view @edgeproc/browser@0.1.0 dist.attestations` is empty). `@gainratio/browser` releases
   publish from CI with provenance, which `npm audit signatures` checks. For an exact-Git-commit
   install, the build refuses if a clean rebuild of `dist/` differs from the committed output
   (`pnpm verify:dist`).
@@ -143,6 +144,8 @@ failures are verdicts and are never retried.
 | A tampered chunk or wrong key is refused | `pnpm demo` step 4 (one bit flipped in the key gives `SignatureError`); the unit suite under `src/` |
 | A second sync over a filled store downloads nothing | `pnpm demo` step 3 (`chunks fetched 0 (reused 783)`) |
 | The built Worker enforces raw-key, keyring, and revoked-signer trust roots | `pnpm test:browser`, `test/browser/engine-keyring.spec.ts` in real Chromium |
+| A cached chunk rewritten at rest by same-origin code is refused, never served, and re-fetched | `pnpm test:browser`, `test/browser/warm-sync.spec.ts` in real Chromium OPFS |
+| Warm boot re-verifies every cached chunk with bounded concurrency | `src/engine/syncConcurrency.test.ts`; timings from `test/browser/warm-sync.spec.ts` |
 | SQLite state and vectors persist in OPFS across restarts with zero external requests | `pnpm test:browser`, `test/browser/sqlite-vector.spec.ts` |
 | The published `dist/` matches the source | `pnpm verify:dist` plus `test/dist-contract.test.ts`, both in `pnpm gate` |
 | A Vite app emits exactly one engine Worker | `test/vite-consumer.test.ts` |
