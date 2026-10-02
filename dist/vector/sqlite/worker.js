@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import { SqliteDatabaseVectorIndex, wrapSqliteDatabase, } from "./database.js";
+import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
 const POOL_ACQUIRE_MAX_DELAY_MS = 800;
@@ -65,6 +66,7 @@ async function dispatch(request) {
     }
 }
 async function openIndex(options) {
+    configureInlineOpfsProxy();
     const sqlite = await sqlite3InitModule({
         print: () => undefined,
         printErr: (...args) => console.error(...args),

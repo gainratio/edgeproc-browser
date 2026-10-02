@@ -1,0 +1,1 @@
+{"version":3,"file":"opfsAsyncProxy.d.ts","sourceRoot":"","sources":["../../../src/vector/sqlite/opfsAsyncProxy.ts"],"names":[],"mappings":"AAEA,kFAAkF;AAClF,MAAM,WAAW,qBAAqB;IACrC,gBAAgB,CAAC,EAAE,MAAM,CAAC,MAAM,EAAE,OAAO,CAAC,CAAC;CAC3C;AAID,kFAAkF;AAClF,wBAAgB,uBAAuB,IAAI,MAAM,CAKhD;AAED;;;;;;GAMG;AACH,wBAAgB,wBAAwB,CACvC,KAAK,GAAE,qBAA2D,GAChE,IAAI,CAKN"}
