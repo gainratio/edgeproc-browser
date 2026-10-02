@@ -36,10 +36,10 @@ export {
 	type EngineErrorDetail,
 	EngineOperationError,
 } from "./engine/engineError.js";
-// --- the network edge: size-capped, timeout-bounded byte fetch ---
+// --- the network edge: size-capped, stall-bounded byte fetch ---
 export {
 	DEFAULT_MAX_FETCH_BYTES,
-	FETCH_TIMEOUT_MS,
+	FETCH_STALL_TIMEOUT_MS,
 	fetchBytes,
 	NetworkError,
 	ResponseTooLargeError,

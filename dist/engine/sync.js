@@ -25,6 +25,9 @@ const MAX_TOTAL_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
 const MAX_CONCURRENT_CHUNK_FETCHES = 8;
 const CHUNK_FETCH_ATTEMPTS = 6;
 const CHUNK_RETRY_BASE_DELAY_MS = 250;
+/** Byte-level progress is rate-limited to this interval; chunk completions
+ * and retries are always reported. */
+const PROGRESS_INTERVAL_MS = 250;
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export const MAX_CHUNK_RETRY_BUDGET_MS = CHUNK_RETRY_BASE_DELAY_MS * (2 ** (CHUNK_FETCH_ATTEMPTS - 1) - 1) +
     CHUNK_RETRY_BASE_DELAY_MS * (CHUNK_FETCH_ATTEMPTS - 1);
@@ -392,11 +395,13 @@ function totalFetchLimit(args) {
     }
     return Math.min(requested, MAX_TOTAL_FETCH_BYTES);
 }
-async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep) {
+async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep, transfer) {
     let lastError;
     for (let attempt = 0; attempt < CHUNK_FETCH_ATTEMPTS; attempt += 1) {
         try {
-            return await fetchCapped(fetchBytes, url, maxBytes);
+            return await fetchCapped(fetchBytes, url, maxBytes, {
+                onBytes: transfer.onBytes,
+            });
         }
         catch (error) {
             if (!(error instanceof NetworkError))
@@ -404,18 +409,85 @@ async function fetchChunkWithRetry(url, fetchBytes, maxBytes, sleep) {
             lastError = error;
             if (attempt + 1 < CHUNK_FETCH_ATTEMPTS) {
                 const backoff = CHUNK_RETRY_BASE_DELAY_MS * 2 ** attempt;
-                await sleep(backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS);
+                const delay = backoff + Math.random() * CHUNK_RETRY_BASE_DELAY_MS;
+                transfer.onRetry(attempt + 1, delay, error);
+                await sleep(delay);
             }
         }
     }
     throw lastError ?? new NetworkError(`chunk ${url} is unreachable`);
 }
-async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, onChunk, sleep) {
+/**
+ * Progress accounting for one fetch pass, in uncompressed bytes (the only
+ * size the signed manifest states): completed chunks count in full, in-flight
+ * chunks count by the fraction of their declared wire size received so far.
+ */
+class ChunkProgress {
+    #total;
+    #count;
+    #report;
+    #inFlight = new Map();
+    #done = 0;
+    #completed = 0;
+    #wireBytes = 0;
+    #lastReport = Number.NEGATIVE_INFINITY;
+    constructor(missing, report) {
+        this.#total = missing.reduce((sum, ref) => sum + ref.size, 0);
+        this.#count = missing.length;
+        this.#report = report;
+    }
+    transfer(ref) {
+        return {
+            onBytes: (received, declared) => {
+                const fraction = declared === null || declared <= 0
+                    ? Math.min(ref.size, received)
+                    : ref.size * Math.min(1, received / declared);
+                this.#inFlight.set(ref.hash, fraction);
+                this.#emit(false);
+            },
+            onRetry: (attempt, delayMs, error) => {
+                this.#inFlight.delete(ref.hash);
+                this.#report({
+                    phase: "chunkRetry",
+                    hash: ref.hash,
+                    attempt,
+                    maxAttempts: CHUNK_FETCH_ATTEMPTS,
+                    delayMs,
+                    reason: error.message,
+                });
+            },
+        };
+    }
+    completed(ref, wireBytes) {
+        this.#inFlight.delete(ref.hash);
+        this.#done += ref.size;
+        this.#completed += 1;
+        this.#wireBytes += wireBytes;
+        this.#emit(true);
+    }
+    #emit(force) {
+        const now = Date.now();
+        if (!force && now - this.#lastReport < PROGRESS_INTERVAL_MS)
+            return;
+        this.#lastReport = now;
+        let partial = 0;
+        for (const fraction of this.#inFlight.values())
+            partial += fraction;
+        this.#report({
+            phase: "chunks",
+            fetchedChunks: this.#completed,
+            totalChunks: this.#count,
+            bytesFetched: this.#wireBytes,
+            bytesTotal: this.#total,
+            bytesDone: this.#done + Math.floor(partial),
+        });
+    }
+}
+async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, progress, sleep) {
     let next = 0;
     let total = 0;
     let remaining = maxTotalBytes;
     let inFlight = 0;
-    let completed = 0;
     const budgetWaiters = [];
     let failure;
     const reserve = async () => {
@@ -450,14 +522,13 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
             }
             let consumed = 0;
             try {
-                const compressed = await fetchChunkWithRetry(`${baseUrl}/chunk/${ref.hash}`, fetchBytes, reservation, sleep);
+                const compressed = await fetchChunkWithRetry(`${baseUrl}/chunk/${ref.hash}`, fetchBytes, reservation, sleep, progress.transfer(ref));
                 if (failure !== undefined)
                     return;
                 consumed = compressed.byteLength;
                 total += consumed;
                 await store.putChunkCompressed(ref.hash, compressed, ref.size);
-                completed += 1;
-                onChunk(completed, missing.length, total);
+                progress.completed(ref, consumed);
             }
             catch (error) {
                 failure ??=
@@ -565,9 +636,14 @@ async function reassemble(entry, read) {
     }
     return blob;
 }
-async function verifyReassembly(files, store) {
+async function verifyReassembly(files, store, args) {
     const read = chunkReader(store);
-    await mapBounded(files, MAX_CONCURRENT_CHUNK_READS, (entry) => reassemble(entry, read));
+    let verifiedFiles = 0;
+    await mapBounded(files, MAX_CONCURRENT_CHUNK_READS, async (entry) => {
+        await reassemble(entry, read);
+        verifiedFiles += 1;
+        report(args, { phase: "verify", verifiedFiles, totalFiles: files.length });
+    });
 }
 function distinctChunks(files) {
     return new Set(files.flatMap((entry) => entry.chunks.map((ref) => ref.hash)))
@@ -597,7 +673,7 @@ async function syncFromCache(store, args, authenticate) {
         totalFiles: manifest.files.length,
         selectedFiles: files.length,
     });
-    await verifyReassembly(files, store);
+    await verifyReassembly(files, store, args);
     return {
         version: active.version,
         manifestHash: active.manifest_hash,
@@ -675,13 +751,8 @@ export async function syncIndex(args) {
             selectedFiles: files.length,
         });
         const { missing, reused } = await missingChunks(files, store);
-        const bytesFetched = await fetchMissing(baseUrl, missing, fetchBytes, store, totalFetchLimit(args), (fetchedChunks, totalChunks, fetchedBytes) => report(args, {
-            phase: "chunks",
-            fetchedChunks,
-            totalChunks,
-            bytesFetched: fetchedBytes,
-        }), args.sleep ?? realSleep);
-        await verifyReassembly(files, store);
+        const bytesFetched = await fetchMissing(baseUrl, missing, fetchBytes, store, totalFetchLimit(args), new ChunkProgress(missing, (progress) => report(args, progress)), args.sleep ?? realSleep);
+        await verifyReassembly(files, store, args);
         await store.promote(pointer);
         const result = {
             version: pointer.version,

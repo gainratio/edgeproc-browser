@@ -379,6 +379,8 @@ describe("sync progress is an idle-timeout heartbeat", () => {
 				fetchedChunks: 1,
 				totalChunks: 2,
 				bytesFetched: 5,
+				bytesTotal: 20,
+				bytesDone: 10,
 			},
 		});
 		await vi.advanceTimersByTimeAsync(40);
@@ -450,6 +452,8 @@ describe("sync progress is an idle-timeout heartbeat", () => {
 				fetchedChunks: 1,
 				totalChunks: 1,
 				bytesFetched: 5,
+				bytesTotal: 10,
+				bytesDone: 10,
 			},
 		});
 		await vi.advanceTimersByTimeAsync(11);
