@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Warm boot is about 2.4x faster, and still re-verifies every byte.** A reload
+  used to read, decompress and hash each cached chunk one at a time, then read
+  them all again when the app loaded the files. Profiling in real Chromium showed
+  the hashing was never the cost (about 25 ms of 430 ms for the 552-chunk
+  almamesh bundle): the cost was one exclusive OPFS sync access handle per chunk,
+  which Chromium creates one at a time. Chunk reads and presence probes now use
+  the lock-free `getFile()` snapshot, and sync reads up to 8 chunks at once
+  (`MAX_CONCURRENT_CHUNK_READS`). Every chunk is still decompressed and checked
+  against its content address, and every file against its signed hash, on every
+  boot. A cached chunk rewritten at rest is refused and re-fetched; a real-OPFS
+  test proves it. Local Chromium, almamesh bundle: warm sync 428 ms to 173 ms,
+  reading all 8 files 258 ms to 103 ms (medians).
+
 ### Added
 
 - **A portable SQLite application-state Lego.** The opt-in
