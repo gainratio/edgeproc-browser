@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A second tab no longer fails to open the SQLite state store.** SQLite's
+  `opfs-wl` VFS let two tabs hold a shared read lock at once, but Chromium
+  allows only one OPFS sync access handle per file. While one tab was busy, the
+  other logged `GetSyncHandleError ... NoModificationAllowedError` and got
+  `SQLITE_BUSY` (`database is locked`) on open or on a read. Every state-store
+  operation, including open and close, now runs inside the store's exclusive
+  Web Lock, so tabs take turns. Reads in two tabs are now serialized rather
+  than concurrent. A Playwright test drives two real tabs against one store.
+
 ## [0.1.1] - 2026-10-01
 
 0.1.0 was published by hand from an earlier `main` and has no entry of its own;

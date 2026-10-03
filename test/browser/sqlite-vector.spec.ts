@@ -80,3 +80,53 @@ test("exports, validates, atomically imports, and reopens application state", as
 	expect(result.resetCount).toBe(3);
 	expect(externalRequests).toEqual([]);
 });
+
+// Two tabs of the same app share one OPFS database file. SQLite's opfs-wl VFS
+// lets both hold a *shared* Web Lock at once, but Chromium grants only one
+// OPFS sync access handle per file, so the second tab's createSyncAccessHandle
+// fails, retries, and logs `GetSyncHandleError ... NoModificationAllowedError`
+// to the console before surfacing SQLITE_BUSY. Both tabs must instead take
+// turns: every operation succeeds and the console stays clean.
+test("two tabs share one durable state store without sync-handle contention", async ({
+	context,
+}) => {
+	// Whole-file reads of a ~40 MB store in two tabs: give slow CI runners room.
+	test.setTimeout(90_000);
+	const consoleErrors: string[] = [];
+	const name = `tabs-${crypto.randomUUID()}`;
+	const rounds = 5;
+	const tabs = await Promise.all([context.newPage(), context.newPage()]);
+	// context-level console also carries the Workers' messages, which is
+	// where SQLite's OPFS VFS reports a failed sync-handle acquisition.
+	context.on("console", (message) => {
+		if (message.type() === "error" || message.type() === "warning") {
+			consoleErrors.push(message.text());
+		}
+	});
+	for (const tab of tabs) {
+		tab.on("pageerror", (error) => consoleErrors.push(error.message));
+		await tab.goto("/test/browser/fixture.html");
+		await expect(tab.locator("#ready")).toHaveText("ready");
+	}
+
+	const seeded = await tabs[0].evaluate(
+		(name) => window.seedSqliteState(name, 600),
+		name,
+	);
+	const results = await Promise.all(
+		tabs.map((tab, index) =>
+			tab.evaluate(
+				({ name, tab, rounds }) =>
+					window.runSqliteStateTabTraffic(name, tab, rounds),
+				{ name, tab: `tab${index}`, rounds },
+			),
+		),
+	);
+
+	expect(seeded).toBe(600);
+	expect(results).toEqual([
+		{ failures: [], ownRows: rounds },
+		{ failures: [], ownRows: rounds },
+	]);
+	expect(consoleErrors).toEqual([]);
+});

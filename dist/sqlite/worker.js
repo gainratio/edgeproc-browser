@@ -4,7 +4,7 @@ import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { SqliteStateStoreDatabase, } from "./database.js";
 import { createSqliteStateRuntime } from "./runtime.js";
 let store;
-let mutationLockName;
+let databaseLockName;
 let queue = Promise.resolve();
 self.onmessage = (event) => {
     const request = event.data;
@@ -30,23 +30,34 @@ async function dispatch(request) {
     if (request.operation === "initialize") {
         if (store !== undefined)
             throw new Error("SQLite state worker is already initialized");
-        store = await openStore(request.options);
-        mutationLockName =
-            (request.options.persistence ?? "opfs") === "opfs"
-                ? `edgeproc-state-transaction-${await stableIdentity(request.options.name)}`
-                : undefined;
-        return store.runtimeInfo();
+        const lockName = await databaseLockNameFor(request.options);
+        const opened = await withDatabaseLock(lockName, async () => {
+            const created = await openStore(request.options);
+            return { created, info: await created.runtimeInfo() };
+        });
+        store = opened.created;
+        databaseLockName = lockName;
+        return opened.info;
     }
     const current = requireStore();
+    if (request.operation === "dispose") {
+        await withDatabaseLock(databaseLockName, () => current.dispose());
+        store = undefined;
+        databaseLockName = undefined;
+        return undefined;
+    }
+    return withDatabaseLock(databaseLockName, () => run(current, request));
+}
+function run(current, request) {
     switch (request.operation) {
         case "get":
             return current.get(request.namespace, request.key);
         case "list":
             return current.list(request.options);
         case "batch":
-            return withMutationLock(() => current.batch(request.mutations, request.options));
+            return current.batch(request.mutations, request.options);
         case "migrate":
-            return withMutationLock(() => current.migrate(request.migration));
+            return current.migrate(request.migration);
         case "integrity-check":
             return current.checkIntegrity();
         case "export":
@@ -56,17 +67,34 @@ async function dispatch(request) {
         case "discard-import":
             return current.discardImport(request.stageId);
         case "commit-import":
-            return withMutationLock(() => current.commitImport(request.stageId, request.options));
+            return current.commitImport(request.stageId, request.options);
         case "reset":
-            return withMutationLock(() => current.reset(request.options));
+            return current.reset(request.options);
         case "runtime-info":
             return current.runtimeInfo();
-        case "dispose":
-            await current.dispose();
-            store = undefined;
-            mutationLockName = undefined;
-            return undefined;
     }
+}
+/**
+ * The per-database Web Lock every OPFS operation runs under, or undefined for
+ * an in-memory store (nothing shared, nothing to serialize).
+ *
+ * Why every operation, reads included: SQLite's opfs-wl VFS maps its SHARED
+ * lock to a *shared* Web Lock, so two tabs may both hold it. But each SQLite
+ * lock also needs the file's OPFS sync access handle, and Chromium grants only
+ * one per file. The second tab's createSyncAccessHandle() then fails with
+ * NoModificationAllowedError, retries five times, logs
+ * `GetSyncHandleError` to the console, and returns SQLITE_BUSY — the store
+ * fails to open, or a read fails. Taking this exclusive lock around the whole
+ * operation means only one context at a time ever asks for the handle, so the
+ * other tab queues (FIFO, managed by the browser) instead of failing.
+ *
+ * The name predates this change, when only mutations took it; keeping it means
+ * a tab still running an older build excludes this one for writes.
+ */
+async function databaseLockNameFor(options) {
+    if ((options.persistence ?? "opfs") !== "opfs")
+        return undefined;
+    return `edgeproc-state-transaction-${await stableIdentity(options.name)}`;
 }
 async function openStore(options) {
     configureInlineOpfsProxy();
@@ -125,13 +153,13 @@ function requireStore() {
         throw new Error("SQLite state worker is not initialized");
     return store;
 }
-async function withMutationLock(action) {
-    if (mutationLockName === undefined)
+async function withDatabaseLock(lockName, action) {
+    if (lockName === undefined)
         return action();
     if (navigator.locks === undefined) {
-        throw new Error("could not mutate the local state database — browser Web Locks support is unavailable");
+        throw new Error("could not use the local state database — browser Web Locks support is unavailable");
     }
-    return navigator.locks.request(mutationLockName, { mode: "exclusive" }, action);
+    return navigator.locks.request(lockName, { mode: "exclusive" }, action);
 }
 async function stableIdentity(name) {
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(name)));
