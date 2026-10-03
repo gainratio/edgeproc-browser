@@ -49,8 +49,98 @@ declare global {
 		runSqliteStateProof(name: string): Promise<StateBrowserProof>;
 		runSqliteOpfsOpenProof(name: string): Promise<OpfsOpenProof>;
 		runOpfsInstallProbe(probe: OpfsInstallProbe): Promise<OpfsInstallResult>;
+		seedSqliteState(name: string, rows: number): Promise<number>;
+		runSqliteStateTabTraffic(
+			name: string,
+			tab: string,
+			rounds: number,
+		): Promise<TabTrafficProof>;
 	}
 }
+
+export interface TabTrafficProof {
+	readonly failures: ReadonlyArray<string>;
+	readonly ownRows: number;
+}
+
+/** Grow the durable store so whole-file reads take a noticeable time. */
+window.seedSqliteState = async (name, rows): Promise<number> => {
+	const store = await createSqliteStateStore({
+		name,
+		initialSchemaVersion: 1,
+		persistence: "opfs",
+	});
+	const value = new Uint8Array(64 * 1024).fill(7);
+	for (let start = 0; start < rows; start += 100) {
+		const mutations = [];
+		for (let row = start; row < Math.min(rows, start + 100); row += 1) {
+			mutations.push({
+				type: "put" as const,
+				namespace: "seed",
+				key: `row-${row}`,
+				value,
+			});
+		}
+		await store.batch(mutations);
+	}
+	const count = (await store.runtimeInfo()).rowCount;
+	await store.dispose();
+	return count;
+};
+
+/**
+ * One tab's share of a two-tab workload: open the durable store, then
+ * interleave reads and writes against it. Run in two pages at once, this is
+ * the "same app open in two tabs" case: two Workers, two OPFS async proxies,
+ * one database file.
+ */
+window.runSqliteStateTabTraffic = async (
+	name,
+	tab,
+	rounds,
+): Promise<TabTrafficProof> => {
+	const failures: string[] = [];
+	const describe = (reason: unknown): string =>
+		reason instanceof Error
+			? `${reason.name}: ${reason.message}`
+			: String(reason);
+	let store: Awaited<ReturnType<typeof createSqliteStateStore>>;
+	try {
+		store = await createSqliteStateStore({
+			name,
+			initialSchemaVersion: 1,
+			persistence: "opfs",
+		});
+	} catch (error) {
+		return { failures: [`open: ${describe(error)}`], ownRows: 0 };
+	}
+	for (let round = 0; round < rounds; round += 1) {
+		// Pipeline a burst so this tab's Worker queue never idles: a busy
+		// neighbour is what keeps an OPFS sync access handle held.
+		const operations: Promise<unknown>[] = [
+			store.put("traffic", `${tab}-${round}`, new Uint8Array(64 * 1024)),
+			store.list({ namespace: "traffic", limit: 50 }),
+		];
+		for (let read = 0; read < 100; read += 1) {
+			operations.push(store.get("traffic", `${tab}-${round}`));
+		}
+		// A backup and an integrity check read the whole file under one
+		// shared lock, the longest a tab holds the file's sync access handle.
+		operations.push(store.exportBytes(), store.checkIntegrity());
+		for (const outcome of await Promise.allSettled(operations)) {
+			if (outcome.status === "rejected")
+				failures.push(describe(outcome.reason));
+		}
+	}
+	let ownRows = 0;
+	for (let round = 0; round < rounds; round += 1) {
+		if ((await store.get("traffic", `${tab}-${round}`)) !== undefined) {
+			ownRows += 1;
+		}
+	}
+	await store.dispose();
+	return { failures, ownRows };
+};
 
 /** Run sqlite3.mjs once in a fresh Worker with a doctored async proxy. */
 window.runOpfsInstallProbe = (probe): Promise<OpfsInstallResult> =>

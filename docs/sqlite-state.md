@@ -110,16 +110,29 @@ can safely open the same file. Rollback-journal transactions and a five-second
 busy timeout provide the database-level exclusion; the epoch CAS provides the
 application-level stale-write verdict.
 
-CAS mutations add a second, store-scoped Web Lock around the whole operation,
-including the epoch read. This is intentional. SQLite file locking alone can
-allow two connections to validate the same application epoch before their
-commits serialize. The outer lock makes epoch comparison and the following
-`BEGIN IMMEDIATE` transaction one cross-Worker critical section.
+Every operation (open, reads, writes, export, import, close) also runs inside
+one store-scoped, exclusive Web Lock. That is intentional, for two reasons:
 
-Two tabs can read concurrently. If tab A commits epoch 8, tab B's later batch
-with `expectedEpoch: 7` fails with `SqliteStateConflictError` before changing a
-row. The caller reloads and decides how to reconcile. A non-CAS write is still
-SQLite-atomic, but deliberately accepts last-committer-wins semantics.
+- **One OPFS sync access handle per file.** `opfs-wl` maps SQLite's SHARED lock
+  to a *shared* Web Lock, so two tabs can hold it together. But each of them
+  then needs the file's OPFS sync access handle, and Chromium grants only one
+  per file. The second tab's `createSyncAccessHandle()` fails with
+  `NoModificationAllowedError`; SQLite retries five times, logs
+  `GetSyncHandleError` to the console and returns `SQLITE_BUSY`, so opening the
+  store or a read fails. With the outer lock, only one context asks for the
+  handle at a time and the other tab waits its turn (Web Locks queue FIFO).
+- **CAS needs one critical section.** SQLite file locking alone can let two
+  connections validate the same application epoch before their commits
+  serialize. The outer lock makes the epoch comparison and the following
+  `BEGIN IMMEDIATE` transaction one cross-Worker critical section.
+
+Two tabs take turns rather than reading in parallel. Operations are short, so
+the wait is usually milliseconds; a long export or import in one tab delays the
+other tab's calls until it finishes, and nothing fails. If tab A commits epoch 8,
+tab B's later batch with `expectedEpoch: 7` fails with
+`SqliteStateConflictError` before changing a row. The caller reloads and
+decides how to reconcile. A non-CAS write is still SQLite-atomic, but
+deliberately accepts last-committer-wins semantics.
 
 The store fails explicitly if `opfs-wl` is unavailable; it never falls back to
 an OPFS mode that only appears multi-tab safe because each connection happens

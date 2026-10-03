@@ -246,7 +246,8 @@ There is no `exec()` or query-string escape hatch. `get`, bounded `list`, `put`,
 never touches live state until commit, and commit rechecks the epoch.
 
 Persistent state uses SQLite's official `opfs-wl` VFS, whose file locks are browser Web
-Locks, so several tabs and Workers can open the same store safely. `opfs-wl` needs a
+Locks, and every operation takes one exclusive per-store Web Lock, so several tabs and Workers
+can open the same store safely: they take turns instead of failing. `opfs-wl` needs a
 cross-origin-isolated page: serve `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`). Without it, opening fails
 rather than falling back to unsafe sharing. See [sqlite-state.md](sqlite-state.md) for
