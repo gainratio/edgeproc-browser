@@ -16,6 +16,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # hseshadr/ci retired its reusable-workflow catalog (7c75ff1); ci-v3.2.1 is
+    # the last release that ships secret-scan.yml and ts-publish.yml. Dependabot
+    # otherwise bumps these pins to the default-branch tip, where both files are
+    # deleted, and CI fails before any job starts. Move off them deliberately.
+    ignore:
+      - dependency-name: "hseshadr/ci*"
     groups:
       github-actions:
         patterns: ["*"]
