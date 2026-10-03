@@ -11,6 +11,7 @@ updates:
     groups:
       npm:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -25,3 +26,4 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
