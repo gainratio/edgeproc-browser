@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@hpcc-js/wasm-zstd':
         specifier: ^1.16.1
-        version: 1.16.1
+        version: 1.16.2
       '@noble/ed25519':
         specifier: ^3.2.0
         version: 3.2.0
@@ -183,8 +183,8 @@ packages:
       '@noble/hashes':
         optional: true
 
-  '@hpcc-js/wasm-zstd@1.16.1':
-    resolution: {integrity: sha512-mMAkjBmrtkThCRY2h9FazYEsDhn42z+6hQ2zPtIP3TEtwZKgIqUBrnH4r39ujK/MNP94MFEJmVm7h9wcpzMo3Q==}
+  '@hpcc-js/wasm-zstd@1.16.2':
+    resolution: {integrity: sha512-owm3y0AfdgVfft82RaF4aEPHdk1odK8V1RqryjAhYx3s1oaaHG0gBDC+PJ5P7sFEoayBHSWS5zuXLt9hmOgEvQ==}
 
   '@jridgewell/resolve-uri@3.1.2':
     resolution: {integrity: sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==}
@@ -952,7 +952,7 @@ snapshots:
 
   '@exodus/bytes@1.16.0': {}
 
-  '@hpcc-js/wasm-zstd@1.16.1': {}
+  '@hpcc-js/wasm-zstd@1.16.2': {}
 
   '@jridgewell/resolve-uri@3.1.2': {}
 
