@@ -15,8 +15,10 @@ jobs:
   # you cannot fix by reverting: once a credential lands in this public history
   # it is burned, and a revert only hides it from HEAD.
   #
-  # The brick checks out with fetch-depth: 0 and scans every commit, not just
-  # the diff. This repo ships no .gitleaks.toml; the default ruleset applies.
+  # gitleaks-action on its own scans only the commits the event introduced (a
+  # push already on main scans zero). `full-history: true` (ci-v3.3.0) adds an
+  # explicit pass over every commit. This repo ships no .gitleaks.toml; the
+  # default ruleset applies.
   gitleaks:
     name: Secret scan
     # The reusable workflow lists a PR's commits over the API, which needs
@@ -29,11 +31,13 @@ jobs:
     # code, and this job runs with this repo's token. The trailing comment names
     # the EXACT release so Dependabot bumps pin and comment together — a floating
     # `# ci-v3` would silently go wrong the moment upstream moves that tag.
-    # `ci-v3.2.1` is an ANNOTATED tag: refs/tags/ci-v3.2.1 is tag object
-    # edbd737de70ba1bc1b135353fe15e595d371e701, whose commit is the SHA below.
+    # `ci-v3.3.0` is an ANNOTATED tag: refs/tags/ci-v3.3.0 is tag object
+    # a98fa30de2d30255a7a756d6d0c93375e58bb126, whose commit is the SHA below.
     # Pinning is transitive and holds here: at this SHA the brick's own two
     # `uses:` refs (actions/checkout, gitleaks/gitleaks-action) are both SHAs.
-    uses: hseshadr/ci/.github/workflows/secret-scan.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
+    with:
+      full-history: true
 
   gate:
     runs-on: ubuntu-latest

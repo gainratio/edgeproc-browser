@@ -130,6 +130,24 @@ describe("secret scanning", () => {
 		expect(unpinned).toEqual([]);
 	});
 
+	it("pins ci-v3.3.0, the last release that ships the brick", () => {
+		// ci-v3.3.0 (8166345) keeps findings in the job log: no PR comment, no
+		// summary, no SARIF artifact. ci-v3.2.1 still uploaded them. Later ci
+		// commits delete the workflow, so newer is not available, only older.
+		expect(secretScanRefs()).toEqual([
+			`${SECRET_SCAN}@8166345c9355dde54c12fa95d0457c4ea97d3e64`,
+		]);
+	});
+
+	it("asks the brick for full history, not just the event range", () => {
+		// Without full-history the action scans only the commits a push or PR
+		// introduced, and a push already on main scans zero commits and passes.
+		const ci = readWorkflows().find(({ file }) => file === "ci.yml");
+		expect(ci?.yaml).toMatch(
+			/secret-scan\.yml@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+full-history: true\n/,
+		);
+	});
+
 	it("runs the scan on pull requests, where a merge can still be stopped", () => {
 		const ci = readWorkflows().find(({ file }) => file === "ci.yml");
 		expect(ci?.yaml).toMatch(/^on:(?:.|\n)*?^\s+pull_request:/m);

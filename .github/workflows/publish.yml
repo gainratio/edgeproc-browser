@@ -50,7 +50,7 @@ jobs:
     permissions:
       id-token: write # OIDC — this token IS the npm credential. Nothing else may hold it.
       contents: read
-    uses: hseshadr/ci/.github/workflows/ts-publish.yml@605e51cbc86f452b56edcf1c9660921da797cbfe # ci-v3.2.1
+    uses: hseshadr/ci/.github/workflows/ts-publish.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
     with:
       working-directory: "."
       node-version: "24"
