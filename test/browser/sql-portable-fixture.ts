@@ -127,7 +127,11 @@ window.runSqlPortableProof = async (name): Promise<SqlPortableProof> => {
 		if (state.held?.some((lock) => lock.name === ownerLock)) break;
 	}
 	events.push("import holds lock");
-	const writer = await openSqlDatabase({ name: dst });
+	// The writer waits out the whole import (Worker boot, wasm, validation,
+	// swap): ~0.5 s on a fast laptop, over the 1 s "full"-tier owner-lock
+	// budget on a 2-core CI runner. The "minimal" tier's 4 s budget keeps this
+	// a proof of serialization, not a race against runner speed.
+	const writer = await openSqlDatabase({ name: dst, memoryProfile: "minimal" });
 	events.push("writer opened");
 	await writer.exec(
 		"INSERT INTO products(id, title) VALUES (9999, 'after import')",
