@@ -393,3 +393,35 @@ describe("SqliteCacheStore refusals (every fail-closed branch, witnessed)", () =
 		expect(await store.readFloor()).toBe(1);
 	});
 });
+
+describe("one floor gate for every path that sets or serves the pointer", () => {
+	it("never serves a pointer row tampered below the floor (offline path)", async () => {
+		const db = engine();
+		const store = SqliteCacheStore.open(db);
+		await store.promote(pointer(7));
+		db.exec("UPDATE active_pointer SET pointer = ?", [
+			JSON.stringify(pointer(3)),
+		]);
+		expect(await store.readActive()).toBeNull();
+		expect(await store.readFloor()).toBe(7);
+	});
+
+	it("never serves a pointer row swapped for a fork at the floor's sequence", async () => {
+		const db = engine();
+		const store = SqliteCacheStore.open(db);
+		await store.promote(pointer(7));
+		db.exec("UPDATE active_pointer SET pointer = ?", [
+			JSON.stringify(pointer(7, "fork")),
+		]);
+		expect(await store.readActive()).toBeNull();
+	});
+
+	it("legacy import cannot install a pointer below the floor", async () => {
+		const store = SqliteCacheStore.open(engine());
+		await store.promote(pointer(7));
+		await store.clearActiveIf(pointer(7));
+		store.raiseLegacyFloor([pointer(3)]);
+		expect(await store.readActive()).toBeNull();
+		expect(await store.readFloor()).toBe(7);
+	});
+});

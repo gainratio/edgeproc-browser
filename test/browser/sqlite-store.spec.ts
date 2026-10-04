@@ -280,3 +280,50 @@ test("a legacy rollback floor above the release survives migration and refuses i
 	}
 	expect(errors).toEqual([]);
 });
+
+test("a Worker killed mid-transaction leaves the pointer and floor fully old or fully new", async ({
+	page,
+	browserName,
+}) => {
+	test.skip(
+		browserName === "webkit",
+		"no OPFS in Playwright WebKit: nothing persists across a kill",
+	);
+	test.setTimeout(120_000);
+	const errors = await open(page);
+	const namespace = `kill-${crypto.randomUUID()}`;
+	const first = await boot(page, namespace);
+	expect(first.outcome).toBe("ok");
+	const outcome = await page.evaluate(
+		(args) => window.sqliteStore.killMidTransaction(args.namespace, args.ms),
+		{ namespace, ms: 1_500 },
+	);
+	console.log(JSON.stringify({ browserName, ...outcome }));
+	// The kill must land inside the transaction, or this proves nothing.
+	expect(outcome.killedMidTransaction).toBe(true);
+	expect(outcome.after.integrity).toBe("ok");
+	const fullyOld = {
+		floor: outcome.before.floor,
+		identity: outcome.before.identity,
+		pointer: outcome.before.pointer,
+		chunks: outcome.before.chunks,
+	};
+	const fullyNew = {
+		floor: 99,
+		identity: "torn",
+		pointer: null,
+		chunks: outcome.before.chunks + outcome.rowsAttempted,
+	};
+	const { integrity: _ignored, ...after } = outcome.after;
+	expect([fullyOld, fullyNew]).toContainEqual(after);
+	// And the engine still boots on whatever survived, with no torn release.
+	const again = await boot(page, namespace);
+	if (after.floor === 99) expect(again.outcome).toBe("rollback");
+	else
+		expect(again).toMatchObject({
+			outcome: "ok",
+			chunksFetched: 0,
+			digest: first.digest,
+		});
+	expect(errors).toEqual([]);
+});

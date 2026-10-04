@@ -45,7 +45,28 @@ export interface StorageAudit {
 	readonly opfsRoot: ReadonlyArray<string> | string;
 }
 
+/** The pointer row and chunk count, as one consistent snapshot. */
+export interface FloorSnapshot {
+	readonly floor: number;
+	readonly identity: string | null;
+	readonly pointer: string | null;
+	readonly chunks: number;
+	readonly integrity: string;
+}
+
+export interface KillOutcome {
+	readonly before: FloorSnapshot;
+	readonly after: FloorSnapshot;
+	/** The transaction was still running when the Worker was killed. */
+	readonly killedMidTransaction: boolean;
+	readonly rowsAttempted: number;
+}
+
 interface StoreHarness {
+	killMidTransaction(
+		namespace: string,
+		killAfterMs: number,
+	): Promise<KillOutcome>;
 	boot(namespace: string, paths: ReadonlyArray<string>): Promise<StoreBoot>;
 	seedLegacy(seed: LegacySeed): Promise<void>;
 	audit(): Promise<StorageAudit>;
@@ -259,4 +280,92 @@ async function tamperRow(
 	}
 }
 
-window.sqliteStore = { boot, seedLegacy, audit, tamperRow };
+async function snapshot(name: string): Promise<FloorSnapshot> {
+	const db = await openSqlDatabase({ name });
+	try {
+		const row = (
+			await db.query(
+				"SELECT floor_sequence AS floor, floor_identity AS identity, pointer FROM active_pointer WHERE id = 1",
+			)
+		)[0];
+		const chunks = (await db.query("SELECT count(*) AS n FROM chunk"))[0]?.n;
+		const integrity = (await db.query("PRAGMA integrity_check"))[0]
+			?.integrity_check;
+		return {
+			floor: Number(row?.floor),
+			identity: (row?.identity as string | null) ?? null,
+			pointer: (row?.pointer as string | null) ?? null,
+			chunks: Number(chunks),
+			integrity: String(integrity),
+		};
+	} finally {
+		await db.close();
+	}
+}
+
+/**
+ * The promote transaction's shape, killed half way: one BEGIN IMMEDIATE that
+ * raises the floor, swaps the pointer, then inserts enough chunk rows to spill
+ * SQLite's page cache to the OPFS file. The SQL Worker is terminated (a tab
+ * crash) while that transaction runs. opfs-sahpool must roll the hot journal
+ * back on reopen, so the row is either entirely old or entirely new.
+ */
+async function killMidTransaction(
+	namespace: string,
+	killAfterMs: number,
+): Promise<KillOutcome> {
+	const name = chunkDatabaseName(namespace);
+	const before = await snapshot(name);
+	let worker: Worker | undefined;
+	const db = await openSqlDatabase(
+		{ name },
+		{
+			workerFactory: () => {
+				worker = new Worker(new URL("/dist/sql/worker.js", location.href), {
+					type: "module",
+				});
+				return worker;
+			},
+		},
+	);
+	const rows = 4_000;
+	let settled = false;
+	const running = db
+		.transaction([
+			{
+				sql: "UPDATE active_pointer SET floor_sequence = 99, floor_identity = 'torn', pointer = NULL WHERE id = 1",
+			},
+			{
+				sql: `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${rows})
+				      INSERT INTO chunk(hash, size, body) SELECT printf('%064d', i), 65536, randomblob(65536) FROM n`,
+			},
+		])
+		.then(
+			() => {
+				settled = true;
+			},
+			() => {
+				settled = true;
+			},
+		);
+	await new Promise((resolve) => setTimeout(resolve, killAfterMs));
+	const killedMidTransaction = !settled;
+	worker?.terminate();
+	void running;
+	// Let the browser release the dead Worker's Web Lock and OPFS handles.
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	return {
+		before,
+		after: await snapshot(name),
+		killedMidTransaction,
+		rowsAttempted: rows,
+	};
+}
+
+window.sqliteStore = {
+	boot,
+	seedLegacy,
+	audit,
+	tamperRow,
+	killMidTransaction,
+};

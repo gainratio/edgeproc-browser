@@ -111,7 +111,7 @@ describe("indexedDbLegacySource", () => {
 		expect(await factory.databases()).toEqual([]);
 	});
 
-	it("ignores a database without the store, and malformed values", async () => {
+	it("ignores a database without the store, and malformed chunk values", async () => {
 		const factory = new IDBFactory();
 		await seed(factory, layout.database, "unrelated", []);
 		expect(
@@ -121,14 +121,32 @@ describe("indexedDbLegacySource", () => {
 		await seed(other, layout.database, layout.store, [
 			[`chunk:${HASH}`, "not bytes"],
 			["chunk:short", new Uint8Array([1])],
-			["active", ENCODER.encode("{not json")],
 		]);
 		expect(await indexedDbLegacySource(layout, other).read()).toEqual({
 			chunks: [],
 			manifests: [],
-			pointers: [null],
+			pointers: [],
 		});
 	});
+
+	it.each([
+		["unparseable JSON", ENCODER.encode("{not json")],
+		["a structurally invalid pointer", { sequence: "high" }],
+		["an oversized value", new Uint8Array(16 * 1024 + 1)],
+	])(
+		"fails CLOSED on a present but unreadable floor: %s",
+		async (_label, value) => {
+			const factory = new IDBFactory();
+			await seed(factory, layout.database, layout.store, [["active", value]]);
+			const source = indexedDbLegacySource(layout, factory);
+			await expect(source.readPointers()).rejects.toThrow(
+				/unreadable legacy rollback floor/,
+			);
+			await expect(source.read()).rejects.toThrow(
+				/unreadable legacy rollback floor/,
+			);
+		},
+	);
 
 	it("refuses an invalid legacy layout", () => {
 		expect(() => resolveIndexedDbLayout({ database: "Bad Name" })).toThrow(
@@ -216,6 +234,27 @@ describe("opfsLegacySource", () => {
 		expect([...root.files.keys()]).toEqual(["app-owned-file"]);
 	});
 
+	it("tolerates ONE torn pointer slot beside a valid one (0.2.x wrote them alternately)", async () => {
+		const root = legacyRoot();
+		expect(await opfsLegacySource(async () => root).readPointers()).toEqual([
+			null,
+			POINTER,
+			null,
+		]);
+	});
+
+	it("fails CLOSED when every present pointer slot is unreadable", async () => {
+		const root = legacyRoot();
+		root.files.set("active.a", new FakeFile(ENCODER.encode("torn")));
+		const source = opfsLegacySource(async () => root);
+		await expect(source.readPointers()).rejects.toThrow(
+			/unreadable legacy rollback floor/,
+		);
+		await expect(source.read()).rejects.toThrow(
+			/unreadable legacy rollback floor/,
+		);
+	});
+
 	it("reads nothing from an empty root", async () => {
 		expect(await opfsLegacySource(async () => new FakeDir()).read()).toEqual({
 			chunks: [],
@@ -272,15 +311,18 @@ describe("legacy readers fail closed on unexpected errors", () => {
 		).toEqual([]);
 	});
 
-	it("skips oversized OPFS objects and pointers instead of buffering them", async () => {
+	it("skips an oversized OPFS chunk, but an oversized SOLE pointer fails closed", async () => {
+		// Was: the oversized pointer was skipped as "no floor" (fail-open).
 		const root = new FakeDir();
 		const chunk = new FakeDir();
 		chunk.files.set(HASH, new FakeFile(new Uint8Array(2 * 1024 * 1024 + 1)));
 		root.dirs.set("chunk", chunk);
+		const noFloor = await opfsLegacySource(async () => root).read();
+		expect(noFloor.chunks).toEqual([]);
 		root.files.set("active", new FakeFile(new Uint8Array(16 * 1024 + 1)));
-		const snapshot = await opfsLegacySource(async () => root).read();
-		expect(snapshot.chunks).toEqual([]);
-		expect(snapshot.pointers).toEqual([null, null, null]);
+		await expect(opfsLegacySource(async () => root).read()).rejects.toThrow(
+			/unreadable legacy rollback floor/,
+		);
 	});
 
 	it("treats a file where a directory was expected as absent, but rethrows other errors", async () => {

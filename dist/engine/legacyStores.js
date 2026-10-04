@@ -156,14 +156,27 @@ function ownKey(key, separator) {
     }
     return null;
 }
+/** A present floor that cannot be parsed is NOT "no floor": refuse. */
+function unreadableFloor(where) {
+    return new Error(`unreadable legacy rollback floor in ${where}`);
+}
+/** IndexedDB writes are transactional, so a present `active` value that does
+ * not parse is corruption or tampering, never a torn write: fail closed. */
 function pointerFromValue(value) {
     const bytes = bytesOf(value, MAX_POINTER_BYTES);
+    if (bytes === null && ArrayBuffer.isView(value)) {
+        throw unreadableFloor("IndexedDB (oversized)");
+    }
+    let parsed;
     try {
-        return parseStoredPointer(bytes === null ? value : JSON.parse(DECODER.decode(bytes)));
+        parsed = parseStoredPointer(bytes === null ? value : JSON.parse(DECODER.decode(bytes)));
     }
     catch {
-        return null;
+        parsed = null;
     }
+    if (parsed === null)
+        throw unreadableFloor("IndexedDB");
+    return parsed;
 }
 function bytesOf(value, cap) {
     if (ArrayBuffer.isView(value) && value.byteLength <= cap) {
@@ -200,7 +213,7 @@ export function opfsLegacySource(openRoot = defaultOpfsRoot) {
             const dir = await root();
             if (dir === null)
                 return [];
-            return Promise.all(OPFS_POINTERS.map((name) => readPointerFile(dir, name)));
+            return readOpfsPointers(dir);
         },
         read: async () => {
             const dir = await root();
@@ -209,7 +222,7 @@ export function opfsLegacySource(openRoot = defaultOpfsRoot) {
             const [chunks, manifests, pointers] = await Promise.all([
                 readObjects(dir, "chunk"),
                 readObjects(dir, "manifest"),
-                Promise.all(OPFS_POINTERS.map((name) => readPointerFile(dir, name))),
+                readOpfsPointers(dir),
             ]);
             return { chunks, manifests, pointers };
         },
@@ -240,16 +253,37 @@ async function readObjects(root, name) {
     }
     return out;
 }
-async function readPointerFile(root, name) {
-    const bytes = await readFile(root, name, MAX_POINTER_BYTES);
-    if (bytes === null)
-        return null;
+async function readPointerSlot(root, name) {
+    let file;
     try {
-        return parseStoredPointer(JSON.parse(DECODER.decode(bytes)));
+        file = await (await root.getFileHandle(name)).getFile();
+    }
+    catch (error) {
+        if (isNotFound(error))
+            return "absent";
+        throw error;
+    }
+    if (file.size > MAX_POINTER_BYTES)
+        return "unreadable";
+    try {
+        const parsed = parseStoredPointer(JSON.parse(DECODER.decode(await file.arrayBuffer())));
+        return parsed ?? "unreadable";
     }
     catch {
-        return null;
+        return "unreadable";
     }
+}
+/** 0.2.x wrote active.a / active.b alternately, so ONE torn slot beside a
+ * readable one is the documented crash state (the other slot is the floor).
+ * If every present slot is unreadable, there is no floor we can trust: fail
+ * closed. */
+async function readOpfsPointers(root) {
+    const slots = await Promise.all(OPFS_POINTERS.map((name) => readPointerSlot(root, name)));
+    const present = slots.filter((slot) => slot !== "absent");
+    if (present.length > 0 && present.every((slot) => slot === "unreadable")) {
+        throw unreadableFloor("OPFS");
+    }
+    return slots.map((slot) => (typeof slot === "string" ? null : slot));
 }
 async function readFile(dir, name, cap) {
     try {

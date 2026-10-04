@@ -36,6 +36,9 @@ export declare class SqliteCacheStore implements CacheStore {
     getChunk(chunkHash: string, expectedSize: number): Promise<Uint8Array>;
     putManifest(manifestBytes: Uint8Array): Promise<string>;
     getManifest(manifestHash: string): Promise<Uint8Array>;
+    /** The pointer to serve, only if the floor gate admits it: a row edited to
+     * an older or forked release at rest is not served (fails closed to null;
+     * the next online sync re-promotes under the same gate). */
     readActive(): Promise<VersionPointer | null>;
     /** The highest sequence ever promoted here; -1 when there is none. */
     readFloor(): Promise<number>;

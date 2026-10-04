@@ -229,8 +229,14 @@ export class SqliteCacheStore implements CacheStore {
 		return body;
 	}
 
+	/** The pointer to serve, only if the floor gate admits it: a row edited to
+	 * an older or forked release at rest is not served (fails closed to null;
+	 * the next online sync re-promotes under the same gate). */
 	public async readActive(): Promise<VersionPointer | null> {
-		return this.#readRow().pointer;
+		const row = this.#readRow();
+		return row.pointer !== null && admits(row, row.pointer)
+			? row.pointer
+			: null;
 	}
 
 	/** The highest sequence ever promoted here; -1 when there is none. */
@@ -246,16 +252,12 @@ export class SqliteCacheStore implements CacheStore {
 			this.#insertPending();
 			if (chunks !== undefined) this.#assertPresent(chunks);
 			const row = this.#readRow();
-			if (!promotable(row, pointer)) {
+			if (!admits(row, pointer)) {
 				throw new RollbackError(
 					`refusing to promote sequence ${pointer.sequence} over the durable floor ${row.floorSequence}`,
 				);
 			}
-			this.#writeRow({
-				pointer,
-				floorSequence: Math.max(row.floorSequence, sequenceOf(pointer)),
-				floorIdentity: pointerIdentity(pointer),
-			});
+			this.#writeRow(installPointer(row, pointer));
 		});
 		this.#clearPending();
 	}
@@ -439,7 +441,14 @@ function sequenceOf(pointer: VersionPointer): number {
 		: -1;
 }
 
-function promotable(row: FloorRow, incoming: VersionPointer): boolean {
+/**
+ * THE floor gate. Every path that sets the active pointer (promote, legacy
+ * import, the in-memory fallback's legacy floor) and the path that serves it
+ * (readActive, so offline loads too) asks this one function.
+ * With a floor: a higher sequence, or the exact release at the floor.
+ * Without one (nothing sequenced yet): the 0.2.x promotion rule.
+ */
+function admits(row: FloorRow, incoming: VersionPointer): boolean {
 	if (row.floorSequence < 0) {
 		return canPromotePointer(row.pointer, incoming);
 	}
@@ -448,9 +457,18 @@ function promotable(row: FloorRow, incoming: VersionPointer): boolean {
 	return row.floorIdentity === pointerIdentity(incoming);
 }
 
-/** Raise (never lower) the floor with legacy pointers. Legacy slots that
- * disagree at their highest sequence leave a floor with NO identity, so only
- * a strictly newer release can be promoted over it. */
+/** Only after admits(): the pointer, and a floor that can only rise. */
+function installPointer(row: FloorRow, pointer: VersionPointer): FloorRow {
+	return {
+		pointer,
+		floorSequence: Math.max(row.floorSequence, sequenceOf(pointer)),
+		floorIdentity: pointerIdentity(pointer),
+	};
+}
+
+/** Raise (never lower) the floor with legacy pointers, through the same gate
+ * as promote(). Legacy slots that disagree at their highest sequence leave a
+ * floor with NO identity, so only a strictly newer release is admitted. */
 function mergeLegacyFloor(
 	row: FloorRow,
 	pointers: ReadonlyArray<VersionPointer | null>,
@@ -459,37 +477,32 @@ function mergeLegacyFloor(
 	try {
 		legacy = selectHighestPointer(pointers);
 	} catch {
-		const sequence = Math.max(
-			-1,
-			...pointers.flatMap((item) => (item === null ? [] : [sequenceOf(item)])),
-		);
-		return sequence > row.floorSequence
-			? { pointer: null, floorSequence: sequence, floorIdentity: null }
-			: row.floorSequence === sequence
-				? { ...row, floorIdentity: null }
-				: row;
+		return conflictingLegacyFloor(row, pointers);
 	}
 	if (legacy === null) return row;
-	const sequence = sequenceOf(legacy);
+	if (admits(row, legacy)) {
+		// A pre-sequence (0.1.x) pointer never displaces an active release.
+		if (sequenceOf(legacy) < 0 && row.pointer !== null) return row;
+		return installPointer(row, legacy);
+	}
+	// Refused: lower (ours stands) or a fork at our floor (trust neither).
+	return sequenceOf(legacy) === row.floorSequence
+		? { ...row, floorIdentity: null }
+		: row;
+}
+
+function conflictingLegacyFloor(
+	row: FloorRow,
+	pointers: ReadonlyArray<VersionPointer | null>,
+): FloorRow {
+	const sequence = Math.max(
+		-1,
+		...pointers.flatMap((item) => (item === null ? [] : [sequenceOf(item)])),
+	);
 	if (sequence > row.floorSequence) {
-		return {
-			pointer: legacy,
-			floorSequence: sequence,
-			floorIdentity: pointerIdentity(legacy),
-		};
+		return { pointer: null, floorSequence: sequence, floorIdentity: null };
 	}
-	if (sequence < 0) {
-		// A pre-sequence (0.1.x) pointer carries no floor; keep it only as the
-		// release to serve offline, and only if nothing is active yet.
-		return row.pointer === null && row.floorSequence < 0
-			? { ...row, pointer: legacy }
-			: row;
-	}
-	if (sequence < row.floorSequence) return row;
-	if (row.floorIdentity === pointerIdentity(legacy)) {
-		return { ...row, pointer: row.pointer ?? legacy };
-	}
-	return { ...row, floorIdentity: null };
+	return sequence === row.floorSequence ? { ...row, floorIdentity: null } : row;
 }
 
 function parsePointerText(value: unknown): VersionPointer | null {
