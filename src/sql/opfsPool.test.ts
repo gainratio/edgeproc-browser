@@ -119,6 +119,35 @@ describe("removeSqlDatabase", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(await removeSqlDatabase("live", { root, locks })).toBe("removed");
 	});
+
+	it("defaults to navigator.storage and navigator.locks", async () => {
+		const root = new FakeRoot();
+		const pool = await sqlDatabasePoolName("defaults");
+		root.entries.add(`.${pool}`);
+		const nav = globalThis.navigator as unknown as Record<string, unknown>;
+		const before = { storage: nav.storage, locks: nav.locks };
+		Object.defineProperty(nav, "storage", {
+			configurable: true,
+			value: { getDirectory: async () => root },
+		});
+		Object.defineProperty(nav, "locks", {
+			configurable: true,
+			value: navigatorLikeLocks(),
+		});
+		try {
+			expect(await removeSqlDatabase("defaults")).toBe("removed");
+			expect(await removeOpfsPool(pool)).toBe("absent");
+		} finally {
+			Object.defineProperty(nav, "storage", {
+				configurable: true,
+				value: before.storage,
+			});
+			Object.defineProperty(nav, "locks", {
+				configurable: true,
+				value: before.locks,
+			});
+		}
+	});
 });
 
 /** Minimal exclusive Web Locks with ifAvailable support. */

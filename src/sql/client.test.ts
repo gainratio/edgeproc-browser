@@ -213,4 +213,17 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		unreadable.emit("messageerror", {});
 		await expect(waiting).rejects.toThrow(/unreadable message/);
 	});
+
+	it("serializes a non-Error throw from the Worker side", async () => {
+		const handle = createSqlWorkerHandler(async () => {
+			throw "plain string";
+		});
+		expect(
+			await handle({ id: 7, operation: "open", options: { name: "s" } }),
+		).toEqual({
+			id: 7,
+			ok: false,
+			error: { name: "Error", message: "plain string" },
+		});
+	});
 });

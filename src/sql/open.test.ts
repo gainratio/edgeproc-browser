@@ -205,4 +205,39 @@ describe("openSqlStorage", () => {
 			}),
 		).rejects.toThrow(/unsupported SQL persistence/);
 	});
+
+	it("propagates a Web Locks failure that is not a timeout", async () => {
+		const d = deps({
+			locks: {
+				request: async () => {
+					throw new TypeError("locks broken");
+				},
+			},
+		});
+		await expect(openSqlStorage(d, { name: "broken" })).rejects.toThrow(
+			/locks broken/,
+		);
+	});
+
+	it("has nothing to release for a memory database", async () => {
+		const d = deps({ locks: undefined });
+		const requested = await openSqlStorage(d, {
+			name: "m",
+			persistence: "memory",
+		});
+		expect(() => requested.release()).not.toThrow();
+		const fallback = await openSqlStorage(
+			deps({
+				installPool: vi.fn(async () => {
+					throw "not an Error";
+				}),
+			}),
+			{ name: "f", fallback: "memory" },
+		);
+		expect(fallback.storage).toMatchObject({
+			reason: "opfs-unavailable",
+			detail: "not an Error",
+		});
+		expect(() => fallback.release()).not.toThrow();
+	});
 });

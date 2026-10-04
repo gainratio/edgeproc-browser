@@ -233,4 +233,15 @@ describe("SqlEngine on the pinned SQLite build", () => {
 		expect(hits.map((row) => row.id)).toEqual([1, 3, 2]);
 		db.close();
 	});
+
+	it("refuses to run on OPFS if the privacy PRAGMAs do not stick", () => {
+		// An in-memory DB reports journal_mode "memory", never "delete".
+		expect(
+			() =>
+				new SqlEngine(sqlite.openMemory(), {
+					storage: { persistence: "opfs", pool: "p", file: "/p.sqlite3" },
+					memoryProfile: MEMORY_PROFILES.lite,
+				}),
+		).toThrow(/privacy pragmas were not applied/);
+	});
 });
