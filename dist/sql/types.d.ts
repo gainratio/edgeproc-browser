@@ -74,4 +74,61 @@ export declare class SqlStorageUnavailableError extends Error {
     readonly reason: SqlFallbackReason;
     constructor(reason: SqlFallbackReason, message: string);
 }
+/** What the incoming database must be before {@link SqlDatabase.importDatabase} replaces yours. */
+export interface SqlExpectedSchema {
+    /** `PRAGMA application_id` the file must carry (your app's 32-bit magic). */
+    readonly applicationId?: number;
+    /** `PRAGMA user_version`: an exact version, or an inclusive range. */
+    readonly userVersion?: number | {
+        readonly min?: number;
+        readonly max?: number;
+    };
+    /**
+     * Read-only SQL run against the INCOMING file (never yours). Each must
+     * return a first row whose first column is 1, e.g.
+     * `SELECT count(*) = 1 FROM sqlite_schema WHERE name = 'charts'`.
+     */
+    readonly checks?: ReadonlyArray<string>;
+}
+export interface SqlImportOptions {
+    readonly expectedSchema?: SqlExpectedSchema;
+    /** Refuse larger files before reading them. Default 256 MiB. */
+    readonly maxBytes?: number;
+    /**
+     * Triggers and views run SQL the FILE chose, on your connection, later.
+     * Refused unless you set this (and trust where the file came from).
+     */
+    readonly allowTriggersAndViews?: boolean;
+    /** Virtual-table modules the file may use. Default `["fts5"]`. */
+    readonly virtualTableModules?: ReadonlyArray<string>;
+}
+export interface SqlImportResult {
+    readonly byteLength: number;
+    readonly applicationId: number;
+    readonly userVersion: number;
+}
+/** Why an import was refused. Nothing was changed when you see one. */
+export type SqlImportRejection = 
+/** No SQLite header: not a database at all. */
+"not-sqlite"
+/**
+ * A SQLite header, but the file is truncated, fails integrity_check, or
+ * a schema row holds more than one statement.
+ */
+ | "corrupt"
+/** `application_id` is not the one you expected. */
+ | "foreign-application"
+/** `user_version` is outside what you support. */
+ | "unsupported-version"
+/** A trigger/view you did not allow, or an unlisted virtual-table module. */
+ | "unsafe-schema"
+/** One of your `checks` did not return 1 (or failed). */
+ | "check-failed"
+/** Larger than `maxBytes`. */
+ | "too-large";
+/** The incoming file was refused during validation; your database is unchanged. */
+export declare class SqlImportRejectedError extends Error {
+    readonly reason: SqlImportRejection;
+    constructor(reason: SqlImportRejection, message: string);
+}
 //# sourceMappingURL=types.d.ts.map

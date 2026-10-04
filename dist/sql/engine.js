@@ -4,16 +4,19 @@
 // FTS5 index and vectors and join them in one query. Nothing here re-implements
 // SQL: every call is a prepared statement on that connection.
 import { applyMemoryProfile, readMemoryProfile, } from "../sqlite/memoryProfile.js";
+import { exportDatabase, importDatabase } from "./portable.js";
 export const PINNED_SQLITE_VERSION = "3.53.4";
 export const PINNED_VECTOR_VERSION = "1.1.2";
 export class SqlEngine {
     #raw;
     #storage;
+    #serializer;
     #statements = new Map();
     #nextStatement = 1;
     constructor(raw, options) {
         this.#raw = raw;
         this.#storage = options.storage;
+        this.#serializer = options.serializer;
         assertPinnedRuntime(raw);
         applyMemoryProfile(profileHandle(raw), options.memoryProfile);
         if (options.storage.persistence === "opfs")
@@ -54,6 +57,14 @@ export class SqlEngine {
         this.#prepared(id).finalize();
         this.#statements.delete(id);
     }
+    /** The whole database as a SQLite file (sqlite3_serialize). */
+    exportDatabase() {
+        return exportDatabase(this.#raw, this.#requireSerializer());
+    }
+    /** Validate `bytes`, then replace this database with it in one transaction. */
+    importDatabase(bytes, options) {
+        return importDatabase(this.#raw, this.#requireSerializer(), bytes, options);
+    }
     runtimeInfo() {
         const versions = pinnedVersions(this.#raw);
         const json = this.#raw.selectObjects("SELECT json_valid('{}') AS ok")[0];
@@ -85,6 +96,12 @@ export class SqlEngine {
         finally {
             prepared.finalize();
         }
+    }
+    #requireSerializer() {
+        if (this.#serializer === undefined) {
+            throw new Error("this SQL engine was opened without a serializer");
+        }
+        return this.#serializer;
     }
     #prepared(id) {
         const statement = this.#statements.get(id);

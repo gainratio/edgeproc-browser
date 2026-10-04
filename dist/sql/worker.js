@@ -8,6 +8,7 @@ import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
 import { openSqlStorage } from "./open.js";
+import { createSqlSerializer } from "./serializer.js";
 const LOCK_WAIT_MS = 2_000;
 const handle = createSqlWorkerHandler(openEngine);
 self.onmessage = (event) => {
@@ -33,6 +34,7 @@ async function openEngine(options) {
         const engine = new SqlEngine(opened.raw, {
             storage: opened.storage,
             memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
+            serializer: createSqlSerializer(sqlite),
         });
         return { engine, release: opened.release };
     }

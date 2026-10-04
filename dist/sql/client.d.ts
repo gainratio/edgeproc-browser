@@ -1,5 +1,5 @@
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
-import { type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlTransactionResult } from "./types.js";
+import { type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlTransactionResult } from "./types.js";
 export interface SqlWorkerLike {
     postMessage(message: SqlWorkerRequest): void;
     terminate(): void;
@@ -27,6 +27,14 @@ export interface SqlDatabase {
     /** Bulk load: prepare once, step per row, one transaction. */
     executeMany(sql: string, rows: ReadonlyArray<SqlBind>): Promise<SqlExecResult>;
     prepare(sql: string): Promise<SqlPreparedStatement>;
+    /** The whole database as a SQLite file (sqlite3_serialize). */
+    exportDatabase(): Promise<Uint8Array>;
+    /**
+     * Validate `bytes` (header, integrity_check, your expectations), then
+     * replace this database with it in one transaction. On any failure the
+     * database is unchanged.
+     */
+    importDatabase(bytes: Uint8Array, options?: SqlImportOptions): Promise<SqlImportResult>;
     runtimeInfo(): Promise<SqlRuntimeInfo>;
     /** Close the connection, release the OPFS pool and end the Worker. */
     close(): Promise<void>;
@@ -40,4 +48,16 @@ export interface OpenSqlDatabaseOptions {
  * same connection. Check `storage` to see whether it fell back to memory.
  */
 export declare function openSqlDatabase(options: SqlDatabaseOptions, { workerFactory }?: OpenSqlDatabaseOptions): Promise<SqlDatabase>;
+/**
+ * Export a database: an open handle, or a name — opened on OPFS (never a
+ * memory fallback) under its owner lock, exported, closed.
+ */
+export declare function exportDatabase(target: SqlDatabase | string, options?: OpenSqlDatabaseOptions): Promise<Uint8Array>;
+/**
+ * Replace a database with `bytes`: an open handle, or a name. By name it is
+ * opened on OPFS under the owner Web Lock, so no other tab or Worker can
+ * write while the import runs; if one already has it open, this fails
+ * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
+ */
+export declare function importDatabase(target: SqlDatabase | string, bytes: Uint8Array, options?: SqlImportOptions & OpenSqlDatabaseOptions): Promise<SqlImportResult>;
 //# sourceMappingURL=client.d.ts.map

@@ -9,10 +9,14 @@ import {
 	type MemoryProfile,
 	readMemoryProfile,
 } from "../sqlite/memoryProfile.js";
+import { exportDatabase, importDatabase } from "./portable.js";
+import type { SqlSerializer } from "./serializer.js";
 import type {
 	SqlBind,
 	SqlBindValue,
 	SqlExecResult,
+	SqlImportOptions,
+	SqlImportResult,
 	SqlRow,
 	SqlRuntimeInfo,
 	SqlStatement,
@@ -36,6 +40,8 @@ export interface SqlRawStatement {
 
 /** The slice of an OO1 database handle the engine uses. */
 export interface SqlRawDatabase {
+	/** The native sqlite3* handle (sqlite-wasm OO1 exposes it). */
+	readonly pointer?: number | bigint;
 	exec(options: { readonly sql: string; readonly bind?: RawBind }): unknown;
 	selectObjects(sql: string, bind?: RawBind): Array<Record<string, unknown>>;
 	prepare(sql: string): SqlRawStatement;
@@ -46,17 +52,21 @@ export interface SqlRawDatabase {
 export interface SqlEngineOptions {
 	readonly storage: SqlStorage;
 	readonly memoryProfile: MemoryProfile;
+	/** SQLite's own (de)serialization; required for export and import. */
+	readonly serializer?: SqlSerializer;
 }
 
 export class SqlEngine {
 	readonly #raw: SqlRawDatabase;
 	readonly #storage: SqlStorage;
+	readonly #serializer: SqlSerializer | undefined;
 	readonly #statements = new Map<number, SqlRawStatement>();
 	#nextStatement = 1;
 
 	public constructor(raw: SqlRawDatabase, options: SqlEngineOptions) {
 		this.#raw = raw;
 		this.#storage = options.storage;
+		this.#serializer = options.serializer;
 		assertPinnedRuntime(raw);
 		applyMemoryProfile(profileHandle(raw), options.memoryProfile);
 		if (options.storage.persistence === "opfs") applyPrivacyPragmas(raw);
@@ -118,6 +128,19 @@ export class SqlEngine {
 		this.#statements.delete(id);
 	}
 
+	/** The whole database as a SQLite file (sqlite3_serialize). */
+	public exportDatabase(): Uint8Array {
+		return exportDatabase(this.#raw, this.#requireSerializer());
+	}
+
+	/** Validate `bytes`, then replace this database with it in one transaction. */
+	public importDatabase(
+		bytes: Uint8Array,
+		options?: SqlImportOptions,
+	): SqlImportResult {
+		return importDatabase(this.#raw, this.#requireSerializer(), bytes, options);
+	}
+
 	public runtimeInfo(): SqlRuntimeInfo {
 		const versions = pinnedVersions(this.#raw);
 		const json = this.#raw.selectObjects("SELECT json_valid('{}') AS ok")[0];
@@ -148,6 +171,13 @@ export class SqlEngine {
 		} finally {
 			prepared.finalize();
 		}
+	}
+
+	#requireSerializer(): SqlSerializer {
+		if (this.#serializer === undefined) {
+			throw new Error("this SQL engine was opened without a serializer");
+		}
+		return this.#serializer;
 	}
 
 	#prepared(id: number): SqlRawStatement {

@@ -83,9 +83,14 @@ interface SqlDatabase {
 	transaction(statements): Promise<SqlTransactionResult>; // BEGIN IMMEDIATE … COMMIT
 	executeMany(sql, rows): Promise<SqlExecResult>;      // bulk load, one transaction
 	prepare(sql): Promise<SqlPreparedStatement>;         // run(bind?) / all(bind?) / finalize()
+	exportDatabase(): Promise<Uint8Array>;              // the whole database as a SQLite file
+	importDatabase(bytes, options?): Promise<SqlImportResult>; // validate, then replace atomically
 	runtimeInfo(): Promise<SqlRuntimeInfo>;              // versions, fts5, json1, profile, storage
 	close(): Promise<void>;
 }
+
+exportDatabase(db | name, { workerFactory? }?): Promise<Uint8Array>
+importDatabase(db | name, bytes, options?): Promise<SqlImportResult>
 
 removeSqlDatabase(name): Promise<"removed" | "absent" | "in-use">
 removeOpfsPool(poolName): Promise<"removed" | "absent" | "in-use">
@@ -141,6 +146,96 @@ await removeOpfsPool("edgereco-catalogue");
 `removeSqlDatabase` takes the same owner lock as `openSqlDatabase`, so it never deletes a
 database this origin has open. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
 
+## Export and import (backup, or move to another device)
+
+**TL;DR:** `exportDatabase(name)` gives you the database as a plain SQLite file.
+`importDatabase(name, bytes, { expectedSchema })` checks that file, then replaces your database
+with it in one transaction. If anything is wrong, nothing changes.
+
+**Why:** a local-first app's export file is the user's only backup and only way to move to a
+new device. A hand-written dump format drifts from the schema; the SQLite file cannot.
+
+```ts
+import {
+	exportDatabase,
+	importDatabase,
+	SqlImportRejectedError,
+} from "@gainratio/browser/sql";
+
+const APP_ID = 0x414c4d41; // your app's 32-bit magic; set it once at schema creation:
+// await db.exec(`PRAGMA application_id = ${APP_ID}; PRAGMA user_version = 3`);
+
+// Export: Uint8Array of a real SQLite file (sqlite3_serialize). Opens the OPFS database
+// under its owner lock, or pass an open `db` instead of the name.
+const bytes = await exportDatabase("catalogue");
+const file = new Blob([bytes], { type: "application/vnd.sqlite3" });
+
+// Import, e.g. from <input type="file">:
+try {
+	const result = await importDatabase("catalogue", new Uint8Array(await picked.arrayBuffer()), {
+		expectedSchema: {
+			applicationId: APP_ID,
+			userVersion: { min: 1, max: 3 },          // versions this build can migrate
+			checks: ["SELECT count(*) = 1 FROM sqlite_schema WHERE name = 'products'"],
+		},
+	});
+	console.log(`imported ${result.byteLength} bytes, schema v${result.userVersion}`);
+} catch (error) {
+	if (error instanceof SqlImportRejectedError) {
+		// error.reason: "not-sqlite" | "corrupt" | "foreign-application"
+		//   | "unsupported-version" | "unsafe-schema" | "check-failed" | "too-large"
+		showError(error.reason); // the database is exactly as it was
+	} else throw error;
+}
+```
+
+What import does, in order:
+
+1. **Validate in a private scratch connection** (never yours): the SQLite magic header, then
+   `PRAGMA integrity_check`, then `application_id` / `user_version` against `expectedSchema`,
+   then the schema text, then your `checks` (read-only: `query_only`, `trusted_schema = OFF`).
+2. **Swap in one `BEGIN IMMEDIATE` transaction** on your connection: the bytes are attached
+   as an in-memory schema, your objects are dropped, the file's objects are created and their
+   rows copied (rowids kept), and `integrity_check` runs again before `COMMIT`. A failure
+   half-way (disk full, a module that is missing) rolls all of it back, and SQLite's rollback
+   journal makes that hold across a crash. The pinned build has no `sqlite3_backup_*`, so this
+   is the same job done in SQL.
+3. **Serialized against writers.** By name, the database is opened on OPFS under the owner Web
+   Lock, so no other tab or Worker can write until the import is done; if another context has
+   it open, the import fails closed with `SqlStorageUnavailableError("pool-in-use")`. With an
+   open `db`, the import is one request in that Worker's queue. It works on OPFS and on an
+   in-memory database (`db.importDatabase(bytes)`); by name it never falls back to memory.
+
+**The file is untrusted input.** The swap re-creates objects from the file's schema text, so
+that text is checked first, and anything unexpected is refused as `"unsafe-schema"` (or
+`"corrupt"`):
+
+- every schema row must be exactly one `CREATE TABLE | INDEX | VIEW | TRIGGER | VIRTUAL TABLE`
+  of that object, unqualified (no `TEMP`, no `main.`), with no comment in the head and no second
+  statement (SQLite's own `sqlite3_complete` decides where a statement ends);
+- **triggers and views are refused unless you pass `allowTriggersAndViews: true`**: they run
+  SQL the file chose, on your connection, later. Only opt in for files you trust;
+- virtual tables only from `virtualTableModules` (default `["fts5"]`), checked twice: by the
+  statement grammar, and by SQLite itself in a connection that has every other module dropped;
+- after an import the connection keeps `PRAGMA trusted_schema = OFF`, so imported views,
+  triggers, defaults and indexes can only call innocuous functions.
+
+Not copied: `sqlite_stat*` (run `ANALYZE` if you use it). `vector_init(...)` is per connection:
+call it again after an import, as after any reopen. Default size limit: 256 MiB (`maxBytes`).
+
+### Secrets and settings belong to the app layer
+
+This library moves the database and nothing else. An app that also needs settings and secrets
+(API keys) in its export composes them around these bytes; almamesh does exactly this:
+
+1. Keep settings **in** the database (a versioned row), so they travel with it.
+2. Never store secrets in plaintext in the file. Encrypt them with a key derived from a
+   user passphrase (WebCrypto PBKDF2 or Argon2, then AES-GCM) into a separate section.
+3. Write one envelope: `{ format, version, sqlite: bytes, secrets: ciphertext }`, with a
+   versioned header so older exports can be migrated.
+4. On import, decrypt and validate **everything first** (wrong passphrase or tampered file =
+   reject), call `importDatabase` with your `expectedSchema`, and only then write the secrets.
+
 ## What it does not do
 
 - It does not share one OPFS database between tabs. The second tab gets the typed status
@@ -156,5 +251,13 @@ database this origin has open. `removeOpfsPool` removes the pool's OPFS director
 - `src/sql/client.test.ts`: every call round-trips through the Worker protocol
   (structured-cloned) to the real engine.
 - `src/sql/open.test.ts`, `src/sql/opfsPool.test.ts`: fallback status, owner lock, idempotent removal.
+- `src/sql/portable.test.ts`: export/import row for row (rowids, blobs, FTS5, AUTOINCREMENT,
+  WITHOUT ROWID, views, triggers), every rejection, a disk-full failure half-way through the
+  swap leaving the original intact, and the untrusted-schema guards.
+- `src/sql/portableClient.test.ts`: the same through the Worker protocol, plus the owner lock:
+  an import by name fails closed while another context owns the database, and a writer in
+  another context waits until the import is done.
+- `test/browser/sql-portable.spec.ts`: the real Worker on OPFS and in memory: round trip with
+  FTS5 + vectors, typed rejections, and a second Worker blocked by the import's owner lock.
 - `test/browser/sql-seam.spec.ts`: the real Worker in Chromium on OPFS — persistence across
   reopen, second-owner fallback, and pool removal.
