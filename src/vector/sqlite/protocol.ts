@@ -1,3 +1,4 @@
+import type { MemoryProfileSetting } from "../../sqlite/memoryProfile.js";
 import type { Metadata, VectorIndexOptions, VectorRecord } from "../types.js";
 import type {
 	SqliteKeyedVectorRecord,
@@ -9,6 +10,8 @@ export type SqliteVectorPersistence = "memory" | "opfs";
 
 export interface SqliteVectorWorkerOptions extends VectorIndexOptions {
 	readonly persistence?: SqliteVectorPersistence;
+	/** SQLite page cache and heap limits. Default "auto": sized to the device, conservative on iOS. */
+	readonly memoryProfile?: MemoryProfileSetting;
 }
 
 export type SqliteVectorWorkerRequest =

@@ -1,3 +1,4 @@
+import { applyMemoryProfile, resolveMemoryProfile, } from "../../sqlite/memoryProfile.js";
 /** Adapt SQLite's OO1 database surface without leaking it into the index API. */
 export function wrapSqliteDatabase(raw) {
     return {
@@ -37,6 +38,9 @@ export class SqliteDatabaseVectorIndex {
         this.capabilities = persistent
             ? CAPABILITIES
             : Object.freeze({ ...CAPABILITIES, persistent: false });
+        if (options.memoryProfile !== undefined) {
+            applyMemoryProfile(database, resolveMemoryProfile(options.memoryProfile));
+        }
         this.#initialize();
     }
     async insert(records) {

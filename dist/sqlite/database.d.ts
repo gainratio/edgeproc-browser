@@ -1,3 +1,4 @@
+import { type MemoryProfileSetting } from "./memoryProfile.js";
 export type SqliteStateValue = Uint8Array;
 export type SqliteStatePersistence = "memory" | "opfs";
 export interface SqliteStateStoreOptions {
@@ -5,6 +6,8 @@ export interface SqliteStateStoreOptions {
     /** Applied only when a new database is initialized. */
     readonly initialSchemaVersion: number;
     readonly persistence?: SqliteStatePersistence;
+    /** SQLite page cache and heap limits. Default "auto": sized to the device, conservative on iOS. */
+    readonly memoryProfile?: MemoryProfileSetting;
     readonly maxImportBytes?: number;
 }
 export interface SqliteStateRow {

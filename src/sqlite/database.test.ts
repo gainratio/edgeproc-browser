@@ -388,3 +388,24 @@ function interceptDatabase(
 		close: () => database.close(),
 	};
 }
+
+describe("SqliteStateStoreDatabase memory profile wiring", () => {
+	it("applies the requested profile when the store opens", async () => {
+		const sqlite = await modulePromise;
+		const raw = new sqlite.oo1.DB(":memory:");
+		const runtime = createSqliteStateRuntime(sqlite, raw);
+		new SqliteStateStoreDatabase(
+			{ name: "profiled", initialSchemaVersion: 1, memoryProfile: "lite" },
+			runtime.database,
+			runtime,
+			false,
+		);
+		expect(
+			runtime.database.selectObjects("PRAGMA cache_size")[0]?.cache_size,
+		).toBe(-16384);
+		expect(
+			runtime.database.selectObjects("PRAGMA soft_heap_limit")[0]
+				?.soft_heap_limit,
+		).toBe(48 * 1024 * 1024);
+	});
+});

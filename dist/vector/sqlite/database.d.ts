@@ -1,5 +1,10 @@
+import { type MemoryProfileSetting } from "../../sqlite/memoryProfile.js";
 import type { Metadata, VectorHit, VectorIndex, VectorIndexCapabilities, VectorIndexOptions, VectorRecord, VectorStats } from "../types.js";
 export type SqliteValue = string | number | null | Uint8Array;
+/** Index options plus the SQLite memory profile ("auto" sizes it to the device). */
+export interface SqliteVectorIndexOptions extends VectorIndexOptions {
+    readonly memoryProfile?: MemoryProfileSetting;
+}
 /** Minimal synchronous SQLite surface used by the adapter and its test seam. */
 export interface SqliteDatabase {
     exec(sql: string, bind?: ReadonlyArray<SqliteValue>): void;
@@ -40,7 +45,7 @@ export declare class SqliteDatabaseVectorIndex implements VectorIndex {
     readonly name: string;
     readonly dimension: number;
     readonly capabilities: VectorIndexCapabilities;
-    constructor(options: VectorIndexOptions, database: SqliteDatabase, persistent?: boolean);
+    constructor(options: SqliteVectorIndexOptions, database: SqliteDatabase, persistent?: boolean);
     insert(records: ReadonlyArray<VectorRecord>): Promise<void>;
     insertKeyed(records: ReadonlyArray<SqliteKeyedVectorRecord>): Promise<void>;
     lookupIds(keys: ReadonlyArray<SqliteLookupKey>, maxDocumentFrequency: number): Promise<ReadonlyArray<string>>;

@@ -1,3 +1,8 @@
+export type {
+	MemoryProfile,
+	MemoryProfileSetting,
+	MemoryTier,
+} from "../../sqlite/memoryProfile.js";
 export {
 	createSqliteVectorIndex,
 	SqliteVectorIndexClient,
@@ -10,6 +15,7 @@ export {
 	type SqliteKeyedVectorRecord,
 	type SqliteLookupKey,
 	type SqliteValue,
+	type SqliteVectorIndexOptions,
 	type SqliteVectorRuntimeInfo,
 } from "./database.js";
 export type {

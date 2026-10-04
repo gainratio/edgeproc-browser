@@ -237,6 +237,7 @@ and a walkthrough of a first change.
 - [Getting started for developers](docs/GETTING_STARTED.md): set up, run the checks, and make
   a first change.
 - [SQLite state store](docs/sqlite-state.md): migrations, backups, headers and ownership.
+- [SQLite memory profile](docs/memory-profile.md): page cache and heap limits sized to the device.
 - [Dependencies](docs/dependencies.md): why each dependency is here.
 - [SECURITY.md](SECURITY.md): threat model, key rotation, and how to report a vulnerability.
 - [CONTRIBUTING.md](CONTRIBUTING.md): what a change needs and what gets pushed back on.
