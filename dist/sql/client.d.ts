@@ -1,5 +1,5 @@
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
-import { type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlTransactionResult } from "./types.js";
+import { type LegacySahPoolMigration, type MigrateLegacySahPoolOptions, type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlTransactionResult } from "./types.js";
 export interface SqlWorkerLike {
     postMessage(message: SqlWorkerRequest): void;
     terminate(): void;
@@ -14,6 +14,14 @@ export interface SqlPreparedStatement {
     all<R extends SqlRow = SqlRow>(bind?: SqlBind): Promise<R[]>;
     finalize(): Promise<void>;
 }
+/**
+ * The handle an interactive transaction's callback gets. Its calls run inside
+ * the transaction; the handle stops working once the callback settles.
+ */
+export interface SqlTransaction {
+    exec(sql: string, bind?: SqlBind): Promise<SqlExecResult>;
+    query<R extends SqlRow = SqlRow>(sql: string, bind?: SqlBind): Promise<R[]>;
+}
 export interface SqlDatabase {
     readonly name: string;
     /** Where the database actually lives — OPFS, or memory and why. */
@@ -24,6 +32,14 @@ export interface SqlDatabase {
     query<R extends SqlRow = SqlRow>(sql: string, bind?: SqlBind): Promise<R[]>;
     /** All statements in one BEGIN IMMEDIATE … COMMIT; any failure rolls back all. */
     transaction(statements: ReadonlyArray<SqlStatement>): Promise<SqlTransactionResult>;
+    /**
+     * Interactive: BEGIN IMMEDIATE, run `work` (read, decide in JS, write
+     * through `tx`), COMMIT; a throw or a failed COMMIT rolls back and rejects
+     * with that error. Every other call on this handle waits until it ends, so
+     * nothing interleaves. Inside `work`, use `tx` — awaiting a call on `db`
+     * there waits for the transaction it is part of, and never resolves.
+     */
+    transaction<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
     /** Bulk load: prepare once, step per row, one transaction. */
     executeMany(sql: string, rows: ReadonlyArray<SqlBind>): Promise<SqlExecResult>;
     prepare(sql: string): Promise<SqlPreparedStatement>;
@@ -35,6 +51,13 @@ export interface SqlDatabase {
      * database is unchanged.
      */
     importDatabase(bytes: Uint8Array, options?: SqlImportOptions): Promise<SqlImportResult>;
+    /**
+     * Move a database another build kept in an opfs-sahpool into this one:
+     * hold that pool exclusively, let SQLite recover a hot journal, import the
+     * result atomically (as {@link importDatabase}), then remove the legacy
+     * pool only if you asked. Browser Worker on OPFS only.
+     */
+    migrateLegacySahPool(options: MigrateLegacySahPoolOptions): Promise<LegacySahPoolMigration>;
     runtimeInfo(): Promise<SqlRuntimeInfo>;
     /** Close the connection, release the OPFS pool and end the Worker. */
     close(): Promise<void>;
@@ -60,4 +83,12 @@ export declare function exportDatabase(target: SqlDatabase | string, options?: O
  * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
  */
 export declare function importDatabase(target: SqlDatabase | string, bytes: Uint8Array, options?: SqlImportOptions & OpenSqlDatabaseOptions): Promise<SqlImportResult>;
+/**
+ * Move a legacy opfs-sahpool database into `to` (an open handle, or a name
+ * opened on OPFS under its owner lock, never a memory fallback). See
+ * {@link SqlDatabase.migrateLegacySahPool}.
+ */
+export declare function migrateLegacySahPool(options: MigrateLegacySahPoolOptions & {
+    readonly to: SqlDatabase | string;
+}, openOptions?: OpenSqlDatabaseOptions): Promise<LegacySahPoolMigration>;
 //# sourceMappingURL=client.d.ts.map

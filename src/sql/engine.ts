@@ -128,6 +128,24 @@ export class SqlEngine {
 		this.#statements.delete(id);
 	}
 
+	/** Start an interactive transaction; the client holds its lock until it ends. */
+	public begin(): void {
+		this.#raw.exec({ sql: "BEGIN IMMEDIATE" });
+	}
+
+	public commit(): void {
+		this.#raw.exec({ sql: "COMMIT" });
+	}
+
+	/** Roll back; a no-op when SQLite already ended the transaction itself. */
+	public rollback(): void {
+		try {
+			this.#raw.exec({ sql: "ROLLBACK" });
+		} catch (error) {
+			if (!/no transaction is active/.test(describeError(error))) throw error;
+		}
+	}
+
 	/** The whole database as a SQLite file (sqlite3_serialize). */
 	public exportDatabase(): Uint8Array {
 		return exportDatabase(this.#raw, this.#requireSerializer());
@@ -274,4 +292,8 @@ function applyPrivacyPragmas(raw: SqlRawDatabase): void {
 	if (journal !== "delete" || secureDelete !== 1) {
 		throw new Error("persistent SQLite privacy pragmas were not applied");
 	}
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

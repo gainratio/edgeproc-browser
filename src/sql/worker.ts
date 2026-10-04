@@ -8,10 +8,17 @@ import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { SqlEngine, type SqlRawDatabase } from "./engine.js";
 import { createSqlWorkerHandler, type OpenedSqlEngine } from "./handler.js";
+import {
+	createJournalRecovery,
+	type LegacySahPool,
+	migrateLegacySahPool,
+	opfsPoolExists,
+	type SqlRecoveryModule,
+} from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs, type SqlLocks } from "./open.js";
 import type { SqlWorkerRequest } from "./protocol.js";
 import { createSqlSerializer } from "./serializer.js";
-import type { SqlDatabaseOptions } from "./types.js";
+import type { SqlDatabaseOptions, SqlStorage } from "./types.js";
 
 const handle = createSqlWorkerHandler(openEngine);
 
@@ -27,6 +34,9 @@ async function openEngine(
 		print: () => undefined,
 		printErr: (...args) => console.error(...args),
 	});
+	const lockWaitMs = ownerLockWaitMs(
+		resolveMemoryProfile(options.memoryProfile ?? "auto").tier,
+	);
 	const opened = await openSqlStorage<SqlRawDatabase>(
 		{
 			openMemory: () =>
@@ -38,11 +48,9 @@ async function openEngine(
 				})) as unknown as {
 					OpfsSAHPoolDb: new (file: string) => SqlRawDatabase;
 				},
-			locks: (navigator as { locks?: SqlLocks }).locks,
+			locks: navigatorLocks(),
 			warn: (message) => console.warn(message),
-			lockWaitMs: ownerLockWaitMs(
-				resolveMemoryProfile(options.memoryProfile ?? "auto").tier,
-			),
+			lockWaitMs,
 		},
 		options,
 	);
@@ -52,7 +60,11 @@ async function openEngine(
 			memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
 			serializer: createSqlSerializer(sqlite),
 		});
-		return { engine, release: opened.release };
+		return {
+			engine,
+			release: opened.release,
+			migrateLegacy: legacyMigrator(sqlite, opened.storage, engine, lockWaitMs),
+		};
 	} catch (error) {
 		try {
 			opened.raw.close();
@@ -61,4 +73,39 @@ async function openEngine(
 		}
 		throw error;
 	}
+}
+
+function navigatorLocks(): SqlLocks | undefined {
+	return (navigator as { locks?: SqlLocks }).locks;
+}
+
+type SqliteModule = Awaited<ReturnType<typeof sqlite3InitModule>>;
+
+/** Legacy opfs-sahpool migration on this Worker's module and connection. */
+function legacyMigrator(
+	sqlite: SqliteModule,
+	storage: SqlStorage,
+	engine: SqlEngine,
+	lockWaitMs: number,
+): NonNullable<OpenedSqlEngine["migrateLegacy"]> {
+	const recover = createJournalRecovery(sqlite as unknown as SqlRecoveryModule);
+	return (request) =>
+		migrateLegacySahPool(
+			{
+				locks: navigatorLocks(),
+				lockWaitMs,
+				ownPool: storage.persistence === "opfs" ? storage.pool : undefined,
+				poolExists: async (pool) =>
+					opfsPoolExists(pool, await navigator.storage.getDirectory()),
+				installPool: async (name) =>
+					(await sqlite.installOpfsSAHPoolVfs({
+						name,
+						forceReinitIfPreviouslyFailed: true,
+					})) as unknown as LegacySahPool,
+				recover,
+				importDatabase: (bytes, options) =>
+					engine.importDatabase(bytes, options),
+			},
+			request,
+		);
 }

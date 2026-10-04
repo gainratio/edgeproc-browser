@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interactive SQL transactions.** `db.transaction(async (tx) => { … })` runs
+  `BEGIN IMMEDIATE`, your callback's `tx.query` / `tx.exec`, then `COMMIT`; a throw or a failed
+  `COMMIT` rolls back and rejects with that error. The handle holds its connection lock for the
+  callback, so other calls on it (including other transactions) wait instead of interleaving.
+  The statement-list form is unchanged.
+- **`migrateLegacySahPool({ fromPool, fromFile, to })`** (and `db.migrateLegacySahPool`): move
+  a database another SQLite build kept in an opfs-sahpool into one this library owns. Holds a
+  Web Lock and the old pool's access handles (an old-build tab that has it open gives
+  `"in-use"`), lets SQLite roll back a hot journal the old build crashed with, imports through
+  the normal validated, atomic import, and removes the old pool only with `removeLegacy: true`.
+- **`@gainratio/browser/sql/node`**: `openNodeSqlDatabase({ name })` runs the same pinned SQLite
+  build, client and handler in-process, so consumers' SQL tests run against the real engine.
+- Docs: importing a schema that has triggers (`allowTriggersAndViews: true`), with the
+  workstation's append-only pair as the example.
+
 ### Fixed
 
 - **Removing a pool right after closing it could report `"in-use"` and leave it on disk.**

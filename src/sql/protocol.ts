@@ -1,4 +1,5 @@
 import type {
+	MigrateLegacySahPoolOptions,
 	SqlBind,
 	SqlDatabaseOptions,
 	SqlFallbackReason,
@@ -30,6 +31,7 @@ export type SqlWorkerRequest = WithId<
 			readonly sql: string;
 			readonly rows: ReadonlyArray<SqlBind>;
 	  }
+	| { readonly operation: "begin" | "commit" | "rollback" }
 	| { readonly operation: "prepare"; readonly sql: string }
 	| {
 			readonly operation: "run-prepared" | "all-prepared";
@@ -42,6 +44,10 @@ export type SqlWorkerRequest = WithId<
 			readonly operation: "import";
 			readonly bytes: Uint8Array;
 			readonly options?: SqlImportOptions;
+	  }
+	| {
+			readonly operation: "migrate-legacy";
+			readonly options: MigrateLegacySahPoolOptions;
 	  }
 	| { readonly operation: "runtime-info" }
 	| { readonly operation: "close" }

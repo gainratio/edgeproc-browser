@@ -3,8 +3,8 @@
 		"target": "ES2023",
 		/* This package is the BROWSER tier: it speaks BroadcastChannel,
 		   PerformanceObserver, OPFS and Worker. DOM + WebWorker are part of its
-		   contract, not an accident. The explicit ./vector/sqlite/node export is
-		   the sole shipped Node entrypoint; browser entries remain node-free. */
+		   contract, not an accident. The explicit ./vector/sqlite/node and ./sql/node
+		   exports are the only shipped Node entrypoints; browser entries remain node-free. */
 		"lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],
 		"types": ["node"],
 		"module": "ESNext",
@@ -16,6 +16,7 @@
 			"@gainratio/browser": ["./src/index.ts"],
 			"@gainratio/browser/spawn": ["./src/engine/spawn.ts"],
 			"@gainratio/browser/sql": ["./src/sql/index.ts"],
+			"@gainratio/browser/sql/node": ["./src/sql/node.ts"],
 			"@gainratio/browser/sqlite": ["./src/sqlite/index.ts"],
 			"@gainratio/browser/vector": ["./src/vector/index.ts"],
 			"@gainratio/browser/vector/sqlite": ["./src/vector/sqlite/index.ts"],

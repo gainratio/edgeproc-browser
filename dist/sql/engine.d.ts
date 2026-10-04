@@ -42,6 +42,11 @@ export declare class SqlEngine {
     runPrepared(id: number, bind?: SqlBind): SqlExecResult;
     allPrepared(id: number, bind?: SqlBind): SqlRow[];
     finalize(id: number): void;
+    /** Start an interactive transaction; the client holds its lock until it ends. */
+    begin(): void;
+    commit(): void;
+    /** Roll back; a no-op when SQLite already ended the transaction itself. */
+    rollback(): void;
     /** The whole database as a SQLite file (sqlite3_serialize). */
     exportDatabase(): Uint8Array;
     /** Validate `bytes`, then replace this database with it in one transaction. */

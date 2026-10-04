@@ -7,6 +7,7 @@ import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
+import { createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs } from "./open.js";
 import { createSqlSerializer } from "./serializer.js";
 const handle = createSqlWorkerHandler(openEngine);
@@ -19,15 +20,16 @@ async function openEngine(options) {
         print: () => undefined,
         printErr: (...args) => console.error(...args),
     });
+    const lockWaitMs = ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier);
     const opened = await openSqlStorage({
         openMemory: () => new sqlite.oo1.DB(":memory:"),
         installPool: async (name) => (await sqlite.installOpfsSAHPoolVfs({
             name,
             forceReinitIfPreviouslyFailed: true,
         })),
-        locks: navigator.locks,
+        locks: navigatorLocks(),
         warn: (message) => console.warn(message),
-        lockWaitMs: ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier),
+        lockWaitMs,
     }, options);
     try {
         const engine = new SqlEngine(opened.raw, {
@@ -35,7 +37,11 @@ async function openEngine(options) {
             memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
             serializer: createSqlSerializer(sqlite),
         });
-        return { engine, release: opened.release };
+        return {
+            engine,
+            release: opened.release,
+            migrateLegacy: legacyMigrator(sqlite, opened.storage, engine, lockWaitMs),
+        };
     }
     catch (error) {
         try {
@@ -46,5 +52,24 @@ async function openEngine(options) {
         }
         throw error;
     }
+}
+function navigatorLocks() {
+    return navigator.locks;
+}
+/** Legacy opfs-sahpool migration on this Worker's module and connection. */
+function legacyMigrator(sqlite, storage, engine, lockWaitMs) {
+    const recover = createJournalRecovery(sqlite);
+    return (request) => migrateLegacySahPool({
+        locks: navigatorLocks(),
+        lockWaitMs,
+        ownPool: storage.persistence === "opfs" ? storage.pool : undefined,
+        poolExists: async (pool) => opfsPoolExists(pool, await navigator.storage.getDirectory()),
+        installPool: async (name) => (await sqlite.installOpfsSAHPoolVfs({
+            name,
+            forceReinitIfPreviouslyFailed: true,
+        })),
+        recover,
+        importDatabase: (bytes, options) => engine.importDatabase(bytes, options),
+    }, request);
 }
 //# sourceMappingURL=worker.js.map

@@ -3,6 +3,8 @@
 
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
 import {
+	type LegacySahPoolMigration,
+	type MigrateLegacySahPoolOptions,
 	type SqlBind,
 	type SqlDatabaseOptions,
 	type SqlExecResult,
@@ -40,6 +42,15 @@ export interface SqlPreparedStatement {
 	finalize(): Promise<void>;
 }
 
+/**
+ * The handle an interactive transaction's callback gets. Its calls run inside
+ * the transaction; the handle stops working once the callback settles.
+ */
+export interface SqlTransaction {
+	exec(sql: string, bind?: SqlBind): Promise<SqlExecResult>;
+	query<R extends SqlRow = SqlRow>(sql: string, bind?: SqlBind): Promise<R[]>;
+}
+
 export interface SqlDatabase {
 	readonly name: string;
 	/** Where the database actually lives — OPFS, or memory and why. */
@@ -52,6 +63,14 @@ export interface SqlDatabase {
 	transaction(
 		statements: ReadonlyArray<SqlStatement>,
 	): Promise<SqlTransactionResult>;
+	/**
+	 * Interactive: BEGIN IMMEDIATE, run `work` (read, decide in JS, write
+	 * through `tx`), COMMIT; a throw or a failed COMMIT rolls back and rejects
+	 * with that error. Every other call on this handle waits until it ends, so
+	 * nothing interleaves. Inside `work`, use `tx` — awaiting a call on `db`
+	 * there waits for the transaction it is part of, and never resolves.
+	 */
+	transaction<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
 	/** Bulk load: prepare once, step per row, one transaction. */
 	executeMany(
 		sql: string,
@@ -69,6 +88,15 @@ export interface SqlDatabase {
 		bytes: Uint8Array,
 		options?: SqlImportOptions,
 	): Promise<SqlImportResult>;
+	/**
+	 * Move a database another build kept in an opfs-sahpool into this one:
+	 * hold that pool exclusively, let SQLite recover a hot journal, import the
+	 * result atomically (as {@link importDatabase}), then remove the legacy
+	 * pool only if you asked. Browser Worker on OPFS only.
+	 */
+	migrateLegacySahPool(
+		options: MigrateLegacySahPoolOptions,
+	): Promise<LegacySahPoolMigration>;
 	runtimeInfo(): Promise<SqlRuntimeInfo>;
 	/** Close the connection, release the OPFS pool and end the Worker. */
 	close(): Promise<void>;
@@ -158,6 +186,10 @@ class WorkerSqlDatabase implements SqlDatabase {
 	public readonly storage: SqlStorage;
 	readonly #connection: Connection;
 	#closed = false;
+	/** Settles when every call queued so far has been posted or finished. */
+	#tail: Promise<void> = Promise.resolve();
+	/** Transactions (and close) queued or running. */
+	#exclusiveCount = 0;
 
 	public constructor(
 		name: string,
@@ -182,8 +214,18 @@ class WorkerSqlDatabase implements SqlDatabase {
 
 	public transaction(
 		statements: ReadonlyArray<SqlStatement>,
-	): Promise<SqlTransactionResult> {
-		return this.#call({ operation: "transaction", statements });
+	): Promise<SqlTransactionResult>;
+	public transaction<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+	public transaction<T>(
+		input: ReadonlyArray<SqlStatement> | ((tx: SqlTransaction) => Promise<T>),
+	): Promise<SqlTransactionResult | T> {
+		if (typeof input !== "function") {
+			return this.#call({ operation: "transaction", statements: input });
+		}
+		if (this.#closed) {
+			return Promise.reject(new Error("SQL database is closed"));
+		}
+		return this.#exclusive(() => this.#interactive(input));
 	}
 
 	public executeMany(
@@ -219,6 +261,12 @@ class WorkerSqlDatabase implements SqlDatabase {
 		});
 	}
 
+	public migrateLegacySahPool(
+		options: MigrateLegacySahPoolOptions,
+	): Promise<LegacySahPoolMigration> {
+		return this.#call({ operation: "migrate-legacy", options });
+	}
+
 	public runtimeInfo(): Promise<SqlRuntimeInfo> {
 		return this.#call({ operation: "runtime-info" });
 	}
@@ -227,7 +275,9 @@ class WorkerSqlDatabase implements SqlDatabase {
 		if (this.#closed) return;
 		this.#closed = true;
 		try {
-			await this.#connection.request({ operation: "close" });
+			await this.#exclusive(() =>
+				this.#connection.request({ operation: "close" }),
+			);
 		} finally {
 			this.#connection.terminate(new Error("SQL database is closed"));
 		}
@@ -237,7 +287,85 @@ class WorkerSqlDatabase implements SqlDatabase {
 		if (this.#closed) {
 			return Promise.reject(new Error("SQL database is closed"));
 		}
-		return this.#connection.request(request) as Promise<T>;
+		// No transaction queued or open: post now, so the arguments are copied
+		// at the call (as postMessage does) and plain calls pipeline.
+		if (this.#exclusiveCount === 0) {
+			return this.#connection.request(request) as Promise<T>;
+		}
+		// Otherwise wait for it to end, holding a copy taken now.
+		const snapshot = structuredClone(request);
+		return this.#tail.then(
+			() => this.#connection.request(snapshot) as Promise<T>,
+		);
+	}
+
+	/** Run `action` alone: later calls wait until it settles. */
+	#exclusive<T>(action: () => Promise<T>): Promise<T> {
+		this.#exclusiveCount += 1;
+		const run = this.#tail.then(action);
+		this.#tail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		void this.#tail.then(() => {
+			this.#exclusiveCount -= 1;
+		});
+		return run;
+	}
+
+	async #interactive<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T> {
+		const send = (request: RequestWithoutId) =>
+			this.#connection.request(request);
+		await send({ operation: "begin" });
+		const tx = new ScopedTransaction(send);
+		try {
+			const value = await work(tx);
+			await send({ operation: "commit" });
+			return value;
+		} catch (error) {
+			try {
+				await send({ operation: "rollback" });
+			} catch (rollbackError) {
+				throw new AggregateError(
+					[error, rollbackError],
+					"SQL transaction failed and could not be rolled back",
+				);
+			}
+			throw error;
+		} finally {
+			tx.end();
+		}
+	}
+}
+
+class ScopedTransaction implements SqlTransaction {
+	readonly #send: (request: RequestWithoutId) => Promise<unknown>;
+	#ended = false;
+
+	public constructor(send: (request: RequestWithoutId) => Promise<unknown>) {
+		this.#send = send;
+	}
+
+	public exec(sql: string, bind?: SqlBind): Promise<SqlExecResult> {
+		return this.#run({ operation: "exec", sql, ...withBind(bind) });
+	}
+
+	public query<R extends SqlRow = SqlRow>(
+		sql: string,
+		bind?: SqlBind,
+	): Promise<R[]> {
+		return this.#run({ operation: "query", sql, ...withBind(bind) });
+	}
+
+	public end(): void {
+		this.#ended = true;
+	}
+
+	#run<T>(request: RequestWithoutId): Promise<T> {
+		if (this.#ended) {
+			return Promise.reject(new Error("SQL transaction has ended"));
+		}
+		return this.#send(request) as Promise<T>;
 	}
 }
 
@@ -268,6 +396,23 @@ export async function importDatabase(
 		target,
 		workerFactory === undefined ? {} : { workerFactory },
 		(db) => db.importDatabase(bytes, importOptions),
+	);
+}
+
+/**
+ * Move a legacy opfs-sahpool database into `to` (an open handle, or a name
+ * opened on OPFS under its owner lock, never a memory fallback). See
+ * {@link SqlDatabase.migrateLegacySahPool}.
+ */
+export async function migrateLegacySahPool(
+	options: MigrateLegacySahPoolOptions & {
+		readonly to: SqlDatabase | string;
+	},
+	openOptions: OpenSqlDatabaseOptions = {},
+): Promise<LegacySahPoolMigration> {
+	const { to, ...request } = options;
+	return withDatabase(to, openOptions, (db) =>
+		db.migrateLegacySahPool(request),
 	);
 }
 

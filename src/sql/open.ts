@@ -194,7 +194,7 @@ export function isLockTimeout(error: unknown): boolean {
 	return name === "AbortError" || name === "TimeoutError";
 }
 
-function isPoolContentionError(error: unknown): boolean {
+export function isPoolContentionError(error: unknown): boolean {
 	return (
 		error instanceof Error &&
 		(error.name === "NoModificationAllowedError" ||

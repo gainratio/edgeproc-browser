@@ -131,4 +131,33 @@ export declare class SqlImportRejectedError extends Error {
     readonly reason: SqlImportRejection;
     constructor(reason: SqlImportRejection, message: string);
 }
+/** A database another build kept in an opfs-sahpool, and how to move it. */
+export interface MigrateLegacySahPoolOptions {
+    /** The legacy pool's VFS name (its OPFS directory is `.${fromPool}`). */
+    readonly fromPool: string;
+    /** The database's name inside that pool, e.g. "/kyc.sqlite3". */
+    readonly fromFile: string;
+    /** Delete the legacy pool once the import has committed. Default false. */
+    readonly removeLegacy?: boolean;
+    /** Web Lock held while the pool is read. Default `${fromPool}-owner`. */
+    readonly lockName?: string;
+    /** Validation for the incoming file (schema checks, triggers, size). */
+    readonly importOptions?: SqlImportOptions;
+}
+export type LegacySahPoolMigration = {
+    readonly status: "migrated";
+    readonly result: SqlImportResult;
+    /** A rollback journal was present and SQLite played it back. */
+    readonly recoveredJournal: boolean;
+    /** "kept" unless you asked for removal and the pool is gone. */
+    readonly legacy: "removed" | "kept";
+}
+/** No such pool, or no such file in it. Nothing was created. */
+ | {
+    readonly status: "absent";
+}
+/** Another context holds the pool or the lock. Nothing changed; retry later. */
+ | {
+    readonly status: "in-use";
+};
 //# sourceMappingURL=types.d.ts.map

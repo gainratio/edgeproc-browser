@@ -1,4 +1,4 @@
-import type { SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlImportOptions, SqlImportRejection, SqlStatement } from "./types.js";
+import type { MigrateLegacySahPoolOptions, SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlImportOptions, SqlImportRejection, SqlStatement } from "./types.js";
 type WithId<T> = T & {
     readonly id: number;
 };
@@ -21,6 +21,8 @@ export type SqlWorkerRequest = WithId<{
     readonly sql: string;
     readonly rows: ReadonlyArray<SqlBind>;
 } | {
+    readonly operation: "begin" | "commit" | "rollback";
+} | {
     readonly operation: "prepare";
     readonly sql: string;
 } | {
@@ -36,6 +38,9 @@ export type SqlWorkerRequest = WithId<{
     readonly operation: "import";
     readonly bytes: Uint8Array;
     readonly options?: SqlImportOptions;
+} | {
+    readonly operation: "migrate-legacy";
+    readonly options: MigrateLegacySahPoolOptions;
 } | {
     readonly operation: "runtime-info";
 } | {

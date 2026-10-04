@@ -72,6 +72,10 @@
 			"types": "./dist/sql/index.d.ts",
 			"import": "./dist/sql/index.js"
 		},
+		"./sql/node": {
+			"types": "./dist/sql/node.d.ts",
+			"import": "./dist/sql/node.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"sideEffects": [

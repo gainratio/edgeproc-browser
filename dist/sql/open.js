@@ -121,7 +121,7 @@ export function isLockTimeout(error) {
     const name = error?.name;
     return name === "AbortError" || name === "TimeoutError";
 }
-function isPoolContentionError(error) {
+export function isPoolContentionError(error) {
     return (error instanceof Error &&
         (error.name === "NoModificationAllowedError" ||
             /access handles? cannot be created|NoModificationAllowedError/i.test(error.message)));

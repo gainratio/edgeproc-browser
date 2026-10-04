@@ -432,3 +432,39 @@ describe("SqlEngine on the pinned SQLite build", () => {
 		raw.close();
 	});
 });
+
+describe("SqlEngine interactive transaction primitives", () => {
+	it("begins IMMEDIATE, commits, and treats a rollback with nothing open as done", () => {
+		const engine = open();
+		engine.exec("CREATE TABLE t(x)");
+		engine.begin();
+		engine.exec("INSERT INTO t VALUES (1)");
+		engine.commit();
+		engine.begin();
+		engine.exec("INSERT INTO t VALUES (2)");
+		engine.rollback();
+		engine.rollback();
+		expect(engine.query("SELECT x FROM t")).toEqual([{ x: 1 }]);
+		expect(() => engine.commit()).toThrow(/no transaction is active/);
+	});
+
+	it("rethrows a rollback failure that is not 'no transaction'", () => {
+		const raw = sqlite.openMemory();
+		const failing: SqlRawDatabase = {
+			exec: (options) => {
+				if (options.sql === "ROLLBACK") throw new Error("disk I/O error");
+				return raw.exec(options);
+			},
+			selectObjects: (sql, bind) => raw.selectObjects(sql, bind),
+			prepare: (sql) => raw.prepare(sql),
+			transaction: (qualifier, callback) =>
+				raw.transaction(qualifier, callback),
+			close: () => raw.close(),
+		};
+		const engine = new SqlEngine(failing, {
+			storage: MEMORY,
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		expect(() => engine.rollback()).toThrow("disk I/O error");
+	});
+});

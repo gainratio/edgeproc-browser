@@ -59,5 +59,6 @@ export declare function poolOwnerLock(pool: string): string;
 export declare function acquirePoolLease(locks: SqlLocks | undefined, name: string, waitMs: number): Promise<(() => Promise<void>) | undefined>;
 /** DOMException is not an Error subclass in every realm, so match by name. */
 export declare function isLockTimeout(error: unknown): boolean;
+export declare function isPoolContentionError(error: unknown): boolean;
 export declare function stableIdentity(name: string): Promise<string>;
 //# sourceMappingURL=open.d.ts.map
