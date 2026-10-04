@@ -222,6 +222,20 @@ describe("reading packed chunks", () => {
 		expect(packDir(root).files.size).toBe(0);
 	});
 
+	it("drops an index whose data file is missing", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		const [chunk] = chunksOf(1);
+		if (chunk === undefined) throw new Error("tiny");
+		await store.putChunksCompressed([chunk]);
+		const [index] = packIndexes(root);
+		packDir(root).files.delete(index?.slice(0, -".idx".length) ?? "");
+
+		const reopened = await OpfsCacheStore.open();
+		expect(await reopened.hasChunk(chunk.hash)).toBe(false);
+		expect(packDir(root).files.size).toBe(0);
+	});
+
 	it.each([
 		["wrong version", { v: 2, chunks: [] }],
 		["not a list", { v: 1, chunks: {} }],
