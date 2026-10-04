@@ -50,6 +50,30 @@ describe("openSqlStorage", () => {
 		expect((d.locks as FakeLocks).isHeld(`${pool}-owner`)).toBe(false);
 	});
 
+	it("release() resolves only once the owner lock is actually free", async () => {
+		// A real lock manager lets go a task AFTER the callback settles; the
+		// request's own promise is the only signal that it has.
+		let held = false;
+		const locks = {
+			request<T>(
+				_name: string,
+				_options: unknown,
+				callback: (lock: unknown) => Promise<T>,
+			): Promise<T> {
+				held = true;
+				return callback({}).then(async (value) => {
+					await new Promise((resolve) => setTimeout(resolve, 0));
+					held = false;
+					return value;
+				});
+			},
+		};
+		const opened = await openSqlStorage(deps({ locks }), { name: "settled" });
+		expect(held).toBe(true);
+		await opened.release();
+		expect(held).toBe(false);
+	});
+
 	it("pauses the pool (frees its OPFS handles) before releasing the owner lock", async () => {
 		const order: string[] = [];
 		const locks = new FakeLocks();

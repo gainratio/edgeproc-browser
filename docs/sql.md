@@ -92,8 +92,8 @@ interface SqlDatabase {
 exportDatabase(db | name, { workerFactory? }?): Promise<Uint8Array>
 importDatabase(db | name, bytes, options?): Promise<SqlImportResult>
 
-removeSqlDatabase(name): Promise<"removed" | "absent" | "in-use">
-removeOpfsPool(poolName): Promise<"removed" | "absent" | "in-use">
+removeSqlDatabase(name, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use">
+removeOpfsPool(poolName, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use">
 sqliteVectorPoolName(name): Promise<string>   // pool used by createSqliteVectorIndex
 sqlDatabasePoolName(name): Promise<string>    // pool used by openSqlDatabase
 ```
@@ -124,7 +124,10 @@ checks they stuck.
 ## Delete an old database or pool
 
 Removal is idempotent. It returns `"absent"` when there is nothing to delete and `"in-use"`
-(deleting nothing) while another context has the files open.
+(deleting nothing) while another live context, such as another tab, still owns the pool.
+
+Closing first and removing straight after is safe: `db.close()` and `index.dispose()` resolve
+only after the Worker has closed the pool's OPFS handles and released its owner lock.
 
 ```ts
 import {
@@ -143,8 +146,10 @@ await removeOpfsPool(await sqliteVectorPoolName("catalog"));
 await removeOpfsPool("edgereco-catalogue");
 ```
 
-`removeSqlDatabase` takes the same owner lock as `openSqlDatabase`, so it never deletes a
-database this origin has open. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
+Both take the pool's owner Web Lock, the one `openSqlDatabase` and an OPFS
+`createSqliteVectorIndex` hold while open, and delete while holding it, so nothing can reopen
+the pool mid-delete. They wait up to `lockWaitMs` (default 2000) for an owner that is closing,
+then report `"in-use"`. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
 If the browser refuses the OPFS root (Safari private browsing, Playwright's WebKit), both throw
 `SqlStorageUnavailableError("opfs-unavailable")`, the same typed reason `openSqlDatabase` reports.
 

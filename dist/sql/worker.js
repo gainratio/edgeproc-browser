@@ -43,7 +43,7 @@ async function openEngine(options) {
             opened.raw.close();
         }
         finally {
-            opened.release();
+            await opened.release();
         }
         throw error;
     }

@@ -4,10 +4,23 @@
 // opfs-sahpool keeps everything for a pool named P under the OPFS directory
 // `.P` (sqlite3.mjs: `vfsDir = options.directory || "." + vfsName`), so
 // removing that directory removes the pool. Removal is idempotent: a missing
-// pool is "absent", and a pool whose files another context holds open is
-// "in-use" (nothing is deleted; try again once that context closes it).
+// pool is "absent", and a pool another live context still owns is "in-use"
+// (nothing is deleted; try again once that context closes it).
+//
+// Every owner (openSqlDatabase, createSqliteVectorIndex with OPFS) holds the
+// pool's exclusive owner Web Lock while open and releases it only after its
+// sync access handles are closed. Removal takes that same lock, waiting a
+// bounded time for an owner that is just closing, and deletes while holding
+// it, so nothing can reopen the pool mid-delete. A pool still owned after the
+// wait, or whose files a lock-less context holds open, is "in-use".
 
-import { type SqlLocks, sqlDatabasePoolName, stableIdentity } from "./open.js";
+import {
+	acquirePoolLease,
+	poolOwnerLock,
+	type SqlLocks,
+	sqlDatabasePoolName,
+	stableIdentity,
+} from "./open.js";
 import { SqlStorageUnavailableError } from "./types.js";
 
 export type OpfsPoolRemoval = "removed" | "absent" | "in-use";
@@ -20,12 +33,15 @@ export interface OpfsRoot {
 export interface RemoveOpfsPoolOptions {
 	/** Defaults to `navigator.storage.getDirectory()`. */
 	readonly root?: OpfsRoot;
+	/** Defaults to `navigator.locks`; `undefined` removes without the owner lock. */
+	readonly locks?: SqlLocks | undefined;
+	/** How long to wait for a closing owner before reporting "in-use". Default 2000. */
+	readonly lockWaitMs?: number;
 }
 
-export interface RemoveSqlDatabaseOptions extends RemoveOpfsPoolOptions {
-	/** Defaults to `navigator.locks`. */
-	readonly locks?: SqlLocks | undefined;
-}
+export type RemoveSqlDatabaseOptions = RemoveOpfsPoolOptions;
+
+const DEFAULT_LOCK_WAIT_MS = 2_000;
 
 const SAFE_POOL_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
@@ -37,6 +53,24 @@ export async function removeOpfsPool(
 	if (!SAFE_POOL_NAME.test(poolName) || poolName === "..") {
 		throw new TypeError(`invalid OPFS pool name: ${JSON.stringify(poolName)}`);
 	}
+	const locks = "locks" in options ? options.locks : defaultLocks();
+	const release = await acquirePoolLease(
+		locks,
+		poolOwnerLock(poolName),
+		options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS,
+	);
+	if (release === undefined) return "in-use";
+	try {
+		return await removeUnderLease(poolName, options);
+	} finally {
+		await release();
+	}
+}
+
+async function removeUnderLease(
+	poolName: string,
+	options: RemoveOpfsPoolOptions,
+): Promise<OpfsPoolRemoval> {
 	const root = options.root ?? (await defaultRoot());
 	try {
 		await root.removeEntry(`.${poolName}`, { recursive: true });
@@ -55,22 +89,14 @@ export async function removeOpfsPool(
 }
 
 /**
- * Remove a database opened with `openSqlDatabase({ name })`. Takes the same
- * owner lock the open holds, so it never deletes a database this origin has
- * open; then removes its pool.
+ * Remove a database opened with `openSqlDatabase({ name })`: its pool, under
+ * the same owner lock the open holds (see {@link removeOpfsPool}).
  */
 export async function removeSqlDatabase(
 	name: string,
 	options: RemoveSqlDatabaseOptions = {},
 ): Promise<OpfsPoolRemoval> {
-	const pool = await sqlDatabasePoolName(name);
-	const locks = "locks" in options ? options.locks : defaultLocks();
-	if (locks === undefined) return removeOpfsPool(pool, options);
-	return locks.request(
-		`${pool}-owner`,
-		{ mode: "exclusive", ifAvailable: true },
-		async (lock) => (lock === null ? "in-use" : removeOpfsPool(pool, options)),
-	);
+	return removeOpfsPool(await sqlDatabasePoolName(name), options);
 }
 
 /** The pool `createSqliteVectorIndex({ name, persistence: "opfs" })` uses. */

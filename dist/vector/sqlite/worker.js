@@ -1,11 +1,16 @@
 /// <reference lib="webworker" />
+import { acquirePoolLease, poolOwnerLock, } from "../../sql/open.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import { SqliteDatabaseVectorIndex, wrapSqliteDatabase, } from "./database.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
 const POOL_ACQUIRE_MAX_DELAY_MS = 800;
+/** How long to wait for a previous owner (a reload, a closing tab) to let go. */
+const OWNER_LOCK_WAIT_MS = 2_000;
 let index;
+/** Frees the OPFS pool (handles, then owner lock); resolves once both are free. */
+let releaseStorage = async () => undefined;
 let queue = Promise.resolve();
 self.onmessage = (event) => {
     const request = event.data;
@@ -60,8 +65,16 @@ async function dispatch(request) {
         case "runtime-info":
             return current.runtimeInfo();
         case "dispose":
-            await current.dispose();
+            // Answer only once the handles and owner lock are free, so a caller
+            // that awaits dispose() can remove or reopen the pool at once.
             index = undefined;
+            try {
+                await current.dispose();
+            }
+            finally {
+                await releaseStorage();
+                releaseStorage = async () => undefined;
+            }
             return undefined;
     }
 }
@@ -78,8 +91,7 @@ async function openIndex(options) {
     }
     else if (persistence === "opfs") {
         const identity = await stableIdentity(options.name);
-        const pool = await acquirePersistentPool(sqlite, `edgeproc-vector-${identity}`);
-        raw = new pool.OpfsSAHPoolDb(`/edgeproc-vector-${identity}.sqlite3`);
+        raw = await openPersistent(sqlite, `edgeproc-vector-${identity}`);
     }
     else {
         throw new TypeError(`unsupported SQLite persistence: ${String(persistence)}`);
@@ -99,7 +111,47 @@ async function openIndex(options) {
         return opened;
     }
     catch (error) {
-        database.close();
+        try {
+            database.close();
+        }
+        finally {
+            await releaseStorage();
+            releaseStorage = async () => undefined;
+        }
+        throw error;
+    }
+}
+/**
+ * Own the pool the way openSqlDatabase does: the exclusive owner Web Lock for
+ * the life of the index, so removeOpfsPool can tell "closing" from "in use".
+ */
+async function openPersistent(sqlite, poolName) {
+    const releaseLock = await acquirePoolLease(navigator.locks, poolOwnerLock(poolName), OWNER_LOCK_WAIT_MS);
+    if (releaseLock === undefined) {
+        throw new Error("could not open the local vector database — this index is already open in another tab");
+    }
+    let pool;
+    try {
+        pool = await acquirePersistentPool(sqlite, poolName);
+    }
+    catch (error) {
+        await releaseLock();
+        throw error;
+    }
+    releaseStorage = async () => {
+        try {
+            pool.pauseVfs();
+        }
+        finally {
+            await releaseLock();
+        }
+    };
+    try {
+        return new pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`);
+    }
+    catch (error) {
+        await releaseStorage();
+        releaseStorage = async () => undefined;
         throw error;
     }
 }

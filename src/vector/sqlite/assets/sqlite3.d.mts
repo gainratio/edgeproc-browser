@@ -9,6 +9,8 @@ interface SqliteOo1Database {
 
 interface SqliteSahPool {
 	readonly OpfsSAHPoolDb: new (filename: string) => SqliteOo1Database;
+	/** Close every sync access handle the pool holds (no data loss). */
+	pauseVfs(): SqliteSahPool;
 }
 
 interface SqliteModule {

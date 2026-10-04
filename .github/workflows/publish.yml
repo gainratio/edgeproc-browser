@@ -46,7 +46,29 @@ permissions:
   contents: read
 
 jobs:
+  # RELEASE GATE — fail closed before anything can mint an npm credential.
+  # 0.2.1 shipped from a commit whose CI on main was red: a tag push alone was
+  # enough. scripts/verify-release-tag.mjs (unit-tested in
+  # test/release-gate.test.ts) refuses unless the tag equals `v` + package.json's
+  # version, the tagged commit is on main, and the newest ci.yml push run for
+  # that exact SHA concluded success. If CI was still running when you tagged,
+  # re-run this workflow once CI is green; never re-tag to get around it.
+  release-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # compare main...sha
+      actions: read # list ci.yml runs for the tagged SHA
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag matches package.json, commit is on main, CI is green
+        run: node scripts/verify-release-tag.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   publish:
+    needs: release-gate
     permissions:
       id-token: write # OIDC — this token IS the npm credential. Nothing else may hold it.
       contents: read

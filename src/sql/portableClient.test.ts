@@ -224,9 +224,13 @@ describe("exportDatabase / importDatabase through the Worker", () => {
 		await importing;
 		const db = await writer;
 
-		expect(events).toEqual([
+		// The writer gets the lock the moment the import frees it, so its open
+		// and the import's own reply race; only "after the release" is promised.
+		expect(events.slice(0, 2)).toEqual([
 			"import holds lock",
 			"import released",
+		]);
+		expect([...events.slice(2)].sort()).toEqual([
 			"import done",
 			"writer opened",
 		]);

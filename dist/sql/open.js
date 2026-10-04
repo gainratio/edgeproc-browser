@@ -19,14 +19,14 @@ export async function openSqlStorage(deps, options) {
         return {
             raw: deps.openMemory(),
             storage: { persistence: "memory", reason: "requested" },
-            release: () => undefined,
+            release: async () => undefined,
         };
     }
     if (persistence !== "opfs") {
         throw new TypeError(`unsupported SQL persistence: ${String(persistence)}`);
     }
     const pool = await sqlDatabasePoolName(options.name);
-    const release = await acquireLease(deps, `${pool}-owner`);
+    const release = await acquirePoolLease(deps.locks, poolOwnerLock(pool), deps.lockWaitMs);
     if (release === undefined) {
         return fallBack(deps, options, "pool-in-use", "another context owns it");
     }
@@ -38,18 +38,18 @@ export async function openSqlStorage(deps, options) {
             storage: { persistence: "opfs", pool, file },
             // Free the handles BEFORE the lock, so the next owner (a reopen, a
             // reloaded tab) can open them the moment it gets the lock.
-            release: () => {
+            release: async () => {
                 try {
                     vfs.pauseVfs?.();
                 }
                 finally {
-                    release();
+                    await release();
                 }
             },
         };
     }
     catch (error) {
-        release();
+        await release();
         const reason = isPoolContentionError(error)
             ? "pool-in-use"
             : "opfs-unavailable";
@@ -65,26 +65,36 @@ function fallBack(deps, options, reason, detail) {
     return {
         raw: deps.openMemory(),
         storage: { persistence: "memory", reason, detail },
-        release: () => undefined,
+        release: async () => undefined,
     };
 }
-/** Hold an exclusive lock until the returned release() is called. */
-function acquireLease(deps, name) {
-    const locks = deps.locks;
+/** The Web Lock every owner of the opfs-sahpool `pool` holds while open. */
+export function poolOwnerLock(pool) {
+    return `${pool}-owner`;
+}
+/**
+ * Hold an exclusive lock until the returned release() is called; undefined if
+ * it stayed taken for `waitMs`. release() resolves once the lock manager has
+ * actually let go (the request's promise settles after the release), which is
+ * what lets close() promise "the next owner can have it now".
+ */
+export function acquirePoolLease(locks, name, waitMs) {
     if (locks === undefined)
-        return Promise.resolve(() => undefined);
-    let release = () => undefined;
+        return Promise.resolve(async () => undefined);
+    let unhold = () => undefined;
     const held = new Promise((resolve) => {
-        release = resolve;
+        unhold = resolve;
     });
     return new Promise((resolve, reject) => {
-        locks
-            .request(name, { mode: "exclusive", signal: AbortSignal.timeout(deps.lockWaitMs) }, async () => {
-            resolve(release);
+        const settled = locks.request(name, { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }, async () => {
+            resolve(async () => {
+                unhold();
+                await settled;
+            });
             await held;
-        })
-            .catch((error) => {
-            if (isTimeout(error))
+        });
+        settled.catch((error) => {
+            if (isLockTimeout(error))
                 resolve(undefined);
             else
                 reject(error);
@@ -92,7 +102,7 @@ function acquireLease(deps, name) {
     });
 }
 /** DOMException is not an Error subclass in every realm, so match by name. */
-function isTimeout(error) {
+export function isLockTimeout(error) {
     const name = error?.name;
     return name === "AbortError" || name === "TimeoutError";
 }

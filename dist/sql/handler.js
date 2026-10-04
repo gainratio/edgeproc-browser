@@ -45,7 +45,7 @@ export function createSqlWorkerHandler(open) {
                     closing.engine.close();
                 }
                 finally {
-                    closing.release();
+                    await closing.release();
                 }
                 return undefined;
             }

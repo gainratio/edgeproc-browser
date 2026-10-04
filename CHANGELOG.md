@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Removing a pool right after closing it could report `"in-use"` and leave it on disk.**
+  `index.dispose()` resolved once SQLite closed the database, but the vector Worker kept the
+  pool's OPFS sync access handles open until the browser tore the Worker down, so
+  `removeOpfsPool` straight after `dispose()` failed in 34 of 50 rounds in Chromium. Apps that
+  delete an old pool on every boot (edge-reco) kept it. The vector Worker now holds the pool's
+  owner Web Lock like `openSqlDatabase` does, and `dispose()` and `db.close()` resolve only
+  after the handles are closed and the lock is free. `removeOpfsPool` and `removeSqlDatabase`
+  take that lock with a bounded wait (`lockWaitMs`, default 2000) and delete while holding it;
+  they report `"in-use"` only when another live context still owns the pool. No retries or
+  sleeps.
+
+### Security
+
+- **A release can no longer publish from red CI.** 0.2.1 was published from a commit whose
+  CI on main had failed, because pushing a `v*` tag was the whole trigger. `publish.yml` now
+  runs `scripts/verify-release-tag.mjs` first, and the OIDC publish job depends on it. It
+  fails closed unless the tag is `v` + package.json's version, the commit is on main, and the
+  newest `ci.yml` push run for that commit concluded success.
+
 ## [0.2.1] - 2026-10-04
 
 Hardens SQLite import, makes a refused OPFS root a typed error, and adds Firefox and WebKit

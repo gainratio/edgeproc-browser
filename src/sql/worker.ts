@@ -57,7 +57,7 @@ async function openEngine(
 		try {
 			opened.raw.close();
 		} finally {
-			opened.release();
+			await opened.release();
 		}
 		throw error;
 	}

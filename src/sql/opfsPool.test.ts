@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeLocks } from "./__fixtures__/fakeLocks";
 import { openSqlStorage, sqlDatabasePoolName } from "./open";
 import {
 	type OpfsRoot,
@@ -63,6 +64,91 @@ describe("removeOpfsPool", () => {
 		expect(await removeOpfsPool("busy", { root })).toBe("in-use");
 	});
 
+	it("waits for the pool's owner lock, then removes (a closing owner is not in-use)", async () => {
+		const root = new FakeRoot();
+		root.entries.add(".closing");
+		const locks = new FakeLocks();
+		let releaseOwner: () => void = () => undefined;
+		void locks.request(
+			"closing-owner",
+			{},
+			() => new Promise<void>((resolve) => (releaseOwner = resolve)),
+		);
+		const removing = removeOpfsPool("closing", {
+			root,
+			locks,
+			lockWaitMs: 1_000,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(root.calls).toEqual([]);
+		releaseOwner();
+		expect(await removing).toBe("removed");
+		expect(locks.isHeld("closing-owner")).toBe(false);
+	});
+
+	it("deletes while holding the owner lock, so no one can reopen mid-delete", async () => {
+		const locks = new FakeLocks();
+		const heldDuringDelete: boolean[] = [];
+		const root: OpfsRoot = {
+			removeEntry: async () => {
+				heldDuringDelete.push(locks.isHeld("guarded-owner"));
+			},
+		};
+		expect(await removeOpfsPool("guarded", { root, locks })).toBe("removed");
+		expect(heldDuringDelete).toEqual([true]);
+	});
+
+	it("reports in-use, touching nothing, when the owner keeps the lock past the bounded wait", async () => {
+		const root = new FakeRoot();
+		root.entries.add(".owned");
+		const locks = new FakeLocks();
+		let releaseOwner: () => void = () => undefined;
+		void locks.request(
+			"owned-owner",
+			{},
+			() => new Promise<void>((resolve) => (releaseOwner = resolve)),
+		);
+		expect(await removeOpfsPool("owned", { root, locks, lockWaitMs: 10 })).toBe(
+			"in-use",
+		);
+		expect(root.calls).toEqual([]);
+		releaseOwner();
+	});
+
+	it("bounds the wait with an abort signal (default 2s), never ifAvailable", async () => {
+		const seen: Array<{ signal?: AbortSignal; ifAvailable?: boolean }> = [];
+		const timeout = vi.spyOn(AbortSignal, "timeout");
+		const locks = {
+			request<T>(
+				_name: string,
+				options: {
+					readonly signal?: AbortSignal;
+					readonly ifAvailable?: boolean;
+				},
+				callback: (lock: unknown) => Promise<T>,
+			): Promise<T> {
+				seen.push(options);
+				return callback({});
+			},
+		};
+		await removeOpfsPool("signalled", { root: new FakeRoot(), locks });
+		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+		expect(seen[0]?.ifAvailable).toBeUndefined();
+		expect(timeout).toHaveBeenCalledWith(2_000);
+		timeout.mockRestore();
+	});
+
+	it("rethrows a lock failure that is not a timeout", async () => {
+		const locks = {
+			request: async () => {
+				throw domError("SecurityError");
+			},
+		};
+		await expect(
+			removeOpfsPool("locked-out", { root: new FakeRoot(), locks }),
+		).rejects.toThrow(/SecurityError/);
+	});
+
 	it("rethrows a null rejection unchanged", async () => {
 		const root: OpfsRoot = {
 			removeEntry: async () => {
@@ -106,7 +192,7 @@ describe("removeSqlDatabase", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("asks for the owner lock exclusively and only if it is free", async () => {
+	it("asks for the owner lock exclusively, with a bounded wait (was: only if free)", async () => {
 		const root = new FakeRoot();
 		const inner = navigatorLikeLocks();
 		const seen: Array<{ mode?: string; ifAvailable?: boolean }> = [];
@@ -124,7 +210,10 @@ describe("removeSqlDatabase", () => {
 			},
 		};
 		expect(await removeSqlDatabase("modes", { root, locks })).toBe("absent");
-		expect(seen).toEqual([{ mode: "exclusive", ifAvailable: true }]);
+		// Contract reversed: ifAvailable reported a closing owner as in-use.
+		expect(seen).toEqual([
+			{ mode: "exclusive", signal: expect.any(AbortSignal) },
+		]);
 	});
 
 	it("uses navigator.locks by default, so an open database is in-use", async () => {
