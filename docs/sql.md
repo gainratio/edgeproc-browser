@@ -126,11 +126,26 @@ const moved = await db.transaction(async (tx) => {
 ```
 
 While the callback runs, the handle holds its connection lock: every other call on `db`
-(another `transaction`, a plain `query`, `close`) waits and runs after `COMMIT` or `ROLLBACK`,
-in call order. So two concurrent transfers cannot both read the old balance. Two rules:
+(another `transaction`, a plain `query`) waits and runs after `COMMIT` or `ROLLBACK`, in call
+order. So two concurrent transfers cannot both read the old balance.
+
+The transaction stays atomic even when the callback misbehaves:
+
+- `tx` refuses transaction control: `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT` and
+  `RELEASE` fail with "not authorized" (an SQLite authorizer denies them), so the callback
+  cannot end the transaction early. Throw to roll back.
+- If SQLite itself ends the transaction (a `RAISE(ROLLBACK)`, or `SQLITE_FULL`, `IOERR` or
+  `BUSY` rolling it back), every later `tx` call and the final `COMMIT` reject with
+  `SqlTransactionEndedError`, so a callback that catches the error and keeps writing cannot
+  write in autocommit. The transaction rejects; its writes are gone.
+- `db.close()` does not wait for the callback. It rolls the open transaction back, fails the
+  calls queued behind it, closes the connection and ends the Worker; the transaction rejects
+  with "SQL database is closed".
+
+Two rules:
 
 - Inside the callback, use `tx`, never `db`. A `db` call waits for the transaction it is
-  inside, so awaiting it there never resolves.
+  inside, so it only settles when `close()` ends that transaction.
 - Keep the callback short and local: no network calls while holding the write lock.
 
 ## Storage status and the in-memory fallback
@@ -148,6 +163,11 @@ gets `SqlStorageUnavailableError("pool-in-use")`.
 | `{ persistence: "memory", reason: "pool-in-use" }` | Another tab owns this database. You asked for `fallback: "memory"`. |
 | `{ persistence: "memory", reason: "opfs-unavailable", detail }` | OPFS failed (private browsing, old browser). You asked for `fallback: "memory"`. |
 | `{ persistence: "memory", reason: "requested" }` | You passed `persistence: "memory"`. |
+
+The wait is for a previous *connection*. An import, export or migration **by name** is a
+bounded operation: it also holds a `${pool}-operation` Web Lock, and a context whose wait runs
+out while that lock is held waits for the operation to finish instead of failing. So a writer
+opened during `importDatabase(name, …)` waits for the import, however long it takes.
 
 Without `fallback: "memory"`, both failures throw `SqlStorageUnavailableError` with the same
 `reason`. Only allow the fallback for small data you rebuild on every boot: an in-memory
@@ -327,7 +347,7 @@ const moved = await migrateLegacySahPool({
 	importOptions: { allowTriggersAndViews: true, expectedSchema: { applicationId: APP_ID } },
 });
 switch (moved.status) {
-	case "migrated": break;   // moved.recoveredJournal, moved.legacy: "removed" | "kept"
+	case "migrated": break;   // moved.recoveredJournal, moved.legacy: "removed" | "kept" | "shared"
 	case "absent": break;     // no old pool or file: nothing to do (nothing was created)
 	case "in-use": break;     // an old-build tab still has it open: ask the user to close it, retry
 }
@@ -347,7 +367,10 @@ What it does, in the SQL Worker:
    deleted afterwards. A `-wal` file is refused rather than migrated without its frames.
 3. **Atomic.** The recovered file goes through `importDatabase` (validation, then one
    transaction), with your `importOptions`. The old pool is removed only with
-   `removeLegacy: true` and only after that import committed; `legacy: "kept"` otherwise.
+   `removeLegacy: true` and only after that import committed. Removing an opfs-sahpool
+   deletes every file in it, so the pool is removed only when it holds nothing but `fromFile`
+   and its journal; if it holds other databases, nothing is deleted and `legacy` is
+   `"shared"`. Without `removeLegacy`, `legacy` is `"kept"`.
 
 The target must be on OPFS (it refuses to migrate into an in-memory fallback). A missing pool
 is reported `"absent"` without creating one.

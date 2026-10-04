@@ -70,7 +70,7 @@ export interface OpenSqlDatabaseOptions {
  * with the device memory profile applied, FTS5, JSON1 and sqlite-vector on the
  * same connection. Check `storage` to see whether it fell back to memory.
  */
-export declare function openSqlDatabase(options: SqlDatabaseOptions, { workerFactory }?: OpenSqlDatabaseOptions): Promise<SqlDatabase>;
+export declare function openSqlDatabase(options: SqlDatabaseOptions, openOptions?: OpenSqlDatabaseOptions): Promise<SqlDatabase>;
 /**
  * Export a database: an open handle, or a name — opened on OPFS (never a
  * memory fallback) under its owner lock, exported, closed.

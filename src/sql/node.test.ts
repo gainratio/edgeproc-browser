@@ -71,20 +71,24 @@ describe("openNodeSqlDatabase", () => {
 		await db.close();
 	});
 
-	it("does not leak the OPFS auto-install warning or the location shim", async () => {
+	it("stays quiet about OPFS it cannot have, and leaves globals as it found them", async () => {
 		const error = vi
 			.spyOn(console, "error")
 			.mockImplementation(() => undefined);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const before = Object.getOwnPropertyDescriptor(globalThis, "location");
 		try {
 			const db = await openNodeSqlDatabase({ name: "quiet" });
 			await db.close();
 			expect(error).not.toHaveBeenCalled();
+			expect(warn).not.toHaveBeenCalled();
 			expect(Object.getOwnPropertyDescriptor(globalThis, "location")).toEqual(
 				before,
 			);
+			expect("sqlite3ApiConfig" in globalThis).toBe(false);
 		} finally {
 			error.mockRestore();
+			warn.mockRestore();
 		}
 	});
 

@@ -16,6 +16,7 @@ import {
 	type SqlStatement,
 	type SqlStorage,
 	SqlStorageUnavailableError,
+	SqlTransactionEndedError,
 	type SqlTransactionResult,
 } from "./types.js";
 
@@ -124,13 +125,22 @@ type RequestWithoutId = SqlWorkerRequest extends infer Request
  */
 export async function openSqlDatabase(
 	options: SqlDatabaseOptions,
-	{ workerFactory = defaultWorkerFactory }: OpenSqlDatabaseOptions = {},
+	openOptions: OpenSqlDatabaseOptions = {},
+): Promise<SqlDatabase> {
+	return openInWorker(options, openOptions, false);
+}
+
+async function openInWorker(
+	options: SqlDatabaseOptions,
+	{ workerFactory = defaultWorkerFactory }: OpenSqlDatabaseOptions,
+	transient: boolean,
 ): Promise<SqlDatabase> {
 	const connection = new Connection(workerFactory());
 	try {
 		const storage = (await connection.request({
 			operation: "open",
 			options,
+			...(transient ? { transient: true as const } : {}),
 		})) as SqlStorage;
 		return new WorkerSqlDatabase(options.name, storage, connection);
 	} catch (error) {
@@ -188,8 +198,11 @@ class WorkerSqlDatabase implements SqlDatabase {
 	#closed = false;
 	/** Settles when every call queued so far has been posted or finished. */
 	#tail: Promise<void> = Promise.resolve();
-	/** Transactions (and close) queued or running. */
+	/** Transactions queued or running. */
 	#exclusiveCount = 0;
+	/** Cancels for calls waiting behind a transaction (close() fires them). */
+	readonly #waiting = new Set<(error: Error) => void>();
+	#activeTransaction: ScopedTransaction | undefined;
 
 	public constructor(
 		name: string,
@@ -271,32 +284,51 @@ class WorkerSqlDatabase implements SqlDatabase {
 		return this.#call({ operation: "runtime-info" });
 	}
 
+	/**
+	 * Close now: calls waiting behind a transaction fail, an open interactive
+	 * transaction is rolled back (its callback's calls then fail), the
+	 * connection closes and the Worker ends. Never waits on user code.
+	 */
 	public async close(): Promise<void> {
 		if (this.#closed) return;
 		this.#closed = true;
+		for (const cancel of this.#waiting) cancel(closedError());
+		this.#waiting.clear();
+		const open = this.#activeTransaction;
+		open?.end("closed");
 		try {
-			await this.#exclusive(() =>
-				this.#connection.request({ operation: "close" }),
-			);
+			if (open !== undefined) {
+				await this.#connection.request({ operation: "rollback" });
+			}
 		} finally {
-			this.#connection.terminate(new Error("SQL database is closed"));
+			try {
+				await this.#connection.request({ operation: "close" });
+			} finally {
+				this.#connection.terminate(closedError());
+			}
 		}
 	}
 
 	#call<T>(request: RequestWithoutId): Promise<T> {
-		if (this.#closed) {
-			return Promise.reject(new Error("SQL database is closed"));
-		}
+		if (this.#closed) return Promise.reject(closedError());
 		// No transaction queued or open: post now, so the arguments are copied
 		// at the call (as postMessage does) and plain calls pipeline.
 		if (this.#exclusiveCount === 0) {
 			return this.#connection.request(request) as Promise<T>;
 		}
-		// Otherwise wait for it to end, holding a copy taken now.
+		// Otherwise wait for it to end, holding a copy taken now; close()
+		// fails the wait instead of leaving it queued behind user code.
 		const snapshot = structuredClone(request);
-		return this.#tail.then(
-			() => this.#connection.request(snapshot) as Promise<T>,
-		);
+		return new Promise<T>((resolve, reject) => {
+			this.#waiting.add(reject);
+			void this.#tail.then(() => {
+				if (!this.#waiting.delete(reject)) return;
+				(this.#connection.request(snapshot) as Promise<T>).then(
+					resolve,
+					reject,
+				);
+			});
+		});
 	}
 
 	/** Run `action` alone: later calls wait until it settles. */
@@ -314,15 +346,21 @@ class WorkerSqlDatabase implements SqlDatabase {
 	}
 
 	async #interactive<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T> {
+		if (this.#closed) throw closedError();
 		const send = (request: RequestWithoutId) =>
 			this.#connection.request(request);
-		await send({ operation: "begin" });
 		const tx = new ScopedTransaction(send);
+		this.#activeTransaction = tx;
 		try {
-			const value = await work(tx);
+			await send({ operation: "begin" });
+			// close() settles this even if the callback never does.
+			const value = await Promise.race([work(tx), tx.whenClosed]);
+			if (tx.closed) throw closedError();
 			await send({ operation: "commit" });
 			return value;
 		} catch (error) {
+			// close() already rolled it back and ended the connection.
+			if (tx.closed) throw closedError();
 			try {
 				await send({ operation: "rollback" });
 			} catch (rollbackError) {
@@ -333,36 +371,54 @@ class WorkerSqlDatabase implements SqlDatabase {
 			}
 			throw error;
 		} finally {
-			tx.end();
+			tx.end("finished");
+			this.#activeTransaction = undefined;
 		}
 	}
 }
 
+function closedError(): Error {
+	return new Error("SQL database is closed");
+}
+
 class ScopedTransaction implements SqlTransaction {
 	readonly #send: (request: RequestWithoutId) => Promise<unknown>;
-	#ended = false;
+	#ended: "finished" | "closed" | undefined;
+	#rejectClosed: (error: Error) => void = () => undefined;
+	/** Rejects when close() ends the transaction; never resolves. */
+	public readonly whenClosed = new Promise<never>((_resolve, reject) => {
+		this.#rejectClosed = reject;
+	});
 
 	public constructor(send: (request: RequestWithoutId) => Promise<unknown>) {
 		this.#send = send;
+		this.whenClosed.catch(() => undefined);
 	}
 
 	public exec(sql: string, bind?: SqlBind): Promise<SqlExecResult> {
-		return this.#run({ operation: "exec", sql, ...withBind(bind) });
+		return this.#run({ operation: "tx-exec", sql, ...withBind(bind) });
 	}
 
 	public query<R extends SqlRow = SqlRow>(
 		sql: string,
 		bind?: SqlBind,
 	): Promise<R[]> {
-		return this.#run({ operation: "query", sql, ...withBind(bind) });
+		return this.#run({ operation: "tx-query", sql, ...withBind(bind) });
 	}
 
-	public end(): void {
-		this.#ended = true;
+	/** Did close() end it (rolled back), rather than the callback settling? */
+	public get closed(): boolean {
+		return this.#ended === "closed";
+	}
+
+	public end(reason: "finished" | "closed"): void {
+		this.#ended ??= reason;
+		if (this.#ended === "closed") this.#rejectClosed(closedError());
 	}
 
 	#run<T>(request: RequestWithoutId): Promise<T> {
-		if (this.#ended) {
+		if (this.#ended === "closed") return Promise.reject(closedError());
+		if (this.#ended !== undefined) {
 			return Promise.reject(new Error("SQL transaction has ended"));
 		}
 		return this.#send(request) as Promise<T>;
@@ -422,9 +478,10 @@ async function withDatabase<T>(
 	action: (db: SqlDatabase) => Promise<T>,
 ): Promise<T> {
 	if (typeof target !== "string") return action(target);
-	const db = await openSqlDatabase(
+	const db = await openInWorker(
 		{ name: target, persistence: "opfs", fallback: "none" },
 		options,
+		true,
 	);
 	try {
 		return await action(db);
@@ -454,6 +511,9 @@ function reconstructError(error: {
 		error.reason !== undefined
 	) {
 		return new SqlStorageUnavailableError(error.reason, error.message);
+	}
+	if (error.name === "SqlTransactionEndedError") {
+		return new SqlTransactionEndedError(error.message);
 	}
 	const reconstructed = new Error(error.message);
 	reconstructed.name = error.name;

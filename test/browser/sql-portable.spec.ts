@@ -36,3 +36,22 @@ test("SQLite export/import: OPFS + memory round trip, typed rejections, owner-lo
 	expect(result.trustedSchema).toBe(0);
 	expect(errors).toEqual([]);
 });
+
+// CI run 37230731318: on a slow runner the import by name held the owner lock
+// longer than the writer's 1 s wait, and the writer failed "pool-in-use". A
+// large import reproduces that on any machine: the writer must wait for it.
+test("a writer opened during a long import by name waits for it", async ({
+	page,
+}) => {
+	test.setTimeout(120_000);
+	await page.goto("/test/browser/sql-portable-fixture.html");
+	await expect(page.locator("#ready")).toHaveText("ready");
+	const result = await page.evaluate(
+		(n) => window.runSlowImportWait(n, 64),
+		`slow-import-${crypto.randomUUID()}`,
+	);
+	console.log(`import by name took ${result.importMs} ms`);
+	expect(result.importMs).toBeGreaterThan(1_000);
+	expect(result.writer).toBe("opened");
+	expect(result.rows).toBe(64 * 16);
+});

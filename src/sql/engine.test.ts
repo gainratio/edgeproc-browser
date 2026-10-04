@@ -6,6 +6,7 @@ import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
 import { SqlEngine, type SqlRawDatabase, type SqlRawStatement } from "./engine";
+import { SqlTransactionEndedError } from "./types";
 
 let sqlite: NodeSqlite;
 beforeAll(async () => {
@@ -434,23 +435,59 @@ describe("SqlEngine on the pinned SQLite build", () => {
 });
 
 describe("SqlEngine interactive transaction primitives", () => {
-	it("begins IMMEDIATE, commits, and treats a rollback with nothing open as done", () => {
-		const engine = open();
-		engine.exec("CREATE TABLE t(x)");
-		engine.begin();
-		engine.exec("INSERT INTO t VALUES (1)");
-		engine.commit();
-		engine.begin();
-		engine.exec("INSERT INTO t VALUES (2)");
-		engine.rollback();
-		engine.rollback();
-		expect(engine.query("SELECT x FROM t")).toEqual([{ x: 1 }]);
-		expect(() => engine.commit()).toThrow(/no transaction is active/);
+	function controlled(raw: SqlRawDatabase = sqlite.openMemory()): SqlEngine {
+		return new SqlEngine(raw, {
+			storage: MEMORY,
+			memoryProfile: MEMORY_PROFILES.lite,
+			control: sqlite.control,
+		});
+	}
+
+	it("refuses to begin without connection control", () => {
+		expect(() => open().begin()).toThrow(/without connection control/);
 	});
 
-	it("rethrows a rollback failure that is not 'no transaction'", () => {
+	it("begins IMMEDIATE, runs statements in it, commits", () => {
+		const engine = controlled();
+		engine.exec("CREATE TABLE t(x)");
+		engine.begin();
+		engine.txExec("INSERT INTO t VALUES (?)", [1]);
+		expect(engine.txQuery("SELECT x FROM t")).toEqual([{ x: 1 }]);
+		engine.commit();
+		expect(() => engine.txExec("INSERT INTO t VALUES (2)")).toThrow(
+			SqlTransactionEndedError,
+		);
+		expect(engine.query("SELECT x FROM t")).toEqual([{ x: 1 }]);
+	});
+
+	it("rolls back silently: no ROLLBACK is sent when nothing is open", () => {
 		const raw = sqlite.openMemory();
-		const failing: SqlRawDatabase = {
+		const sent: string[] = [];
+		const engine = controlled({
+			pointer: raw.pointer ?? 0,
+			exec: (options) => {
+				sent.push(options.sql);
+				return raw.exec(options);
+			},
+			selectObjects: (sql, bind) => raw.selectObjects(sql, bind),
+			prepare: (sql) => raw.prepare(sql),
+			transaction: (qualifier, callback) =>
+				raw.transaction(qualifier, callback),
+			close: () => raw.close(),
+		});
+		sent.length = 0;
+		engine.rollback();
+		expect(sent).toEqual([]);
+		engine.begin();
+		engine.rollback();
+		expect(sent).toEqual(["BEGIN IMMEDIATE", "ROLLBACK"]);
+		expect(() => engine.commit()).toThrow(SqlTransactionEndedError);
+	});
+
+	it("rethrows a ROLLBACK that fails while a transaction is open", () => {
+		const raw = sqlite.openMemory();
+		const engine = controlled({
+			pointer: raw.pointer ?? 0,
 			exec: (options) => {
 				if (options.sql === "ROLLBACK") throw new Error("disk I/O error");
 				return raw.exec(options);
@@ -460,11 +497,8 @@ describe("SqlEngine interactive transaction primitives", () => {
 			transaction: (qualifier, callback) =>
 				raw.transaction(qualifier, callback),
 			close: () => raw.close(),
-		};
-		const engine = new SqlEngine(failing, {
-			storage: MEMORY,
-			memoryProfile: MEMORY_PROFILES.lite,
 		});
+		engine.begin();
 		expect(() => engine.rollback()).toThrow("disk I/O error");
 	});
 });

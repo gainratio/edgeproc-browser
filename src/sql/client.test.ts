@@ -264,6 +264,61 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		]);
 	});
 
+	it("close() posts ROLLBACK then close for an open transaction, never COMMIT", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: undefined,
+		}));
+		const db = await openSqlDatabase(
+			{ name: "closing-tx", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((done) => {
+			release = done;
+		});
+		const tx = db.transaction(async (t) => {
+			await t.exec("UPDATE x SET y = 1");
+			await gate;
+		});
+		const queued = db.transaction([{ sql: "SELECT 1" }]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await db.close();
+		release();
+		await expect(tx).rejects.toThrow(/closed/);
+		await expect(queued).rejects.toThrow(/closed/);
+		expect(worker.requests.map((r) => r.operation)).toEqual([
+			"open",
+			"begin",
+			"tx-exec",
+			"rollback",
+			"close",
+		]);
+		expect(worker.terminated).toBe(true);
+	});
+
+	it("a transaction queued behind one that close() cancels never begins", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: undefined,
+		}));
+		const db = await openSqlDatabase(
+			{ name: "queued-tx", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const first = db.transaction(() => new Promise<void>(() => undefined));
+		const second = db.transaction(async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await db.close();
+		await expect(first).rejects.toThrow(/closed/);
+		await expect(second).rejects.toThrow(/closed/);
+		expect(worker.requests.filter((r) => r.operation === "begin")).toHaveLength(
+			1,
+		);
+	});
+
 	it("refuses an interactive transaction on a closed handle without posting", async () => {
 		const worker = realWorker();
 		const db = await openSqlDatabase(
@@ -348,6 +403,37 @@ describe("openSqlDatabase through the Worker protocol", () => {
 			persistence: "opfs",
 			fallback: "none",
 		});
+	});
+
+	it("marks by-name operations transient, and connections not", async () => {
+		const workers: InProcessWorker[] = [];
+		const contexts: unknown[] = [];
+		const factory = () => {
+			const worker = new InProcessWorker(
+				createSqlWorkerHandler(async (_options, context) => {
+					contexts.push(context);
+					return {
+						engine: new SqlEngine(sqlite.openMemory(), {
+							storage: { persistence: "memory", reason: "requested" },
+							memoryProfile: MEMORY_PROFILES.lite,
+							serializer: sqlite.serializer,
+						}),
+						release: async () => undefined,
+					};
+				}),
+			);
+			workers.push(worker);
+			return worker;
+		};
+		const db = await openSqlDatabase(
+			{ name: "conn" },
+			{ workerFactory: factory },
+		);
+		await db.close();
+		await exportDatabase("by-name", { workerFactory: factory });
+		expect(workers[0]?.requests[0]).not.toHaveProperty("transient");
+		expect(workers[1]?.requests[0]).toMatchObject({ transient: true });
+		expect(contexts).toEqual([{ transient: false }, { transient: true }]);
 	});
 
 	it("posts only the fields a call was given", async () => {

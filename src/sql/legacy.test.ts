@@ -13,11 +13,11 @@ import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
 import { SqlEngine } from "./engine";
 import {
 	createJournalRecovery,
+	isSqlRecoveryModule,
 	type LegacyMigrationDeps,
 	type LegacySahPool,
 	migrateLegacySahPool,
 	opfsPoolExists,
-	type SqlRecoveryModule,
 } from "./legacy";
 import type { SqlImportOptions } from "./types";
 import { SqlImportRejectedError, SqlStorageUnavailableError } from "./types";
@@ -26,9 +26,7 @@ let sqlite: NodeSqlite;
 let recover: (database: Uint8Array, journal?: Uint8Array) => Uint8Array;
 beforeAll(async () => {
 	sqlite = await loadNodeSqlite();
-	recover = createJournalRecovery(
-		sqlite.module as unknown as SqlRecoveryModule,
-	);
+	recover = createJournalRecovery(sqlite.module);
 });
 
 const PAGE = 4096;
@@ -119,7 +117,8 @@ describe("createJournalRecovery (real SQLite)", () => {
 	});
 
 	it("leaves no copy of the personal data behind in the scratch filesystem", () => {
-		const module = sqlite.module as unknown as SqlRecoveryModule;
+		const module = sqlite.module;
+		if (!isSqlRecoveryModule(module)) throw new Error("not a recovery module");
 		const file = "/tmp/edgeproc-legacy-probe.sqlite3";
 		const fixed = createJournalRecovery(module, () => file);
 		for (const prefix of ["first-", "second-"]) {
@@ -201,18 +200,16 @@ interface Harness {
 
 function harness(overrides: Partial<LegacyMigrationDeps> = {}): Harness {
 	const pool = new FakePool();
-	const locks = new FakeLocks();
-	const state: Harness = {
+	const state = {
 		pool,
-		locks,
-		imports: [],
+		locks: new FakeLocks(),
+		imports: [] as Harness["imports"],
 		installs: 0,
-		installError: undefined,
+		installError: undefined as Error | undefined,
 		exists: true,
-		deps: undefined as unknown as LegacyMigrationDeps,
 	};
-	(state as { deps: LegacyMigrationDeps }).deps = {
-		locks,
+	const deps: LegacyMigrationDeps = {
+		locks: state.locks,
 		lockWaitMs: 20,
 		ownPool: "edgeproc-sql-new",
 		poolExists: async () => state.exists && !pool.removed,
@@ -228,7 +225,7 @@ function harness(overrides: Partial<LegacyMigrationDeps> = {}): Harness {
 		},
 		...overrides,
 	};
-	return state;
+	return Object.assign(state, { deps });
 }
 
 const REQUEST = { fromPool: "amlfilter-workstation", fromFile: "/kyc.sqlite3" };
@@ -308,6 +305,21 @@ describe("migrateLegacySahPool", () => {
 		expect(result).toMatchObject({ status: "migrated", legacy: "removed" });
 		expect(removedBeforeImport).toBe(false);
 		expect(h.pool.removed).toBe(true);
+	});
+
+	it("never deletes a pool that holds other databases: reports it shared", async () => {
+		// removeVfs() deletes EVERY file in the pool, not just fromFile.
+		const h = harness();
+		h.pool.files.set("/kyc.sqlite3", databaseBytes("kyc-"));
+		h.pool.files.set("/kyc.sqlite3-journal", new Uint8Array(0));
+		h.pool.files.set("/audit.sqlite3", databaseBytes("audit-"));
+		const result = await migrateLegacySahPool(h.deps, {
+			...REQUEST,
+			removeLegacy: true,
+		});
+		expect(result).toMatchObject({ status: "migrated", legacy: "shared" });
+		expect(h.pool.removed).toBe(false);
+		expect(h.pool.files.has("/audit.sqlite3")).toBe(true);
 	});
 
 	it("reports the legacy pool kept when removal left its directory behind", async () => {

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SqlDatabase } from "./client";
 import { openNodeSqlDatabase } from "./node";
+import { SqlTransactionEndedError } from "./types";
 
 let db: SqlDatabase;
 
@@ -165,14 +166,82 @@ describe("db.transaction(async (tx) => …)", () => {
 		).toEqual([{ balance: 7 }]);
 	});
 
-	it("does not mask the callback's error when SQLite already ended the transaction", async () => {
+	it("refuses every further statement once SQLite itself ended the transaction", async () => {
+		// RAISE(ROLLBACK) ends the whole transaction, as SQLITE_FULL, IOERR or
+		// BUSY can. A callback that catches that and keeps writing would
+		// otherwise write in autocommit, outside any transaction.
+		await db.exec(`CREATE TRIGGER no_mallory BEFORE INSERT ON accounts
+			WHEN NEW.id = 'mallory' BEGIN SELECT RAISE(ROLLBACK, 'mallory refused'); END`);
+		const outcome = db.transaction(async (tx) => {
+			await tx.exec("UPDATE accounts SET balance = 0 WHERE id = 'alice'");
+			await tx
+				.exec("INSERT INTO accounts VALUES ('mallory', 1)")
+				.catch(() => undefined);
+			await tx
+				.exec("INSERT INTO accounts VALUES ('carol', 5)")
+				.catch((error: unknown) => {
+					expect(error).toBeInstanceOf(SqlTransactionEndedError);
+				});
+			return "callback swallowed it";
+		});
+		await expect(outcome).rejects.toBeInstanceOf(SqlTransactionEndedError);
+		expect(await balances()).toEqual([
+			{ id: "alice", balance: 100 },
+			{ id: "bob", balance: 0 },
+		]);
+		expect(await transfer(1)).toBe(1);
+	});
+
+	it("does not mask the callback's own error when SQLite already ended the transaction", async () => {
+		await db.exec(`CREATE TRIGGER no_mallory BEFORE INSERT ON accounts
+			WHEN NEW.id = 'mallory' BEGIN SELECT RAISE(ROLLBACK, 'mallory refused'); END`);
 		await expect(
 			db.transaction(async (tx) => {
-				await tx.exec("ROLLBACK");
-				throw new Error("after manual rollback");
+				await tx
+					.exec("INSERT INTO accounts VALUES ('mallory', 1)")
+					.catch(() => undefined);
+				throw new Error("the callback's own error");
 			}),
-		).rejects.toThrow("after manual rollback");
-		expect(await transfer(1)).toBe(1);
+		).rejects.toThrow("the callback's own error");
+	});
+
+	it("refuses transaction control through tx (BEGIN, COMMIT, ROLLBACK, SAVEPOINT …)", async () => {
+		const refused: string[] = [];
+		await db.transaction(async (tx) => {
+			await tx.exec("UPDATE accounts SET balance = 1 WHERE id = 'alice'");
+			for (const sql of [
+				"ROLLBACK",
+				"COMMIT",
+				"END",
+				"BEGIN",
+				"SAVEPOINT s",
+				"RELEASE s",
+				"SELECT 1; ROLLBACK",
+			]) {
+				await tx.exec(sql).catch((error: unknown) => {
+					refused.push(sql);
+					expect(String(error)).toMatch(/not authorized/);
+				});
+			}
+			await tx.exec("INSERT INTO accounts VALUES ('carol', 2)");
+		});
+		expect(refused).toHaveLength(7);
+		expect(await balances()).toEqual([
+			{ id: "alice", balance: 1 },
+			{ id: "bob", balance: 0 },
+			{ id: "carol", balance: 2 },
+		]);
+	});
+
+	it("keeps atomicity when a callback tries ROLLBACK, writes, then throws", async () => {
+		await expect(
+			db.transaction(async (tx) => {
+				await tx.exec("ROLLBACK").catch(() => undefined);
+				await tx.exec("INSERT INTO accounts VALUES ('carol', 2)");
+				throw new Error("boom");
+			}),
+		).rejects.toThrow("boom");
+		expect(await balances()).toHaveLength(2);
 	});
 
 	it("refuses a tx handle used after its callback returned", async () => {
@@ -195,14 +264,37 @@ describe("db.transaction(async (tx) => …)", () => {
 		expect(result).toEqual({ changes: 2, results: [[], [{ total: 102 }]] });
 	});
 
-	it("waits for an open transaction before closing", async () => {
+	// CONTRACT REVERSED: close() used to wait for an open transaction. A
+	// callback that awaits `db` inside its own transaction never finishes,
+	// so close() hung forever. close() now rolls the transaction back.
+	it("close() rolls back an open transaction instead of waiting for it", async () => {
 		const gate = deferred();
-		const tx = transfer(5, gate.promise);
-		const closing = db.close();
+		const tx = db.transaction(async (t) => {
+			await t.exec("UPDATE accounts SET balance = 0");
+			await gate.promise;
+			await t.exec("UPDATE accounts SET balance = 1");
+		});
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await db.close();
 		gate.resolve();
-		await expect(tx).resolves.toBe(5);
-		await closing;
+		await expect(tx).rejects.toThrow(/SQL database is closed/);
 		await expect(db.query("SELECT 1")).rejects.toThrow(/closed/);
+		db = await openNodeSqlDatabase({ name: "accounts" });
+	});
+
+	it("close() ends a callback deadlocked on db, and fails the stuck call", async () => {
+		const inner: unknown[] = [];
+		const tx = db.transaction(async () => {
+			// Wrong (uses db, not tx): waits for the transaction it is inside.
+			await db.query("SELECT 1").catch((error: unknown) => {
+				inner.push(error);
+				throw error;
+			});
+		});
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await db.close();
+		await expect(tx).rejects.toThrow(/SQL database is closed/);
+		expect(String(inner[0])).toMatch(/SQL database is closed/);
 		db = await openNodeSqlDatabase({ name: "accounts" });
 	});
 });

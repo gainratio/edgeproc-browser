@@ -186,10 +186,28 @@ export type LegacySahPoolMigration =
 			readonly result: SqlImportResult;
 			/** A rollback journal was present and SQLite played it back. */
 			readonly recoveredJournal: boolean;
-			/** "kept" unless you asked for removal and the pool is gone. */
-			readonly legacy: "removed" | "kept";
+			/**
+			 * "removed": you asked, and the pool is gone. "shared": you asked, but
+			 * the pool holds other files too, so nothing was deleted. "kept":
+			 * you did not ask (or removal left the directory behind).
+			 */
+			readonly legacy: "removed" | "kept" | "shared";
 	  }
 	/** No such pool, or no such file in it. Nothing was created. */
 	| { readonly status: "absent" }
 	/** Another context holds the pool or the lock. Nothing changed; retry later. */
 	| { readonly status: "in-use" };
+
+/**
+ * SQLite ended the interactive transaction itself (a RAISE(ROLLBACK), or an
+ * error such as SQLITE_FULL, IOERR or BUSY that rolls the whole transaction
+ * back). Its writes are gone, and nothing more runs in it.
+ */
+export class SqlTransactionEndedError extends Error {
+	public constructor(
+		message = "the SQL transaction already ended; its writes were rolled back",
+	) {
+		super(message);
+		this.name = "SqlTransactionEndedError";
+	}
+}

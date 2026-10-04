@@ -59,7 +59,6 @@ async function install(deps, name) {
     }
 }
 async function migrateFrom(deps, pool, request) {
-    let removed = false;
     try {
         const files = pool.getFileNames();
         const { fromFile } = request;
@@ -74,21 +73,30 @@ async function migrateFrom(deps, pool, request) {
             : undefined;
         const bytes = deps.recover(pool.exportFile(fromFile), journal);
         const result = deps.importDatabase(bytes, request.importOptions);
-        if (request.removeLegacy === true) {
-            await pool.removeVfs();
-            removed = !(await deps.poolExists(request.fromPool));
-        }
         return {
             status: "migrated",
             result,
             recoveredJournal: journal !== undefined && journal.byteLength > 0,
-            legacy: removed ? "removed" : "kept",
+            legacy: request.removeLegacy === true
+                ? await removeLegacy(deps, pool, request, files)
+                : "kept",
         };
     }
     finally {
         if (!pool.isPaused())
             pool.pauseVfs();
     }
+}
+/**
+ * removeVfs() deletes the whole pool, so only when it holds nothing but this
+ * database and its journal; otherwise nothing is deleted ("shared").
+ */
+async function removeLegacy(deps, pool, request, files) {
+    const own = new Set([request.fromFile, `${request.fromFile}-journal`]);
+    if (files.some((file) => !own.has(file)))
+        return "shared";
+    await pool.removeVfs();
+    return (await deps.poolExists(request.fromPool)) ? "kept" : "removed";
 }
 /** Run `action` under an exclusive lock; "in-use" if it stays taken. */
 async function withLock(deps, name, action) {
@@ -115,6 +123,31 @@ export async function opfsPoolExists(pool, root) {
         throw error;
     }
 }
+/** Narrow an initialised sqlite-wasm module to the slice recovery needs. */
+export function isSqlRecoveryModule(module) {
+    const m = module;
+    return (typeof m.oo1?.DB === "function" &&
+        typeof m.capi?.sqlite3_js_posix_create_file === "function" &&
+        typeof m.capi.sqlite3_js_db_export === "function" &&
+        typeof m.capi.sqlite3_vfs_find === "function" &&
+        typeof m.wasm?.xWrap === "function");
+}
+/** Narrow sqlite3.mjs's opfs-sahpool PoolUtil to the slice migration uses. */
+export function asLegacySahPool(util) {
+    const methods = [
+        "getFileNames",
+        "exportFile",
+        "isPaused",
+        "unpauseVfs",
+        "pauseVfs",
+        "removeVfs",
+    ];
+    const missing = methods.filter((name) => typeof util[name] !== "function");
+    if (missing.length > 0) {
+        throw new TypeError(`opfs-sahpool PoolUtil lacks ${missing.join(", ")}`);
+    }
+    return util;
+}
 let scratchSerial = 0;
 function nextScratchFile() {
     scratchSerial += 1;
@@ -125,7 +158,11 @@ function nextScratchFile() {
  * onto the database, through the "unix" VFS on in-memory files, and return
  * the recovered file. Without a journal the bytes are returned as they are.
  */
-export function createJournalRecovery(sqlite, scratchFile = nextScratchFile) {
+export function createJournalRecovery(module, scratchFile = nextScratchFile) {
+    if (!isSqlRecoveryModule(module)) {
+        throw new TypeError("sqlite-wasm module lacks the unix VFS file APIs");
+    }
+    const sqlite = module;
     const unlink = sqlite.wasm.xWrap("sqlite3__wasm_vfs_unlink", "int", [
         "*",
         "string",

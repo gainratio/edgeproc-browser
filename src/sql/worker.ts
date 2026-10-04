@@ -6,14 +6,14 @@
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
+import { createSqlConnectionControl } from "./control.js";
 import { SqlEngine, type SqlRawDatabase } from "./engine.js";
 import { createSqlWorkerHandler, type OpenedSqlEngine } from "./handler.js";
 import {
+	asLegacySahPool,
 	createJournalRecovery,
-	type LegacySahPool,
 	migrateLegacySahPool,
 	opfsPoolExists,
-	type SqlRecoveryModule,
 } from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs, type SqlLocks } from "./open.js";
 import type { SqlWorkerRequest } from "./protocol.js";
@@ -28,6 +28,7 @@ self.onmessage = (event: MessageEvent<SqlWorkerRequest>) => {
 
 async function openEngine(
 	options: SqlDatabaseOptions,
+	context: { readonly transient: boolean },
 ): Promise<OpenedSqlEngine> {
 	configureInlineOpfsProxy();
 	const sqlite = await sqlite3InitModule({
@@ -53,12 +54,14 @@ async function openEngine(
 			lockWaitMs,
 		},
 		options,
+		context,
 	);
 	try {
 		const engine = new SqlEngine(opened.raw, {
 			storage: opened.storage,
 			memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
 			serializer: createSqlSerializer(sqlite),
+			control: createSqlConnectionControl(sqlite),
 		});
 		return {
 			engine,
@@ -88,7 +91,7 @@ function legacyMigrator(
 	engine: SqlEngine,
 	lockWaitMs: number,
 ): NonNullable<OpenedSqlEngine["migrateLegacy"]> {
-	const recover = createJournalRecovery(sqlite as unknown as SqlRecoveryModule);
+	const recover = createJournalRecovery(sqlite);
 	return (request) =>
 		migrateLegacySahPool(
 			{
@@ -98,10 +101,12 @@ function legacyMigrator(
 				poolExists: async (pool) =>
 					opfsPoolExists(pool, await navigator.storage.getDirectory()),
 				installPool: async (name) =>
-					(await sqlite.installOpfsSAHPoolVfs({
-						name,
-						forceReinitIfPreviouslyFailed: true,
-					})) as unknown as LegacySahPool,
+					asLegacySahPool(
+						await sqlite.installOpfsSAHPoolVfs({
+							name,
+							forceReinitIfPreviouslyFailed: true,
+						}),
+					),
 				recover,
 				importDatabase: (bytes, options) =>
 					engine.importDatabase(bytes, options),

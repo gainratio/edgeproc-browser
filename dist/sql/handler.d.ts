@@ -8,6 +8,8 @@ export interface OpenedSqlEngine {
     /** Only a browser Worker (OPFS) can read a legacy opfs-sahpool. */
     migrateLegacy?(options: MigrateLegacySahPoolOptions): Promise<LegacySahPoolMigration>;
 }
-export type SqlEngineOpener = (options: SqlDatabaseOptions) => Promise<OpenedSqlEngine>;
+export type SqlEngineOpener = (options: SqlDatabaseOptions, context: {
+    readonly transient: boolean;
+}) => Promise<OpenedSqlEngine>;
 export declare function createSqlWorkerHandler(open: SqlEngineOpener): (request: SqlWorkerRequest) => Promise<SqlWorkerResponse>;
 //# sourceMappingURL=handler.d.ts.map

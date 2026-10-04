@@ -5,16 +5,17 @@
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
+import { createSqlConnectionControl } from "./control.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
-import { createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
+import { asLegacySahPool, createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs } from "./open.js";
 import { createSqlSerializer } from "./serializer.js";
 const handle = createSqlWorkerHandler(openEngine);
 self.onmessage = (event) => {
     void handle(event.data).then((response) => self.postMessage(response));
 };
-async function openEngine(options) {
+async function openEngine(options, context) {
     configureInlineOpfsProxy();
     const sqlite = await sqlite3InitModule({
         print: () => undefined,
@@ -30,12 +31,13 @@ async function openEngine(options) {
         locks: navigatorLocks(),
         warn: (message) => console.warn(message),
         lockWaitMs,
-    }, options);
+    }, options, context);
     try {
         const engine = new SqlEngine(opened.raw, {
             storage: opened.storage,
             memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
             serializer: createSqlSerializer(sqlite),
+            control: createSqlConnectionControl(sqlite),
         });
         return {
             engine,
@@ -64,7 +66,7 @@ function legacyMigrator(sqlite, storage, engine, lockWaitMs) {
         lockWaitMs,
         ownPool: storage.persistence === "opfs" ? storage.pool : undefined,
         poolExists: async (pool) => opfsPoolExists(pool, await navigator.storage.getDirectory()),
-        installPool: async (name) => (await sqlite.installOpfsSAHPoolVfs({
+        installPool: async (name) => asLegacySahPool(await sqlite.installOpfsSAHPoolVfs({
             name,
             forceReinitIfPreviouslyFailed: true,
         })),

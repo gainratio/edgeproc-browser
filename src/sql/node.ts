@@ -48,6 +48,7 @@ export async function openNodeSqlDatabase(
 			storage: { persistence: "memory", reason: "requested" },
 			memoryProfile: resolveMemoryProfile(opened.memoryProfile ?? "auto"),
 			serializer: sqlite.serializer,
+			control: sqlite.control,
 		}),
 		release: async () => undefined,
 	}));

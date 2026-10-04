@@ -50,10 +50,14 @@ export interface SqlRecoveryModule {
         xWrap(name: string, result: string, args: ReadonlyArray<string>): (vfs: number | bigint, filename: string) => number;
     };
 }
+/** Narrow an initialised sqlite-wasm module to the slice recovery needs. */
+export declare function isSqlRecoveryModule(module: object): module is SqlRecoveryModule;
+/** Narrow sqlite3.mjs's opfs-sahpool PoolUtil to the slice migration uses. */
+export declare function asLegacySahPool(util: object): LegacySahPool;
 /**
  * `(database, journal?) => bytes`: let SQLite play a rollback journal back
  * onto the database, through the "unix" VFS on in-memory files, and return
  * the recovered file. Without a journal the bytes are returned as they are.
  */
-export declare function createJournalRecovery(sqlite: SqlRecoveryModule, scratchFile?: () => string): (database: Uint8Array, journal?: Uint8Array) => Uint8Array;
+export declare function createJournalRecovery(module: object, scratchFile?: () => string): (database: Uint8Array, journal?: Uint8Array) => Uint8Array;
 //# sourceMappingURL=legacy.d.ts.map

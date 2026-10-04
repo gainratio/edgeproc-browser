@@ -49,6 +49,7 @@ export {
 	type SqlStatement,
 	type SqlStorage,
 	SqlStorageUnavailableError,
+	SqlTransactionEndedError,
 	type SqlTransactionResult,
 	type SqlValue,
 } from "./types.js";

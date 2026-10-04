@@ -11,14 +11,19 @@ import type {
 type WithId<T> = T & { readonly id: number };
 
 export type SqlWorkerRequest = WithId<
-	| { readonly operation: "open"; readonly options: SqlDatabaseOptions }
+	| {
+			readonly operation: "open";
+			readonly options: SqlDatabaseOptions;
+			/** A bounded by-name operation, not a connection. */
+			readonly transient?: true;
+	  }
 	| {
 			readonly operation: "exec";
 			readonly sql: string;
 			readonly bind?: SqlBind;
 	  }
 	| {
-			readonly operation: "query";
+			readonly operation: "query" | "tx-exec" | "tx-query";
 			readonly sql: string;
 			readonly bind?: SqlBind;
 	  }
