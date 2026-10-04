@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-04
+
+The first npm release since 0.1.1. If you were installing this package from a git
+commit to get these features, you can now install it from npm instead.
+
+### Moving off the git-sha alias
+
+Some apps pinned `"@edgeproc/browser": "github:hseshadr/edgeproc-browser#<sha>"` (or the
+same git URL under the `@gainratio/browser` name) to get the fixes below before they were
+released. Replace that line with `"@gainratio/browser": "^0.2.0"` and change imports from
+`@edgeproc/browser` to `@gainratio/browser`, subpaths included (`@edgeproc/browser/sqlite`
+becomes `@gainratio/browser/sqlite`). Nothing else changes: the npm tarball is the same
+committed `dist/` the git install gave you, now with provenance. `@edgeproc/browser` gets no
+new versions.
+
 ### Added
 
-- **`@gainratio/browser/sql`: a typed SQL seam.** `openSqlDatabase({ name })` opens a named
+- **New subpath `@gainratio/browser/sql`: a typed SQL seam.** `openSqlDatabase({ name })` opens a named
   SQLite database in the library's Worker, on OPFS (`opfs-sahpool`, owner-locked), with the
   memory profile applied and FTS5, JSON1 and sqlite-vector on one connection. Typed `exec`,
   `query`, `transaction`, `executeMany` and prepared statements. An in-memory fallback is
@@ -24,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triggers/views only with `allowTriggersAndViews`, virtual tables only from
   `virtualTableModules` (default fts5), `trusted_schema = OFF` afterwards. See docs/sql.md.
 - CI rebuilds `dist/` from empty and fails if it differs from the committed build.
+- **SQLite memory profile.** A `memoryProfile` option (`"auto"` by default, or `"full"`,
+  `"lite"`, `"minimal"`) sizes SQLite's page cache, heap limits, `temp_store` and
+  `mmap_size` to the device, so persistent indexes on OPFS stay small on phones instead of
+  running out of wasm memory on iPhone Safari. It applies to the vector index, the state
+  store and the SQL seam. The PRAGMAs are read back after open, and open fails if SQLite
+  ignored one. `detectMemoryTier()` shows what `"auto"` would pick. See
+  docs/memory-profile.md.
 
 ### Fixed
 

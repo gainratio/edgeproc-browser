@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.1.1; the same code was `@edgeproc/browser` 0.1.0)
+**`npm install @gainratio/browser`** (version 0.2.0; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
@@ -178,7 +178,7 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
   site, not from the same mirror as the data. Keep the private key off the web server.
 - **Tested in Chromium only.** CI runs real-browser tests in Chromium. Other modern browsers
   with Web Workers should work, but are not tested.
-- **Early release.** 0.1.1 is the first version under `@gainratio/browser` and the first
+- **Early release.** 0.1.1 was the first version under `@gainratio/browser` and the first
   published by CI with npm provenance. `@edgeproc/browser` 0.1.0 was published by hand
   without provenance; that name is deprecated.
 - The optional SQLite app-state store needs a cross-origin-isolated page (COOP and COEP
