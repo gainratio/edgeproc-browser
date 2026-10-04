@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.2.0; `@edgeproc/browser` is the old, deprecated name)
+**`npm install @gainratio/browser`** (version 0.2.1; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
@@ -176,8 +176,10 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
 - **It cannot protect a compromised page.** A malicious browser extension, or an attacker
   who controls your public-key URL, is out of reach. Serve the key over HTTPS from your own
   site, not from the same mirror as the data. Keep the private key off the web server.
-- **Tested in Chromium only.** CI runs real-browser tests in Chromium. Other modern browsers
-  with Web Workers should work, but are not tested.
+- **Chromium gets the full browser suite; Firefox and WebKit get one cross-browser test.** In
+  CI, Firefox and WebKit run OPFS open, the memory fallback, a SQL round trip,
+  export/import and memory-profile detection. Playwright's WebKit refuses OPFS, so there the
+  test checks the `opfs-unavailable` fallback, not OPFS itself. Real Safari is not tested.
 - **Early release.** 0.1.1 was the first version under `@gainratio/browser` and the first
   published by CI with npm provenance. `@edgeproc/browser` 0.1.0 was published by hand
   without provenance; that name is deprecated.
@@ -222,7 +224,7 @@ pnpm gate
 
 `pnpm gate` runs lint, type checks, the build, a check that the committed `dist/` matches a
 clean build, and the unit tests with coverage. It is the same command CI runs, and takes
-under a minute. `pnpm test:browser` runs the real-Chromium tests that CI also runs. See
+under a minute. `pnpm test:browser` runs the real-browser tests that CI also runs (Chromium, plus a cross-browser test in Firefox and WebKit). See
 [Getting started for developers](docs/GETTING_STARTED.md) for a code map, known local traps,
 and a walkthrough of a first change.
 

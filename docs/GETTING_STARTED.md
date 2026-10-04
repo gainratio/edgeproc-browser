@@ -11,7 +11,7 @@ package caches; a first run downloads more.
 | Node | 24.x (CI uses 24; `package.json` allows 22.13 or newer) | `nvm install 24 && nvm use 24`, or your usual Node manager |
 | pnpm | 11.5.0, pinned in `package.json` | `corepack enable` (corepack ships with Node) |
 | git | any recent version | the preflight tests create throwaway git repos |
-| Chromium for Playwright | whatever `@playwright/test` pins | `pnpm exec playwright install chromium` (only for the browser tests) |
+| Chromium for Playwright | whatever `@playwright/test` pins | `pnpm exec playwright install chromium firefox webkit` (only for the browser tests) |
 
 You do not need Python, Docker, or an account for anything below.
 
@@ -73,8 +73,8 @@ CI also runs the real-browser tests, so run them before a PR that touches the Wo
 or SQLite:
 
 ```bash
-pnpm exec playwright install chromium   # once, about 2 s if cached
-pnpm test:browser                       # about 9 s; ends with "1 skipped, 4 passed"
+pnpm exec playwright install chromium firefox webkit   # once
+pnpm test:browser                       # ends with "1 skipped, 15 passed"
 ```
 
 The skipped test is the warm-boot benchmark. Point it at a real bundle (a directory with

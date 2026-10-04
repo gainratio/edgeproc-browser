@@ -37,6 +37,10 @@ export function exportDatabase(raw, serializer) {
 }
 export function importDatabase(raw, serializer, input, options = {}) {
     const maxBytes = options.maxBytes ?? DEFAULT_MAX_IMPORT_BYTES;
+    // `n > NaN` is always false: an unchecked NaN would switch the limit off.
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+        throw new RangeError(`maxBytes must be a positive integer; got ${maxBytes}`);
+    }
     if (input.byteLength > maxBytes) {
         reject("too-large", `import is ${input.byteLength} bytes; limit ${maxBytes}`);
     }
@@ -253,6 +257,7 @@ function swapIn(raw, serializer, bytes) {
         // Imported views and triggers may only call innocuous functions, now
         // and on every later statement this connection runs.
         raw.exec({ sql: "PRAGMA trusted_schema = OFF" });
+        loadIncomingSchema(raw);
         raw.transaction("IMMEDIATE", () => {
             raw.exec({ sql: "PRAGMA defer_foreign_keys = ON" });
             dropMain(raw);
@@ -260,8 +265,37 @@ function swapIn(raw, serializer, bytes) {
         });
     }
     finally {
-        raw.exec({ sql: `DETACH ${INCOMING}` });
+        detachIncoming(raw);
         release?.();
+    }
+}
+/**
+ * Parse the incoming schema on THIS connection before anything changes. The
+ * scratch connection has none of the app's functions, so a schema that only
+ * fails here (a STORED generated column calling an app function is "unsafe
+ * use" under trusted_schema = OFF) is caught now, as corruption.
+ */
+function loadIncomingSchema(raw) {
+    try {
+        raw.selectObjects(`SELECT 1 FROM ${INCOMING}.sqlite_schema LIMIT 1`);
+    }
+    catch (error) {
+        reject("corrupt", `import schema does not load: ${describe(error)}`);
+    }
+}
+/**
+ * DETACH must work even when the incoming schema does not parse: every
+ * statement re-reads every attached schema, so an unparseable one would
+ * leave the live connection broken. writable_schema = ON (SQLite's own
+ * "do not report schema errors" switch) holds for this one DETACH only.
+ */
+function detachIncoming(raw) {
+    raw.exec({ sql: "PRAGMA writable_schema = ON" });
+    try {
+        raw.exec({ sql: `DETACH ${INCOMING}` });
+    }
+    finally {
+        raw.exec({ sql: "PRAGMA writable_schema = OFF" });
     }
 }
 function objects(raw, schema) {

@@ -4,14 +4,14 @@
 // structured-cloned exactly as postMessage would, and the far side is the real
 // handler driving the real pinned SQLite build.
 
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
-import { openSqlDatabase, type SqlWorkerLike } from "./client";
+import { exportDatabase, openSqlDatabase, type SqlWorkerLike } from "./client";
 import { SqlEngine } from "./engine";
 import { createSqlWorkerHandler } from "./handler";
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol";
-import { SqlStorageUnavailableError } from "./types";
+import { SqlImportRejectedError, SqlStorageUnavailableError } from "./types";
 
 let sqlite: NodeSqlite;
 beforeAll(async () => {
@@ -53,6 +53,19 @@ class InProcessWorker implements SqlWorkerLike {
 	public terminate(): void {
 		this.terminated = true;
 	}
+}
+
+const OPENED = { persistence: "memory", reason: "requested" } as const;
+
+/** Opens fine, then answers every other request with `answer` (or never). */
+function scriptedWorker(
+	answer: (request: SqlWorkerRequest) => Promise<SqlWorkerResponse>,
+): InProcessWorker {
+	return new InProcessWorker(async (request) =>
+		request.operation === "open"
+			? { id: request.id, ok: true, value: OPENED }
+			: answer(request),
+	);
 }
 
 function realWorker(): InProcessWorker {
@@ -225,5 +238,224 @@ describe("openSqlDatabase through the Worker protocol", () => {
 			ok: false,
 			error: { name: "Error", message: "plain string" },
 		});
+	});
+
+	it("ignores a response for a request it never sent", async () => {
+		const worker = realWorker();
+		const db = await openSqlDatabase(
+			{ name: "stray", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		expect(() =>
+			worker.emit("message", { data: { id: 999, ok: true, value: 1 } }),
+		).not.toThrow();
+		expect(await db.query("SELECT 1 AS one")).toEqual([{ one: 1 }]);
+		await db.close();
+	});
+
+	it("posts only the fields a call was given", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: undefined,
+		}));
+		const db = await openSqlDatabase(
+			{ name: "shape", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		await db.exec("SELECT 1");
+		await db.importDatabase(new Uint8Array([1]));
+		expect(worker.requests.slice(1)).toEqual([
+			{ id: 2, operation: "exec", sql: "SELECT 1" },
+			{ id: 3, operation: "import", bytes: new Uint8Array([1]) },
+		]);
+		expect(worker.requests[1]).not.toHaveProperty("bind");
+		expect(worker.requests[2]).not.toHaveProperty("options");
+	});
+
+	it("fails calls still in flight at close with 'SQL database is closed'", async () => {
+		const worker = scriptedWorker((request) =>
+			request.operation === "close"
+				? Promise.resolve({ id: request.id, ok: true, value: undefined })
+				: new Promise<SqlWorkerResponse>(() => undefined),
+		);
+		const db = await openSqlDatabase(
+			{ name: "inflight", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const pending = db.query("SELECT 1");
+		await db.close();
+		await expect(pending).rejects.toThrow("SQL database is closed");
+	});
+
+	it("refuses a call made while close is in flight, without posting it", async () => {
+		const worker = realWorker();
+		const db = await openSqlDatabase(
+			{ name: "closing", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const closing = db.close();
+		const late = db.query("SELECT 1");
+		await expect(late).rejects.toThrow("SQL database is closed");
+		await closing;
+		expect(worker.requests.map((request) => request.operation)).toEqual([
+			"open",
+			"close",
+		]);
+	});
+
+	it("opens a database by name on OPFS with no memory fallback, then closes it", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: request.operation === "export" ? new Uint8Array([7]) : undefined,
+		}));
+		const bytes = await exportDatabase("by-name", {
+			workerFactory: () => worker,
+		});
+		expect(bytes).toEqual(new Uint8Array([7]));
+		expect(worker.requests[0]).toMatchObject({
+			operation: "open",
+			options: { name: "by-name", persistence: "opfs", fallback: "none" },
+		});
+		expect(worker.requests.at(-1)?.operation).toBe("close");
+		expect(worker.terminated).toBe(true);
+	});
+
+	it.each([
+		[
+			"an import rejection with its reason",
+			{ name: "SqlImportRejectedError", message: "m", rejection: "corrupt" },
+			SqlImportRejectedError,
+			{ reason: "corrupt" },
+		],
+		[
+			"a storage refusal with its reason",
+			{
+				name: "SqlStorageUnavailableError",
+				message: "m",
+				reason: "opfs-unavailable",
+			},
+			SqlStorageUnavailableError,
+			{ reason: "opfs-unavailable" },
+		],
+	] as const)(
+		"rebuilds %s as its typed error",
+		async (_label, error, type, fields) => {
+			const db = await openSqlDatabase(
+				{ name: "typed", persistence: "memory" },
+				{
+					workerFactory: () =>
+						scriptedWorker(async (request) => ({
+							id: request.id,
+							ok: false,
+							error,
+						})),
+				},
+			);
+			const failing = db.query("SELECT 1");
+			await expect(failing).rejects.toBeInstanceOf(type);
+			await expect(failing).rejects.toMatchObject({ ...fields, message: "m" });
+		},
+	);
+
+	it.each([
+		[
+			"a reason on a plain Error",
+			{ name: "Error", message: "m", reason: "pool-in-use" },
+		],
+		[
+			"a rejection on a plain Error",
+			{ name: "Error", message: "m", rejection: "corrupt" },
+		],
+		[
+			"SqlImportRejectedError without a rejection",
+			{ name: "SqlImportRejectedError", message: "m" },
+		],
+		[
+			"SqlStorageUnavailableError without a reason",
+			{ name: "SqlStorageUnavailableError", message: "m" },
+		],
+	] as const)(
+		"does not trust %s: it stays a plain named Error",
+		async (_label, error) => {
+			const db = await openSqlDatabase(
+				{ name: "untyped", persistence: "memory" },
+				{
+					workerFactory: () =>
+						scriptedWorker(async (request) => ({
+							id: request.id,
+							ok: false,
+							error,
+						})),
+				},
+			);
+			const failure = await db
+				.query("SELECT 1")
+				.catch((caught: unknown) => caught);
+			expect(failure).not.toBeInstanceOf(SqlImportRejectedError);
+			expect(failure).not.toBeInstanceOf(SqlStorageUnavailableError);
+			expect(failure).toMatchObject({ name: error.name, message: "m" });
+		},
+	);
+
+	it("closes the engine and releases the lease on close, even if close throws", async () => {
+		const release = vi.fn();
+		const engine = new SqlEngine(sqlite.openMemory(), {
+			storage: { persistence: "memory", reason: "requested" },
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		const closeEngine = vi.spyOn(engine, "close").mockImplementation(() => {
+			throw new Error("close failed");
+		});
+		const handle = createSqlWorkerHandler(async () => ({ engine, release }));
+		await handle({ id: 1, operation: "open", options: { name: "c" } });
+		expect(await handle({ id: 2, operation: "close" })).toMatchObject({
+			ok: false,
+			error: { message: "close failed" },
+		});
+		expect(closeEngine).toHaveBeenCalledTimes(1);
+		expect(release).toHaveBeenCalledTimes(1);
+		expect(
+			await handle({ id: 3, operation: "query", sql: "SELECT 1" }),
+		).toMatchObject({
+			ok: false,
+			error: { message: "SQL worker has no open database" },
+		});
+	});
+});
+
+describe("the default Worker factory", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("starts the library's module Worker, named edgeproc-sql", async () => {
+		const created: Array<{ url: URL; options: WorkerOptions }> = [];
+		vi.stubGlobal(
+			"Worker",
+			class extends InProcessWorker {
+				public constructor(url: URL, options: WorkerOptions) {
+					super(async (request) => ({
+						id: request.id,
+						ok: true,
+						value: request.operation === "open" ? OPENED : undefined,
+					}));
+					created.push({ url, options });
+				}
+			},
+		);
+		const db = await openSqlDatabase({
+			name: "default",
+			persistence: "memory",
+		});
+		expect(db.storage).toEqual(OPENED);
+		expect(created).toHaveLength(1);
+		expect(created[0]?.url.href).toMatch(/\/sql\/worker\.js$/);
+		expect(created[0]?.options).toEqual({
+			type: "module",
+			name: "edgeproc-sql",
+		});
+		await db.close();
 	});
 });

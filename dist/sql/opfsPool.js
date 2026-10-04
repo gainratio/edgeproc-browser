@@ -7,6 +7,7 @@
 // pool is "absent", and a pool whose files another context holds open is
 // "in-use" (nothing is deleted; try again once that context closes it).
 import { sqlDatabasePoolName, stableIdentity } from "./open.js";
+import { SqlStorageUnavailableError } from "./types.js";
 const SAFE_POOL_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Remove the opfs-sahpool named `poolName` (its directory `.${poolName}`). */
 export async function removeOpfsPool(poolName, options = {}) {
@@ -45,8 +46,18 @@ export async function removeSqlDatabase(name, options = {}) {
 export async function sqliteVectorPoolName(name) {
     return `edgeproc-vector-${await stableIdentity(name)}`;
 }
+/**
+ * The OPFS root, or the same typed refusal openSqlDatabase reports. A browser
+ * that refuses the root (Safari private mode, Playwright's WebKit) throws a
+ * bare DOMException like "UnknownError"; callers branch on the type instead.
+ */
 async function defaultRoot() {
-    return navigator.storage.getDirectory();
+    try {
+        return await navigator.storage.getDirectory();
+    }
+    catch (error) {
+        throw new SqlStorageUnavailableError("opfs-unavailable", `OPFS root refused: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 function defaultLocks() {
     return globalThis.navigator?.locks;

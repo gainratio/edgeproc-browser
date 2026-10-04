@@ -77,9 +77,10 @@ describe("openSqlStorage", () => {
 			name: "shared",
 			fallback: "memory",
 		});
-		expect(second.storage).toMatchObject({
+		expect(second.storage).toEqual({
 			persistence: "memory",
 			reason: "pool-in-use",
+			detail: "another context owns it",
 		});
 		expect(second.raw.file).toBe(":memory:");
 		expect(d.installPool).toHaveBeenCalledTimes(1);
@@ -138,6 +139,72 @@ describe("openSqlStorage", () => {
 			fallback: "memory",
 		});
 		expect(opened.storage).toMatchObject({ reason: "pool-in-use" });
+	});
+
+	it("classifies contention by DOMException name or by the sahpool message", async () => {
+		for (const failure of [
+			named("NoModificationAllowedError", "handle busy"),
+			new Error("Access handle cannot be created"),
+			new Error("access handles cannot be created for pool"),
+		]) {
+			const opened = await openSqlStorage(
+				deps({
+					locks: undefined,
+					installPool: vi.fn(async () => {
+						throw failure;
+					}),
+				}),
+				{ name: "contended", fallback: "memory" },
+			);
+			expect(opened.storage).toMatchObject({ reason: "pool-in-use" });
+		}
+	});
+
+	it("requests the owner lock exclusively, bounded by lockWaitMs", async () => {
+		const inner = new FakeLocks();
+		const seen: Array<{ mode?: string; signal?: AbortSignal }> = [];
+		const d = deps({
+			lockWaitMs: 5_000,
+			locks: {
+				request: (name, options, callback) => {
+					seen.push(options);
+					return inner.request(name, options, callback);
+				},
+			},
+		});
+		const opened = await openSqlStorage(d, { name: "exclusive" });
+		expect(seen).toHaveLength(1);
+		expect(seen[0]?.mode).toBe("exclusive");
+		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+		expect(seen[0]?.signal?.aborted).toBe(false);
+		opened.release();
+	});
+
+	it("treats the browser's TimeoutError from AbortSignal.timeout as pool-in-use", async () => {
+		const d = deps({
+			locks: {
+				request: async () => {
+					throw new DOMException("timed out", "TimeoutError");
+				},
+			},
+		});
+		const opened = await openSqlStorage(d, {
+			name: "timeout",
+			fallback: "memory",
+		});
+		expect(opened.storage).toMatchObject({ reason: "pool-in-use" });
+		expect(d.installPool).not.toHaveBeenCalled();
+	});
+
+	it("propagates a null Web Locks rejection unchanged", async () => {
+		const d = deps({
+			locks: {
+				request: async () => {
+					throw null;
+				},
+			},
+		});
+		await expect(openSqlStorage(d, { name: "null" })).rejects.toBeNull();
 	});
 
 	it("opens without a lease where Web Locks are missing", async () => {

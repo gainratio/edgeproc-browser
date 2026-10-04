@@ -89,6 +89,8 @@ jobs:
           pnpm verify:dist
 
   browser:
+    # The name is a required status check on main; it now also covers Firefox
+    # and WebKit (cross-browser.spec.ts). Renaming it would orphan that check.
     name: Chromium (Worker + OPFS + sqlite-vector)
     runs-on: ubuntu-latest
     steps:
@@ -108,8 +110,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
 
-      - name: Install pinned Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install pinned Playwright Chromium, Firefox and WebKit
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
 
-      - name: Prove Worker, sqlite-vector, and OPFS persistence
+      - name: Prove Worker, sqlite-vector, OPFS (or its typed fallback) in three engines
+        # Chromium runs every spec. Firefox and WebKit run cross-browser.spec.ts:
+        # OPFS open, the typed memory fallback, the SQL round trip,
+        # export/import and MemoryProfile detection without deviceMemory.
         run: pnpm test:browser
