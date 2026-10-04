@@ -289,6 +289,13 @@ test("a Worker killed mid-transaction leaves the pointer and floor fully old or 
 		browserName === "webkit",
 		"no OPFS in Playwright WebKit: nothing persists across a kill",
 	);
+	// KNOWN BUG, NOT A PASS: opfs-sahpool's xCheckReservedLock always reports
+	// a lock, so the hot journal is never rolled back and a killed transaction
+	// leaves torn pages (integrity_check fails). Fixed by the 0.2.2 hotfix
+	// (fix/sahpool-hot-journal, upstream check-in 9168a6f1be). Once that patch
+	// is in the build this test passes, test.fail() turns it RED, and this
+	// line must be deleted.
+	test.fail(true, "opfs-sahpool hot-journal bug until the 0.2.2 hotfix lands");
 	test.setTimeout(120_000);
 	const errors = await open(page);
 	const namespace = `kill-${crypto.randomUUID()}`;
