@@ -1,0 +1,42 @@
+name: SQLite latest check
+
+# The build script pins SQLite (URL + SHA3), sqlite-vector (commit) and emsdk
+# (image digest) exactly. That keeps builds reproducible but says nothing when
+# upstream ships something newer. This weekly job compares the pins with
+# upstream and opens (or updates, never duplicates) one issue when any is
+# behind. It fails the run if it cannot read upstream, so a format change
+# shows up as a red run, not a false "up to date".
+on:
+  schedule:
+    - cron: "17 14 * * 1" # Mondays 14:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlite-latest
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # Same SHA pins as ci.yml; the comment names the exact release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Compare pins with upstream and upsert the update issue
+        # Node built-ins only (fetch, fs): no install step, no dependencies.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-sqlite-latest.mjs --issue
