@@ -8,6 +8,21 @@
 // for a moment), then either fails closed or, if the caller allowed it, opens
 // an in-memory database and SAYS SO in its storage status.
 import { SqlStorageUnavailableError, } from "./types.js";
+/**
+ * How long to wait for a pool's previous owner to let go. close() now hands
+ * the lock back within milliseconds, so what the wait really covers is a page
+ * reload overlapping its predecessor while the browser tears that page's
+ * Worker down — slowest on the weakest devices, so the budget scales with the
+ * memory tier rather than being one fixed number.
+ */
+export function ownerLockWaitMs(tier) {
+    return OWNER_LOCK_WAIT_MS[tier];
+}
+const OWNER_LOCK_WAIT_MS = Object.freeze({
+    full: 1_000,
+    lite: 2_000,
+    minimal: 4_000,
+});
 export const SQL_POOL_PREFIX = "edgeproc-sql-";
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export async function sqlDatabasePoolName(name) {

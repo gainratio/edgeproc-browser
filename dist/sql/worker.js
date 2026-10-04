@@ -7,9 +7,8 @@ import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
-import { openSqlStorage } from "./open.js";
+import { openSqlStorage, ownerLockWaitMs } from "./open.js";
 import { createSqlSerializer } from "./serializer.js";
-const LOCK_WAIT_MS = 2_000;
 const handle = createSqlWorkerHandler(openEngine);
 self.onmessage = (event) => {
     void handle(event.data).then((response) => self.postMessage(response));
@@ -28,7 +27,7 @@ async function openEngine(options) {
         })),
         locks: navigator.locks,
         warn: (message) => console.warn(message),
-        lockWaitMs: LOCK_WAIT_MS,
+        lockWaitMs: ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier),
     }, options);
     try {
         const engine = new SqlEngine(opened.raw, {

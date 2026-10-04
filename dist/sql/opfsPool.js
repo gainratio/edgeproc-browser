@@ -13,9 +13,9 @@
 // bounded time for an owner that is just closing, and deletes while holding
 // it, so nothing can reopen the pool mid-delete. A pool still owned after the
 // wait, or whose files a lock-less context holds open, is "in-use".
-import { acquirePoolLease, poolOwnerLock, sqlDatabasePoolName, stableIdentity, } from "./open.js";
+import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
+import { acquirePoolLease, ownerLockWaitMs, poolOwnerLock, sqlDatabasePoolName, stableIdentity, } from "./open.js";
 import { SqlStorageUnavailableError } from "./types.js";
-const DEFAULT_LOCK_WAIT_MS = 2_000;
 const SAFE_POOL_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Remove the opfs-sahpool named `poolName` (its directory `.${poolName}`). */
 export async function removeOpfsPool(poolName, options = {}) {
@@ -23,15 +23,23 @@ export async function removeOpfsPool(poolName, options = {}) {
         throw new TypeError(`invalid OPFS pool name: ${JSON.stringify(poolName)}`);
     }
     const locks = "locks" in options ? options.locks : defaultLocks();
-    const release = await acquirePoolLease(locks, poolOwnerLock(poolName), options.lockWaitMs ?? DEFAULT_LOCK_WAIT_MS);
+    const release = await acquirePoolLease(locks, poolOwnerLock(poolName), options.lockWaitMs ?? ownerLockWaitMs(resolveMemoryProfile("auto").tier));
     if (release === undefined)
-        return "in-use";
+        return confirmOwner(locks, poolName);
     try {
         return await removeUnderLease(poolName, options);
     }
     finally {
         await release();
     }
+}
+/** After a timed-out wait: "in-use" only if the lock manager shows the owner. */
+async function confirmOwner(locks, poolName) {
+    const snapshot = await locks?.query?.();
+    const owner = poolOwnerLock(poolName);
+    return snapshot?.held?.some((lock) => lock.name === owner)
+        ? "in-use"
+        : "timeout";
 }
 async function removeUnderLease(poolName, options) {
     const root = options.root ?? (await defaultRoot());

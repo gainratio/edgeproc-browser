@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveMemoryProfile } from "../sqlite/memoryProfile";
 import { FakeLocks } from "./__fixtures__/fakeLocks";
-import { openSqlStorage, sqlDatabasePoolName } from "./open";
+import { openSqlStorage, ownerLockWaitMs, sqlDatabasePoolName } from "./open";
 import {
 	type OpfsRoot,
 	removeOpfsPool,
@@ -115,7 +116,7 @@ describe("removeOpfsPool", () => {
 		releaseOwner();
 	});
 
-	it("bounds the wait with an abort signal (default 2s), never ifAvailable", async () => {
+	it("bounds the wait with an abort signal sized to the device, never ifAvailable", async () => {
 		const seen: Array<{ signal?: AbortSignal; ifAvailable?: boolean }> = [];
 		const timeout = vi.spyOn(AbortSignal, "timeout");
 		const locks = {
@@ -134,7 +135,9 @@ describe("removeOpfsPool", () => {
 		await removeOpfsPool("signalled", { root: new FakeRoot(), locks });
 		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
 		expect(seen[0]?.ifAvailable).toBeUndefined();
-		expect(timeout).toHaveBeenCalledWith(2_000);
+		expect(timeout).toHaveBeenCalledWith(
+			ownerLockWaitMs(resolveMemoryProfile("auto").tier),
+		);
 		timeout.mockRestore();
 	});
 
@@ -147,6 +150,55 @@ describe("removeOpfsPool", () => {
 		await expect(
 			removeOpfsPool("locked-out", { root: new FakeRoot(), locks }),
 		).rejects.toThrow(/SecurityError/);
+	});
+
+	it("reports timeout, not in-use, when the wait ends but no owner can be confirmed", async () => {
+		const root = new FakeRoot();
+		root.entries.add(".unconfirmed");
+		const locks = {
+			request: async () => {
+				throw new DOMException("timed out", "TimeoutError");
+			},
+		};
+		expect(
+			await removeOpfsPool("unconfirmed", { root, locks, lockWaitMs: 10 }),
+		).toBe("timeout");
+		expect(root.calls).toEqual([]);
+	});
+
+	it("reports in-use only when the lock manager confirms a live owner after the wait", async () => {
+		const locks = {
+			request: async () => {
+				throw new DOMException("timed out", "TimeoutError");
+			},
+			query: async () => ({ held: [{ name: "confirmed-owner" }] }),
+		};
+		expect(
+			await removeOpfsPool("confirmed", {
+				root: new FakeRoot(),
+				locks,
+				lockWaitMs: 10,
+			}),
+		).toBe("in-use");
+		const released = {
+			...locks,
+			query: async () => ({ held: [{ name: "someone-else-owner" }] }),
+		};
+		expect(
+			await removeOpfsPool("confirmed", {
+				root: new FakeRoot(),
+				locks: released,
+				lockWaitMs: 10,
+			}),
+		).toBe("timeout");
+	});
+
+	it.each([
+		["full", 1_000],
+		["lite", 2_000],
+		["minimal", 4_000],
+	] as const)("waits longer on slower devices: %s -> %i ms", (tier, ms) => {
+		expect(ownerLockWaitMs(tier)).toBe(ms);
 	});
 
 	it("rethrows a null rejection unchanged", async () => {
@@ -335,6 +387,9 @@ describe("removeSqlDatabase", () => {
 function navigatorLikeLocks() {
 	const held = new Set<string>();
 	return {
+		async query() {
+			return { held: [...held].map((name) => ({ name })) };
+		},
 		async request<T>(
 			name: string,
 			options: {

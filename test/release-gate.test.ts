@@ -220,6 +220,15 @@ describe("publish.yml wiring", () => {
 		expect(workflow).toMatch(/actions: read/);
 	});
 
+	it("publishes only inside the protected npm-release environment", () => {
+		// The gate runs from the TAGGED commit's workflow, so a tag on an
+		// unreviewed commit can edit it away. The environment (required reviewer,
+		// v* tag policy) and npm's trusted publisher bound to it are what a
+		// workflow edit cannot remove.
+		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
+		expect(publish).toMatch(/^ {6}environment: npm-release$/m);
+	});
+
 	it("makes the OIDC publish job depend on it", () => {
 		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
 		expect(publish).toMatch(/^ {4}needs: release-gate$/m);

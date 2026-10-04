@@ -92,8 +92,8 @@ interface SqlDatabase {
 exportDatabase(db | name, { workerFactory? }?): Promise<Uint8Array>
 importDatabase(db | name, bytes, options?): Promise<SqlImportResult>
 
-removeSqlDatabase(name, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use">
-removeOpfsPool(poolName, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use">
+removeSqlDatabase(name, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use" | "timeout">
+removeOpfsPool(poolName, { lockWaitMs? }?): Promise<"removed" | "absent" | "in-use" | "timeout">
 sqliteVectorPoolName(name): Promise<string>   // pool used by createSqliteVectorIndex
 sqlDatabasePoolName(name): Promise<string>    // pool used by openSqlDatabase
 ```
@@ -105,7 +105,10 @@ sqlDatabasePoolName(name): Promise<string>    // pool used by openSqlDatabase
 
 The database lives in its own `opfs-sahpool` VFS. That VFS holds exclusive OPFS handles, so
 only one tab can own it. The Worker takes an exclusive Web Lock for the life of the
-connection and waits up to 2 seconds for a previous owner (a reload) before giving up.
+connection and waits for a previous owner (a reload) before giving up: 1 s on a `full`
+memory tier, 2 s on `lite`, 4 s on `minimal`, because weak devices tear the old page down
+slowest. `createSqliteVectorIndex({ persistence: "opfs" })` takes the same lock; a second tab
+gets `SqlStorageUnavailableError("pool-in-use")`.
 
 | `db.storage` | Meaning |
 |---|---|
@@ -123,8 +126,14 @@ checks they stuck.
 
 ## Delete an old database or pool
 
-Removal is idempotent. It returns `"absent"` when there is nothing to delete and `"in-use"`
-(deleting nothing) while another live context, such as another tab, still owns the pool.
+Removal is idempotent and deletes nothing unless it returns `"removed"`:
+
+| Result | Meaning |
+|---|---|
+| `"removed"` | Deleted. |
+| `"absent"` | There was nothing to delete. |
+| `"in-use"` | A live owner is confirmed: another tab kept the pool's owner lock for the whole wait, or the browser refused to delete files that are open. |
+| `"timeout"` | The wait ended but no owner could be confirmed. Call again later. |
 
 Closing first and removing straight after is safe: `db.close()` and `index.dispose()` resolve
 only after the Worker has closed the pool's OPFS handles and released its owner lock.
@@ -148,8 +157,8 @@ await removeOpfsPool("edgereco-catalogue");
 
 Both take the pool's owner Web Lock, the one `openSqlDatabase` and an OPFS
 `createSqliteVectorIndex` hold while open, and delete while holding it, so nothing can reopen
-the pool mid-delete. They wait up to `lockWaitMs` (default 2000) for an owner that is closing,
-then report `"in-use"`. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
+the pool mid-delete. They wait up to `lockWaitMs` (default: the same 1/2/4 s by memory tier)
+for an owner that is closing. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
 If the browser refuses the OPFS root (Safari private browsing, Playwright's WebKit), both throw
 `SqlStorageUnavailableError("opfs-unavailable")`, the same typed reason `openSqlDatabase` reports.
 

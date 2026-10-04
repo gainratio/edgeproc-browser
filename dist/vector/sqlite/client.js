@@ -1,3 +1,4 @@
+import { SqlStorageUnavailableError } from "../../sql/types.js";
 const PERSISTENT_CAPABILITIES = Object.freeze({
     metrics: Object.freeze(["cosine"]),
     exact: true,
@@ -154,9 +155,7 @@ export class SqliteVectorIndexClient {
             pending.resolve(response.value);
         }
         else {
-            const error = new Error(response.error.message);
-            error.name = response.error.name;
-            pending.reject(error);
+            pending.reject(reconstructError(response.error));
         }
     }
     #failAll(error) {
@@ -170,6 +169,16 @@ export class SqliteVectorIndexClient {
         this.#worker.terminate();
         this.#failAll(error);
     }
+}
+/** Rebuild the typed refusal the Worker sent; anything else stays a named Error. */
+function reconstructError(error) {
+    if (error.name === "SqlStorageUnavailableError" &&
+        error.reason !== undefined) {
+        return new SqlStorageUnavailableError(error.reason, error.message);
+    }
+    const rebuilt = new Error(error.message);
+    rebuilt.name = error.name;
+    return rebuilt;
 }
 export async function createSqliteVectorIndex(options) {
     const index = new SqliteVectorIndexClient(options);

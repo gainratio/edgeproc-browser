@@ -1,3 +1,4 @@
+import { SqlStorageUnavailableError } from "../../sql/types.js";
 import type {
 	Metadata,
 	VectorHit,
@@ -12,6 +13,7 @@ import type {
 	SqliteVectorRuntimeInfo,
 } from "./database.js";
 import type {
+	SqliteVectorWorkerFailure,
 	SqliteVectorWorkerOptions,
 	SqliteVectorWorkerRequest,
 	SqliteVectorWorkerResponse,
@@ -247,9 +249,7 @@ export class SqliteVectorIndexClient implements SqliteWorkerVectorIndex {
 		if (response.ok) {
 			pending.resolve(response.value);
 		} else {
-			const error = new Error(response.error.message);
-			error.name = response.error.name;
-			pending.reject(error);
+			pending.reject(reconstructError(response.error));
 		}
 	}
 
@@ -265,6 +265,19 @@ export class SqliteVectorIndexClient implements SqliteWorkerVectorIndex {
 		this.#worker.terminate();
 		this.#failAll(error);
 	}
+}
+
+/** Rebuild the typed refusal the Worker sent; anything else stays a named Error. */
+function reconstructError(error: SqliteVectorWorkerFailure["error"]): Error {
+	if (
+		error.name === "SqlStorageUnavailableError" &&
+		error.reason !== undefined
+	) {
+		return new SqlStorageUnavailableError(error.reason, error.message);
+	}
+	const rebuilt = new Error(error.message);
+	rebuilt.name = error.name;
+	return rebuilt;
 }
 
 export async function createSqliteVectorIndex(

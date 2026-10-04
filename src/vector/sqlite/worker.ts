@@ -1,10 +1,8 @@
 /// <reference lib="webworker" />
 
-import {
-	acquirePoolLease,
-	poolOwnerLock,
-	type SqlLocks,
-} from "../../sql/open.js";
+import { ownerLockWaitMs, type SqlLocks } from "../../sql/open.js";
+import { SqlStorageUnavailableError } from "../../sql/types.js";
+import { resolveMemoryProfile } from "../../sqlite/memoryProfile.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import {
 	type RawSqliteDatabase,
@@ -12,11 +10,15 @@ import {
 	SqliteDatabaseVectorIndex,
 	wrapSqliteDatabase,
 } from "./database.js";
+import {
+	createVectorWorkerHandler,
+	type OpenedVectorIndex,
+} from "./handler.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
+import { ownPool } from "./poolOwner.js";
 import type {
 	SqliteVectorWorkerOptions,
 	SqliteVectorWorkerRequest,
-	SqliteVectorWorkerResponse,
 } from "./protocol.js";
 
 interface SahPool {
@@ -35,86 +37,17 @@ interface SahPoolInstaller {
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
 const POOL_ACQUIRE_MAX_DELAY_MS = 800;
-/** How long to wait for a previous owner (a reload, a closing tab) to let go. */
-const OWNER_LOCK_WAIT_MS = 2_000;
 
-let index: SqliteDatabaseVectorIndex | undefined;
-/** Frees the OPFS pool (handles, then owner lock); resolves once both are free. */
-let releaseStorage: () => Promise<void> = async () => undefined;
-let queue = Promise.resolve();
+const handle = createVectorWorkerHandler(openIndex);
 
 self.onmessage = (event: MessageEvent<SqliteVectorWorkerRequest>) => {
-	const request = event.data;
-	queue = queue.then(() => handleRequest(request)).catch(() => undefined);
+	void handle(event.data).then((response) => self.postMessage(response));
 };
-
-async function handleRequest(
-	request: SqliteVectorWorkerRequest,
-): Promise<void> {
-	try {
-		const value = await dispatch(request);
-		post({ id: request.id, ok: true, value });
-	} catch (error) {
-		post({
-			id: request.id,
-			ok: false,
-			error: {
-				name: error instanceof Error ? error.name : "Error",
-				message: error instanceof Error ? error.message : String(error),
-			},
-		});
-	}
-}
-
-async function dispatch(request: SqliteVectorWorkerRequest): Promise<unknown> {
-	if (request.operation === "initialize") {
-		if (index !== undefined) {
-			throw new Error("SQLite vector worker is already initialized");
-		}
-		index = await openIndex(request.options);
-		return index.capabilities;
-	}
-	const current = requireIndex();
-	switch (request.operation) {
-		case "insert":
-			return current.insert(request.records);
-		case "insert-keyed":
-			return current.insertKeyed(request.records);
-		case "read":
-			return current.read(request.recordId);
-		case "search":
-			return current.search(request.query, request.limit, request.filters);
-		case "search-by-ids":
-			return current.searchByIds(request.query, request.ids);
-		case "lookup-ids":
-			return current.lookupIds(request.keys, request.maxDocumentFrequency);
-		case "delete":
-			return current.delete(request.ids, request.filters);
-		case "delete-where":
-			return current.deleteWhere(request.filters);
-		case "clear":
-			return current.clear();
-		case "stats":
-			return current.stats(request.filters);
-		case "runtime-info":
-			return current.runtimeInfo();
-		case "dispose":
-			// Answer only once the handles and owner lock are free, so a caller
-			// that awaits dispose() can remove or reopen the pool at once.
-			index = undefined;
-			try {
-				await current.dispose();
-			} finally {
-				await releaseStorage();
-				releaseStorage = async () => undefined;
-			}
-			return undefined;
-	}
-}
 
 async function openIndex(
 	options: SqliteVectorWorkerOptions,
-): Promise<SqliteDatabaseVectorIndex> {
+): Promise<OpenedVectorIndex> {
+	let release: () => Promise<void> = async () => undefined;
 	configureInlineOpfsProxy();
 	const sqlite = await sqlite3InitModule({
 		print: () => undefined,
@@ -126,7 +59,15 @@ async function openIndex(
 		raw = new sqlite.oo1.DB(":memory:");
 	} else if (persistence === "opfs") {
 		const identity = await stableIdentity(options.name);
-		raw = await openPersistent(sqlite, `edgeproc-vector-${identity}`);
+		const opened = await openPersistent(
+			sqlite,
+			`edgeproc-vector-${identity}`,
+			ownerLockWaitMs(
+				resolveMemoryProfile(options.memoryProfile ?? "auto").tier,
+			),
+		);
+		raw = opened.raw;
+		release = opened.release;
 	} else {
 		throw new TypeError(
 			`unsupported SQLite persistence: ${String(persistence)}`,
@@ -153,55 +94,39 @@ async function openIndex(
 				`unexpected SQLite vector runtime: ${JSON.stringify(runtime)}`,
 			);
 		}
-		return opened;
+		return { index: opened, release };
 	} catch (error) {
 		try {
 			database.close();
 		} finally {
-			await releaseStorage();
-			releaseStorage = async () => undefined;
+			await release();
 		}
 		throw error;
 	}
 }
 
-/**
- * Own the pool the way openSqlDatabase does: the exclusive owner Web Lock for
- * the life of the index, so removeOpfsPool can tell "closing" from "in use".
- */
+/** Own the pool (see poolOwner.ts) and open the index's file in it. */
 async function openPersistent(
 	sqlite: SahPoolInstaller,
 	poolName: string,
-): Promise<RawSqliteDatabase> {
-	const releaseLock = await acquirePoolLease(
+	waitMs: number,
+): Promise<{
+	readonly raw: RawSqliteDatabase;
+	readonly release: () => Promise<void>;
+}> {
+	const owned = await ownPool(
 		(navigator as { locks?: SqlLocks }).locks,
-		poolOwnerLock(poolName),
-		OWNER_LOCK_WAIT_MS,
+		poolName,
+		waitMs,
+		() => acquirePersistentPool(sqlite, poolName),
 	);
-	if (releaseLock === undefined) {
-		throw new Error(
-			"could not open the local vector database — this index is already open in another tab",
-		);
-	}
-	let pool: SahPool;
 	try {
-		pool = await acquirePersistentPool(sqlite, poolName);
+		return {
+			raw: new owned.pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`),
+			release: owned.release,
+		};
 	} catch (error) {
-		await releaseLock();
-		throw error;
-	}
-	releaseStorage = async () => {
-		try {
-			pool.pauseVfs();
-		} finally {
-			await releaseLock();
-		}
-	};
-	try {
-		return new pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`);
-	} catch (error) {
-		await releaseStorage();
-		releaseStorage = async () => undefined;
+		await owned.release();
 		throw error;
 	}
 }
@@ -223,7 +148,8 @@ async function acquirePersistentPool(
 				throw new Error(`could not open the local vector database (${detail})`);
 			}
 			if (attempt >= POOL_ACQUIRE_MAX_ATTEMPTS) {
-				throw new Error(
+				throw new SqlStorageUnavailableError(
+					"pool-in-use",
 					`could not open the local vector database — this index may already be open in another tab (${detail})`,
 				);
 			}
@@ -259,13 +185,6 @@ function configurePersistentDatabase(database: SqliteDatabase): void {
 	}
 }
 
-function requireIndex(): SqliteDatabaseVectorIndex {
-	if (index === undefined) {
-		throw new Error("SQLite vector worker is not initialized");
-	}
-	return index;
-}
-
 async function stableIdentity(name: string): Promise<string> {
 	const bytes = new TextEncoder().encode(name);
 	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -273,8 +192,4 @@ async function stableIdentity(name: string): Promise<string> {
 		.slice(0, 16)
 		.map((value) => value.toString(16).padStart(2, "0"))
 		.join("");
-}
-
-function post(response: SqliteVectorWorkerResponse): void {
-	self.postMessage(response);
 }

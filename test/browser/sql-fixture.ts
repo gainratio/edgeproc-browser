@@ -128,6 +128,8 @@ window.runSqlSeamProof = async (name): Promise<SqlSeamProof> => {
 
 export interface CloseThenRemoveProof {
 	readonly vector: ReadonlyArray<string>;
+	/** Rounds where the pool's owner lock was still held when dispose() resolved. */
+	readonly lockHeldAfterDispose: ReadonlyArray<number>;
 	readonly sql: ReadonlyArray<string>;
 }
 
@@ -150,6 +152,7 @@ declare global {
 window.runCloseThenRemove = async (name, rounds) => {
 	const vector: string[] = [];
 	const sql: string[] = [];
+	const lockHeldAfterDispose: number[] = [];
 	for (let round = 0; round < rounds; round += 1) {
 		const vectorName = `${name}-v${round}`;
 		const index = await createSqliteVectorIndex({
@@ -161,7 +164,12 @@ window.runCloseThenRemove = async (name, rounds) => {
 			{ id: "a", vector: new Float32Array([1, 0]), metadata: {} },
 		]);
 		await index.dispose();
-		vector.push(await removeOpfsPool(await sqliteVectorPoolName(vectorName)));
+		const pool = await sqliteVectorPoolName(vectorName);
+		const { held = [] } = await navigator.locks.query();
+		if (held.some((lock) => lock.name === `${pool}-owner`)) {
+			lockHeldAfterDispose.push(round);
+		}
+		vector.push(await removeOpfsPool(pool));
 
 		const sqlName = `${name}-s${round}`;
 		const db = await openSqlDatabase({ name: sqlName });
@@ -169,7 +177,7 @@ window.runCloseThenRemove = async (name, rounds) => {
 		await db.close();
 		sql.push(await removeSqlDatabase(sqlName));
 	}
-	return { vector, sql };
+	return { vector, lockHeldAfterDispose, sql };
 };
 
 let held: Awaited<ReturnType<typeof createSqliteVectorIndex>> | undefined;

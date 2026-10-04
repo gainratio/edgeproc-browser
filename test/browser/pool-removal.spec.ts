@@ -19,6 +19,8 @@ test("close then remove is deterministic: 50 rounds, every one removed", async (
 		[name, rounds] as const,
 	);
 
+	// dispose() itself must hand the lock back; removal's wait must not hide it.
+	expect(result.lockHeldAfterDispose).toEqual([]);
 	expect(result.vector).toEqual(Array(rounds).fill("removed"));
 	expect(result.sql).toEqual(Array(rounds).fill("removed"));
 	expect(errors).toEqual([]);

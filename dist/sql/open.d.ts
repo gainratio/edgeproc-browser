@@ -1,3 +1,4 @@
+import type { MemoryTier } from "../sqlite/memoryProfile.js";
 import { type SqlDatabaseOptions, type SqlStorage } from "./types.js";
 /** The slice of the Web Locks API this module uses. */
 export interface SqlLocks {
@@ -6,7 +7,21 @@ export interface SqlLocks {
         readonly signal?: AbortSignal;
         readonly ifAvailable?: boolean;
     }, callback: (lock: unknown) => Promise<T>): Promise<T>;
+    /** Web Locks snapshot; used to confirm a live owner after a timed-out wait. */
+    query?(): Promise<{
+        readonly held?: ReadonlyArray<{
+            readonly name?: string;
+        }>;
+    }>;
 }
+/**
+ * How long to wait for a pool's previous owner to let go. close() now hands
+ * the lock back within milliseconds, so what the wait really covers is a page
+ * reload overlapping its predecessor while the browser tears that page's
+ * Worker down — slowest on the weakest devices, so the budget scales with the
+ * memory tier rather than being one fixed number.
+ */
+export declare function ownerLockWaitMs(tier: MemoryTier): number;
 export interface SqlStorageDeps<R> {
     readonly openMemory: () => R;
     readonly installPool: (poolName: string) => Promise<{

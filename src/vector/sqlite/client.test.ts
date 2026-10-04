@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SqlStorageUnavailableError } from "../../sql/types";
 import { SqliteVectorIndexClient } from "./client";
 import type {
 	SqliteVectorWorkerRequest,
@@ -134,6 +135,24 @@ function valueFor(request: SqliteVectorWorkerRequest): unknown {
 }
 
 describe("SqliteVectorIndexClient", () => {
+	it("rebuilds a typed pool-in-use refusal from the Worker", async () => {
+		const worker = new FakeWorker({
+			name: "SqlStorageUnavailableError",
+			message: "another tab owns it",
+			reason: "pool-in-use",
+		} as { name: string; message: string });
+		const index = new SqliteVectorIndexClient(
+			{ name: "taken", dimension: 2 },
+			() => worker,
+		);
+		const opening = index.ready();
+		await expect(opening).rejects.toBeInstanceOf(SqlStorageUnavailableError);
+		await expect(opening).rejects.toMatchObject({
+			reason: "pool-in-use",
+			message: "another tab owns it",
+		});
+	});
+
 	it("proxies the typed index API and terminates on disposal", async () => {
 		const worker = new FakeWorker();
 		const index = new SqliteVectorIndexClient(
