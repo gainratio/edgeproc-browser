@@ -15,10 +15,7 @@ export class SqlEngine {
         this.#raw = raw;
         this.#storage = options.storage;
         assertPinnedRuntime(raw);
-        applyMemoryProfile({
-            exec: (sql) => raw.exec({ sql }),
-            selectObjects: (sql) => raw.selectObjects(sql),
-        }, options.memoryProfile);
+        applyMemoryProfile(profileHandle(raw), options.memoryProfile);
         if (options.storage.persistence === "opfs")
             applyPrivacyPragmas(raw);
     }
@@ -65,10 +62,7 @@ export class SqlEngine {
             vectorVersion: String(versions?.vector),
             fts5: versions?.fts5 === 1,
             json1: json?.ok === 1,
-            memoryProfile: readMemoryProfile({
-                exec: (sql) => this.#raw.exec({ sql }),
-                selectObjects: (sql) => this.#raw.selectObjects(sql),
-            }),
+            memoryProfile: readMemoryProfile(profileHandle(this.#raw)),
             storage: this.#storage,
         };
     }
@@ -138,6 +132,14 @@ function normalizeValue(value) {
         return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
     }
     return value;
+}
+function profileHandle(raw) {
+    return {
+        exec: (sql) => {
+            raw.exec({ sql });
+        },
+        selectObjects: (sql) => raw.selectObjects(sql),
+    };
 }
 function totalChanges(raw) {
     return Number(raw.selectObjects("SELECT total_changes() AS total")[0]?.total);
