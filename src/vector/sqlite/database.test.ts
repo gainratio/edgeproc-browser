@@ -381,3 +381,35 @@ describe("SqliteDatabaseVectorIndex", () => {
 		await first.dispose();
 	});
 });
+
+describe("SqliteDatabaseVectorIndex memory profile wiring", () => {
+	it("applies the requested profile when the index opens", async () => {
+		const database = await openMemoryDatabase();
+		new SqliteDatabaseVectorIndex(
+			{ name: "profiled", dimension: 2, memoryProfile: "minimal" },
+			database,
+			false,
+		);
+		expect(database.selectObjects("PRAGMA cache_size")[0]?.cache_size).toBe(
+			-4096,
+		);
+		expect(
+			database.selectObjects("PRAGMA hard_heap_limit")[0]?.hard_heap_limit,
+		).toBe(48 * 1024 * 1024);
+	});
+
+	it("leaves SQLite defaults when no profile is requested", async () => {
+		const baseline = (await openMemoryDatabase()).selectObjects(
+			"PRAGMA cache_size",
+		)[0]?.cache_size;
+		const database = await openMemoryDatabase();
+		new SqliteDatabaseVectorIndex(
+			{ name: "plain", dimension: 2 },
+			database,
+			false,
+		);
+		expect(database.selectObjects("PRAGMA cache_size")[0]?.cache_size).toBe(
+			baseline,
+		);
+	});
+});

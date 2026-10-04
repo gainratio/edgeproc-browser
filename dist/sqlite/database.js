@@ -1,3 +1,4 @@
+import { applyMemoryProfile, resolveMemoryProfile, } from "./memoryProfile.js";
 export class SqliteStateConflictError extends Error {
     name = "SqliteStateConflictError";
 }
@@ -35,6 +36,9 @@ export class SqliteStateStoreDatabase {
         this.#runtime = runtime;
         this.#persistence = persistent ? "opfs" : "memory";
         this.#maxImportBytes = validateImportLimit(options.maxImportBytes ?? DEFAULT_MAX_IMPORT_BYTES);
+        if (options.memoryProfile !== undefined) {
+            applyMemoryProfile(database, resolveMemoryProfile(options.memoryProfile));
+        }
         this.#initialize(options.initialSchemaVersion);
     }
     async get(namespace, key) {

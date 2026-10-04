@@ -1,3 +1,8 @@
+import {
+	applyMemoryProfile,
+	type MemoryProfileSetting,
+	resolveMemoryProfile,
+} from "../../sqlite/memoryProfile.js";
 import type {
 	Metadata,
 	Scalar,
@@ -10,6 +15,11 @@ import type {
 } from "../types.js";
 
 export type SqliteValue = string | number | null | Uint8Array;
+
+/** Index options plus the SQLite memory profile ("auto" sizes it to the device). */
+export interface SqliteVectorIndexOptions extends VectorIndexOptions {
+	readonly memoryProfile?: MemoryProfileSetting;
+}
 
 /** Minimal synchronous SQLite surface used by the adapter and its test seam. */
 export interface SqliteDatabase {
@@ -85,7 +95,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 	#disposed = false;
 
 	public constructor(
-		options: VectorIndexOptions,
+		options: SqliteVectorIndexOptions,
 		database: SqliteDatabase,
 		persistent = true,
 	) {
@@ -96,6 +106,9 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		this.capabilities = persistent
 			? CAPABILITIES
 			: Object.freeze({ ...CAPABILITIES, persistent: false });
+		if (options.memoryProfile !== undefined) {
+			applyMemoryProfile(database, resolveMemoryProfile(options.memoryProfile));
+		}
 		this.#initialize();
 	}
 

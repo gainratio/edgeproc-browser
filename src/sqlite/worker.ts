@@ -150,7 +150,7 @@ async function openStore(
 	try {
 		if (persistence === "opfs") configurePersistentDatabase(runtime.database);
 		const opened = new SqliteStateStoreDatabase(
-			options,
+			{ ...options, memoryProfile: options.memoryProfile ?? "auto" },
 			runtime.database,
 			runtime,
 			persistence === "opfs",
