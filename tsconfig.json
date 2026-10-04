@@ -15,6 +15,7 @@
 		"paths": {
 			"@gainratio/browser": ["./src/index.ts"],
 			"@gainratio/browser/spawn": ["./src/engine/spawn.ts"],
+			"@gainratio/browser/sql": ["./src/sql/index.ts"],
 			"@gainratio/browser/sqlite": ["./src/sqlite/index.ts"],
 			"@gainratio/browser/vector": ["./src/vector/index.ts"],
 			"@gainratio/browser/vector/sqlite": ["./src/vector/sqlite/index.ts"],
