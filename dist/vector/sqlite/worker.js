@@ -1,71 +1,21 @@
 /// <reference lib="webworker" />
+import { ownerLockWaitMs } from "../../sql/open.js";
+import { SqlStorageUnavailableError } from "../../sql/types.js";
+import { resolveMemoryProfile } from "../../sqlite/memoryProfile.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import { SqliteDatabaseVectorIndex, wrapSqliteDatabase, } from "./database.js";
+import { createVectorWorkerHandler, } from "./handler.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
+import { ownPool } from "./poolOwner.js";
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
 const POOL_ACQUIRE_MAX_DELAY_MS = 800;
-let index;
-let queue = Promise.resolve();
+const handle = createVectorWorkerHandler(openIndex);
 self.onmessage = (event) => {
-    const request = event.data;
-    queue = queue.then(() => handleRequest(request)).catch(() => undefined);
+    void handle(event.data).then((response) => self.postMessage(response));
 };
-async function handleRequest(request) {
-    try {
-        const value = await dispatch(request);
-        post({ id: request.id, ok: true, value });
-    }
-    catch (error) {
-        post({
-            id: request.id,
-            ok: false,
-            error: {
-                name: error instanceof Error ? error.name : "Error",
-                message: error instanceof Error ? error.message : String(error),
-            },
-        });
-    }
-}
-async function dispatch(request) {
-    if (request.operation === "initialize") {
-        if (index !== undefined) {
-            throw new Error("SQLite vector worker is already initialized");
-        }
-        index = await openIndex(request.options);
-        return index.capabilities;
-    }
-    const current = requireIndex();
-    switch (request.operation) {
-        case "insert":
-            return current.insert(request.records);
-        case "insert-keyed":
-            return current.insertKeyed(request.records);
-        case "read":
-            return current.read(request.recordId);
-        case "search":
-            return current.search(request.query, request.limit, request.filters);
-        case "search-by-ids":
-            return current.searchByIds(request.query, request.ids);
-        case "lookup-ids":
-            return current.lookupIds(request.keys, request.maxDocumentFrequency);
-        case "delete":
-            return current.delete(request.ids, request.filters);
-        case "delete-where":
-            return current.deleteWhere(request.filters);
-        case "clear":
-            return current.clear();
-        case "stats":
-            return current.stats(request.filters);
-        case "runtime-info":
-            return current.runtimeInfo();
-        case "dispose":
-            await current.dispose();
-            index = undefined;
-            return undefined;
-    }
-}
 async function openIndex(options) {
+    let release = async () => undefined;
     configureInlineOpfsProxy();
     const sqlite = await sqlite3InitModule({
         print: () => undefined,
@@ -78,8 +28,9 @@ async function openIndex(options) {
     }
     else if (persistence === "opfs") {
         const identity = await stableIdentity(options.name);
-        const pool = await acquirePersistentPool(sqlite, `edgeproc-vector-${identity}`);
-        raw = new pool.OpfsSAHPoolDb(`/edgeproc-vector-${identity}.sqlite3`);
+        const opened = await openPersistent(sqlite, `edgeproc-vector-${identity}`, ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier));
+        raw = opened.raw;
+        release = opened.release;
     }
     else {
         throw new TypeError(`unsupported SQLite persistence: ${String(persistence)}`);
@@ -96,10 +47,29 @@ async function openIndex(options) {
             runtime.bundledExtensions.join(",") !== "vector_version") {
             throw new Error(`unexpected SQLite vector runtime: ${JSON.stringify(runtime)}`);
         }
-        return opened;
+        return { index: opened, release };
     }
     catch (error) {
-        database.close();
+        try {
+            database.close();
+        }
+        finally {
+            await release();
+        }
+        throw error;
+    }
+}
+/** Own the pool (see poolOwner.ts) and open the index's file in it. */
+async function openPersistent(sqlite, poolName, waitMs) {
+    const owned = await ownPool(navigator.locks, poolName, waitMs, () => acquirePersistentPool(sqlite, poolName));
+    try {
+        return {
+            raw: new owned.pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`),
+            release: owned.release,
+        };
+    }
+    catch (error) {
+        await owned.release();
         throw error;
     }
 }
@@ -118,7 +88,7 @@ async function acquirePersistentPool(sqlite, name) {
                 throw new Error(`could not open the local vector database (${detail})`);
             }
             if (attempt >= POOL_ACQUIRE_MAX_ATTEMPTS) {
-                throw new Error(`could not open the local vector database — this index may already be open in another tab (${detail})`);
+                throw new SqlStorageUnavailableError("pool-in-use", `could not open the local vector database — this index may already be open in another tab (${detail})`);
             }
             await sleep(delayMs);
             delayMs = Math.min(delayMs * 2, POOL_ACQUIRE_MAX_DELAY_MS);
@@ -144,12 +114,6 @@ function configurePersistentDatabase(database) {
         throw new Error("persistent SQLite privacy pragmas were not applied");
     }
 }
-function requireIndex() {
-    if (index === undefined) {
-        throw new Error("SQLite vector worker is not initialized");
-    }
-    return index;
-}
 async function stableIdentity(name) {
     const bytes = new TextEncoder().encode(name);
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
@@ -157,8 +121,5 @@ async function stableIdentity(name) {
         .slice(0, 16)
         .map((value) => value.toString(16).padStart(2, "0"))
         .join("");
-}
-function post(response) {
-    self.postMessage(response);
 }
 //# sourceMappingURL=worker.js.map

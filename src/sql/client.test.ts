@@ -78,7 +78,7 @@ function realWorker(): InProcessWorker {
 						options.memoryProfile === "minimal" ? "minimal" : "lite"
 					],
 			}),
-			release: () => undefined,
+			release: async () => undefined,
 		})),
 	);
 }
@@ -169,7 +169,7 @@ describe("openSqlDatabase through the Worker protocol", () => {
 				storage: { persistence: "memory", reason: "requested" },
 				memoryProfile: MEMORY_PROFILES.lite,
 			}),
-			release: () => undefined,
+			release: async () => undefined,
 		}));
 		expect(
 			await handle({ id: 1, operation: "query", sql: "SELECT 1" }),
@@ -398,6 +398,32 @@ describe("openSqlDatabase through the Worker protocol", () => {
 			expect(failure).toMatchObject({ name: error.name, message: "m" });
 		},
 	);
+
+	it("answers close only after the lease's release has settled", async () => {
+		const order: string[] = [];
+		let settle: () => void = () => undefined;
+		const release = () =>
+			new Promise<void>((resolve) => {
+				settle = () => {
+					order.push("released");
+					resolve();
+				};
+			});
+		const engine = new SqlEngine(sqlite.openMemory(), {
+			storage: { persistence: "memory", reason: "requested" },
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		const handle = createSqlWorkerHandler(async () => ({ engine, release }));
+		await handle({ id: 1, operation: "open", options: { name: "c" } });
+		const closing = handle({ id: 2, operation: "close" }).then((response) => {
+			order.push("answered");
+			return response;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		settle();
+		expect(await closing).toMatchObject({ ok: true });
+		expect(order).toEqual(["released", "answered"]);
+	});
 
 	it("closes the engine and releases the lease on close, even if close throws", async () => {
 		const release = vi.fn();

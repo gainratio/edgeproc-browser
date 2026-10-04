@@ -1,3 +1,4 @@
+import type { SqlFallbackReason } from "../../sql/types.js";
 import type { MemoryProfileSetting } from "../../sqlite/memoryProfile.js";
 import type { Metadata, VectorIndexOptions, VectorRecord } from "../types.js";
 import type {
@@ -83,7 +84,12 @@ export type SqliteVectorWorkerSuccess = {
 export interface SqliteVectorWorkerFailure {
 	readonly id: number;
 	readonly ok: false;
-	readonly error: { readonly name: string; readonly message: string };
+	readonly error: {
+		readonly name: string;
+		readonly message: string;
+		/** Set for SqlStorageUnavailableError, so the client can rebuild the type. */
+		readonly reason?: SqlFallbackReason;
+	};
 }
 
 export type SqliteVectorWorkerResponse =

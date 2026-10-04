@@ -125,3 +125,81 @@ window.runSqlSeamProof = async (name): Promise<SqlSeamProof> => {
 		vectorPoolRemovals,
 	};
 };
+
+export interface CloseThenRemoveProof {
+	readonly vector: ReadonlyArray<string>;
+	/** Rounds where the pool's owner lock was still held when dispose() resolved. */
+	readonly lockHeldAfterDispose: ReadonlyArray<number>;
+	readonly sql: ReadonlyArray<string>;
+}
+
+declare global {
+	interface Window {
+		runCloseThenRemove(
+			name: string,
+			rounds: number,
+		): Promise<CloseThenRemoveProof>;
+		holdVectorPool(name: string): Promise<string>;
+		releaseVectorPool(): Promise<void>;
+		heldVectorCount(): Promise<number>;
+		removeVectorPool(name: string): Promise<string>;
+	}
+}
+
+// Close (or dispose), then remove AT ONCE: no sleep, no retry. Every round must
+// report "removed" — "in-use" here means close() resolved before the Worker let
+// go of the pool's handles and owner lock.
+window.runCloseThenRemove = async (name, rounds) => {
+	const vector: string[] = [];
+	const sql: string[] = [];
+	const lockHeldAfterDispose: number[] = [];
+	for (let round = 0; round < rounds; round += 1) {
+		const vectorName = `${name}-v${round}`;
+		const index = await createSqliteVectorIndex({
+			name: vectorName,
+			dimension: 2,
+			persistence: "opfs",
+		});
+		await index.insert([
+			{ id: "a", vector: new Float32Array([1, 0]), metadata: {} },
+		]);
+		await index.dispose();
+		const pool = await sqliteVectorPoolName(vectorName);
+		const { held = [] } = await navigator.locks.query();
+		if (held.some((lock) => lock.name === `${pool}-owner`)) {
+			lockHeldAfterDispose.push(round);
+		}
+		vector.push(await removeOpfsPool(pool));
+
+		const sqlName = `${name}-s${round}`;
+		const db = await openSqlDatabase({ name: sqlName });
+		await db.exec("CREATE TABLE t(x)");
+		await db.close();
+		sql.push(await removeSqlDatabase(sqlName));
+	}
+	return { vector, lockHeldAfterDispose, sql };
+};
+
+let held: Awaited<ReturnType<typeof createSqliteVectorIndex>> | undefined;
+
+window.holdVectorPool = async (name) => {
+	held = await createSqliteVectorIndex({
+		name,
+		dimension: 2,
+		persistence: "opfs",
+	});
+	await held.insert([
+		{ id: "kept", vector: new Float32Array([1, 0]), metadata: {} },
+	]);
+	return sqliteVectorPoolName(name);
+};
+
+window.heldVectorCount = async () => (await held?.stats())?.vectorCount ?? -1;
+
+window.releaseVectorPool = async () => {
+	await held?.dispose();
+	held = undefined;
+};
+
+window.removeVectorPool = async (name) =>
+	removeOpfsPool(await sqliteVectorPoolName(name));

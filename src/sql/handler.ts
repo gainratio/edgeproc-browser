@@ -15,8 +15,8 @@ import {
 
 export interface OpenedSqlEngine {
 	readonly engine: SqlEngine;
-	/** Release whatever the open acquired (the OPFS owner lock). */
-	release(): void;
+	/** Release whatever the open acquired (the OPFS owner lock); resolves once free. */
+	release(): Promise<void>;
 }
 
 export type SqlEngineOpener = (
@@ -69,7 +69,7 @@ export function createSqlWorkerHandler(
 				try {
 					closing.engine.close();
 				} finally {
-					closing.release();
+					await closing.release();
 				}
 				return undefined;
 			}

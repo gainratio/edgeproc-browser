@@ -10,6 +10,10 @@ export class FakeLocks implements SqlLocks {
 		return this.#held.has(name);
 	}
 
+	public async query(): Promise<{ held: Array<{ name: string }> }> {
+		return { held: [...this.#held].map((name) => ({ name })) };
+	}
+
 	public request<T>(
 		name: string,
 		options: { readonly signal?: AbortSignal },

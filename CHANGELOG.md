@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Removing a pool right after closing it could report `"in-use"` and leave it on disk.**
+  `index.dispose()` resolved once SQLite closed the database, but the vector Worker kept the
+  pool's OPFS sync access handles open until the browser tore the Worker down, so
+  `removeOpfsPool` straight after `dispose()` failed in 34 of 50 rounds in Chromium. Apps that
+  delete an old pool on every boot (edge-reco) kept it. The vector Worker now holds the pool's
+  owner Web Lock like `openSqlDatabase` does, and `dispose()` and `db.close()` resolve only
+  after the handles are closed and the lock is free. `removeOpfsPool` and `removeSqlDatabase`
+  take that lock with a bounded wait and delete while holding it. No retries or sleeps.
+- **Opening an OPFS vector index another tab owns threw a plain `Error`.** It is now
+  `SqlStorageUnavailableError("pool-in-use")`, the same type `openSqlDatabase` uses.
+
+### Changed
+
+- `removeOpfsPool` / `removeSqlDatabase` can return a new `"timeout"`: the wait for the owner
+  lock ended but no owner could be confirmed. `"in-use"` now means a live owner is confirmed.
+  Callers that switch exhaustively on the result need the new case.
+- The owner-lock wait (open and removal) scales with the memory tier: 1 s `full`, 2 s `lite`,
+  4 s `minimal`, instead of a fixed 2 s. Override per call with `lockWaitMs`.
+
+### Security
+
+- **A release can no longer publish from red CI.** 0.2.1 was published from a commit whose
+  CI on main had failed, because pushing a `v*` tag was the whole trigger. `publish.yml` now
+  runs `scripts/verify-release-tag.mjs` first, and the OIDC publish job depends on it. It
+  fails closed unless the tag is `v` + package.json's version, the commit is on main, and the
+  newest `ci.yml` push run for that commit concluded success. The publish job now runs in the
+  `npm-release` environment. The gate alone stops mistakes; a tag on an unreviewed commit can
+  edit the workflow, so the tag ruleset and protected environment in repo settings are what
+  stop that.
+
 ## [0.2.1] - 2026-10-04
 
 Hardens SQLite import, makes a refused OPFS root a typed error, and adds Firefox and WebKit
