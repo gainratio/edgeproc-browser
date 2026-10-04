@@ -1,13 +1,16 @@
 // OPFS-backed CacheStore — the browser tier's content-addressed store. Runs in
 // a Web Worker (createSyncAccessHandle is Worker-only). Mirrors edge-proc's
 // FilesystemCacheStore: chunk/<hash> holds verbatim zstd, manifest/<hash> holds
-// the manifest bytes, and two durable active slots hold promoted pointers. A
+// the manifest bytes, and two durable active slots hold promoted pointers.
+// Batched writes (what sync uses) land many chunks in one pack file instead
+// (see opfsPack.ts); reads look in packs first, then chunk/<hash>. A
 // torn write leaves the other slot as the monotonic floor. The read path is
 // always decompress → re-hash → compare (fail-closed). Store this verbatim so a
 // patch re-sync can prove only-changed-chunks were fetched.
 import { parseStoredPointer, samePointer } from "./activePointer.js";
 import { sha256Hex } from "./crypto.js";
 import { decompressAndVerify, IntegrityError } from "./integrity.js";
+import { OpfsPacks, PACK_DIR } from "./opfsPack.js";
 import { translateStorageError } from "./storageError.js";
 const CHUNK_DIR = "chunk";
 const MANIFEST_DIR = "manifest";
@@ -78,21 +81,26 @@ export class OpfsCacheStore {
     #root;
     #chunkDir;
     #manifestDir;
-    constructor(root, chunkDir, manifestDir) {
+    #packs;
+    constructor(root, chunkDir, manifestDir, packs) {
         this.#root = root;
         this.#chunkDir = chunkDir;
         this.#manifestDir = manifestDir;
+        this.#packs = packs;
     }
-    /** Open (or create) the OPFS store root + chunk/manifest subdirs. */
+    /** Open (or create) the OPFS store root + chunk/manifest/pack subdirs. */
     static async open() {
         const root = await navigator.storage.getDirectory();
         const chunkDir = await root.getDirectoryHandle(CHUNK_DIR, { create: true });
         const manifestDir = await root.getDirectoryHandle(MANIFEST_DIR, {
             create: true,
         });
-        return new OpfsCacheStore(root, chunkDir, manifestDir);
+        const packDir = await root.getDirectoryHandle(PACK_DIR, { create: true });
+        return new OpfsCacheStore(root, chunkDir, manifestDir, new OpfsPacks(packDir, MAX_COMPRESSED_CHUNK_BYTES));
     }
     async hasChunk(chunkHash) {
+        if (await this.#packs.has(chunkHash))
+            return true;
         try {
             const file = await this.#chunkDir.getFileHandle(chunkHash);
             if ((await file.getFile()).size > 0)
@@ -112,7 +120,35 @@ export class OpfsCacheStore {
         await decompressAndVerify(chunkHash, compressed, expectedSize);
         await this.writeFile(this.#chunkDir, chunkHash, compressed);
     }
+    /** Verify the WHOLE batch first (fail-closed: nothing lands if any chunk
+     * is bad), then write it as one pack: two files, two handles, two flushes. */
+    async putChunksCompressed(chunks) {
+        for (const chunk of chunks) {
+            if (chunk.compressed.byteLength === 0) {
+                throw new IntegrityError("compressed chunk must not be empty");
+            }
+            if (chunk.compressed.byteLength > MAX_COMPRESSED_CHUNK_BYTES) {
+                throw new IntegrityError("compressed chunk exceeds the OPFS read cap");
+            }
+        }
+        for (const chunk of chunks) {
+            await decompressAndVerify(chunk.hash, chunk.compressed, chunk.size);
+        }
+        await this.#packs.write(chunks);
+    }
     async getChunk(chunkHash, expectedSize) {
+        const packed = await this.#readPacked(chunkHash);
+        if (packed !== null) {
+            try {
+                return await decompressAndVerify(chunkHash, packed, expectedSize);
+            }
+            catch (err) {
+                // Same self-heal as a loose chunk: forget it so the next sync
+                // re-fetches it; the read still fails closed.
+                await this.#packs.evict(chunkHash);
+                throw err;
+            }
+        }
         const compressed = await this.readSnapshot(this.#chunkDir, chunkHash, MAX_COMPRESSED_CHUNK_BYTES);
         try {
             return await decompressAndVerify(chunkHash, compressed, expectedSize);
@@ -126,6 +162,17 @@ export class OpfsCacheStore {
                 await this.evict(this.#chunkDir, chunkHash);
             }
             throw err;
+        }
+    }
+    /** A packed chunk's bytes, null when no pack holds it. An unreadable pack
+     * slot is forgotten (re-fetched next sync) and the read fails. */
+    async #readPacked(chunkHash) {
+        try {
+            return await this.#packs.read(chunkHash);
+        }
+        catch (error) {
+            await this.#packs.evict(chunkHash);
+            throw error;
         }
     }
     /** Best-effort delete of a corrupt cache object; a concurrent eviction is fine. */
@@ -197,11 +244,13 @@ export class OpfsCacheStore {
         const chunks = activeChunkHashes(manifest.files);
         if (chunks === null)
             return;
+        await this.#packs.retain(chunks);
         await this.removeExcept(this.#chunkDir, chunks);
         await this.removeExcept(this.#manifestDir, new Set([active.manifest_hash]));
     }
     async clear() {
         await this.withMutationLock(async () => {
+            await this.#packs.clear();
             await this.removeExcept(this.#chunkDir, new Set());
             await this.removeExcept(this.#manifestDir, new Set());
             await Promise.all([ACTIVE_FILE, ...ACTIVE_SLOTS].map((name) => this.evict(this.#root, name)));

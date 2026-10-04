@@ -11,6 +11,7 @@ import { isQuotaError } from "./storageError.js";
 import type {
 	CacheStore,
 	ChunkRef,
+	CompressedChunk,
 	FetchBytes,
 	FetchBytesOptions,
 	FileEntry,
@@ -115,6 +116,13 @@ const CHUNK_RETRY_BASE_DELAY_MS = 250;
 /** Byte-level progress is rate-limited to this interval; chunk completions
  * and retries are always reported. */
 const PROGRESS_INTERVAL_MS = 250;
+
+/** Fetched chunks are handed to a batch-capable store in groups of at most
+ * this many chunks or bytes. Each batch is one storage write (one OPFS pack
+ * file) instead of one per chunk; the bound also caps how many fetched bytes
+ * wait in memory before landing. */
+export const MAX_STORE_BATCH_CHUNKS = 128;
+export const MAX_STORE_BATCH_BYTES = 4 * 1024 * 1024;
 
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export const MAX_CHUNK_RETRY_BUDGET_MS =
@@ -743,6 +751,11 @@ class ChunkProgress {
 		};
 	}
 
+	/** All bytes are in; the chunk counts as completed once it is stored. */
+	public received(ref: ChunkRef): void {
+		this.#inFlight.set(ref.hash, ref.size);
+	}
+
 	public completed(ref: ChunkRef, wireBytes: number): void {
 		this.#inFlight.delete(ref.hash);
 		this.#done += ref.size;
@@ -768,6 +781,68 @@ class ChunkProgress {
 	}
 }
 
+type StoreChunk = (ref: ChunkRef, compressed: Uint8Array) => Promise<void>;
+
+/** Per-chunk storage: what every CacheStore supports. */
+function storeEach(store: CacheStore, progress: ChunkProgress): StoreChunk {
+	return async (ref, compressed) => {
+		await store.putChunkCompressed(ref.hash, compressed, ref.size);
+		progress.completed(ref, compressed.byteLength);
+	};
+}
+
+interface BatchWriter {
+	readonly add: StoreChunk;
+	/** Land whatever is still pending; rejects with any earlier write failure. */
+	readonly flush: () => Promise<void>;
+}
+
+/** Groups fetched chunks into batches for `putChunksCompressed`. Batches are
+ * written one after another; the fetch worker that fills a batch waits for it
+ * to land, which bounds the bytes held in memory. */
+function batchWriter(
+	putBatch: (chunks: ReadonlyArray<CompressedChunk>) => Promise<void>,
+	progress: ChunkProgress,
+): BatchWriter {
+	let pending: CompressedChunk[] = [];
+	let pendingBytes = 0;
+	let written: Promise<void> = Promise.resolve();
+	const flush = (): Promise<void> => {
+		const batch = pending;
+		pending = [];
+		pendingBytes = 0;
+		if (batch.length > 0) {
+			written = written.then(async () => {
+				await putBatch(batch);
+				for (const chunk of batch) {
+					progress.completed(chunk, chunk.compressed.byteLength);
+				}
+			});
+		}
+		return written;
+	};
+	const add: StoreChunk = async (ref, compressed) => {
+		pending.push({ hash: ref.hash, compressed, size: ref.size });
+		pendingBytes += compressed.byteLength;
+		progress.received(ref);
+		if (
+			pending.length >= MAX_STORE_BATCH_CHUNKS ||
+			pendingBytes >= MAX_STORE_BATCH_BYTES
+		) {
+			await flush();
+		}
+	};
+	return { add, flush };
+}
+
+function chunkSink(store: CacheStore, progress: ChunkProgress): BatchWriter {
+	const putBatch = store.putChunksCompressed;
+	if (putBatch === undefined) {
+		return { add: storeEach(store, progress), flush: () => Promise.resolve() };
+	}
+	return batchWriter((chunks) => putBatch.call(store, chunks), progress);
+}
+
 async function fetchMissing(
 	baseUrl: string,
 	missing: ReadonlyArray<ChunkRef>,
@@ -783,6 +858,7 @@ async function fetchMissing(
 	let inFlight = 0;
 	const budgetWaiters: Array<() => void> = [];
 	let failure: unknown;
+	const sink = chunkSink(store, progress);
 	const reserve = async (): Promise<number> => {
 		while (remaining === 0 && inFlight > 0 && failure === undefined) {
 			await new Promise<void>((resolve) => {
@@ -824,8 +900,7 @@ async function fetchMissing(
 				if (failure !== undefined) return;
 				consumed = compressed.byteLength;
 				total += consumed;
-				await store.putChunkCompressed(ref.hash, compressed, ref.size);
-				progress.completed(ref, consumed);
+				await sink.add(ref, compressed);
 			} catch (error) {
 				failure ??=
 					error instanceof SyncCapError
@@ -845,6 +920,7 @@ async function fetchMissing(
 		),
 	);
 	if (failure !== undefined) throw failure;
+	await sink.flush();
 	return total;
 }
 

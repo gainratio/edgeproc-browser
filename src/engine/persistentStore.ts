@@ -11,6 +11,7 @@ import { StorageQuotaError } from "./storageError.js";
 import type {
 	CacheBackend,
 	CacheStore,
+	CompressedChunk,
 	StoragePreference,
 	VersionPointer,
 } from "./types.js";
@@ -93,6 +94,28 @@ class CoordinatedCacheStore implements PersistentCacheStore {
 		await this.#retryQuota(() =>
 			this.#primary.putChunkCompressed(hash, compressed, expectedSize),
 		);
+	}
+
+	/** Batches go to the primary only, like single chunks; a primary without
+	 * batch support gets one put per chunk. */
+	public async putChunksCompressed(
+		chunks: ReadonlyArray<CompressedChunk>,
+	): Promise<void> {
+		const primary = this.#primary;
+		const putBatch = primary.putChunksCompressed;
+		await this.#retryQuota(async () => {
+			if (putBatch !== undefined) {
+				await putBatch.call(primary, chunks);
+				return;
+			}
+			for (const chunk of chunks) {
+				await primary.putChunkCompressed(
+					chunk.hash,
+					chunk.compressed,
+					chunk.size,
+				);
+			}
+		});
 	}
 
 	public async getChunk(

@@ -76,6 +76,16 @@ goes to IndexedDB. Reads can reuse verified legacy content from either store wit
 duplicating it. Consumers with an existing cache can declare its database, object store and
 key separator through `indexedDbLayout`. Names are bounded and validated.
 
+In OPFS, a sync writes chunks in batches of up to 128 chunks or 4 MiB. Each batch is one
+pack file (`pack/<id>`, the chunks back to back) plus one index (`pack/<id>.idx`), each
+written through a single sync access handle with a single flush. One file per chunk cost
+Firefox 2.5 ms (macOS) to 10 ms (Linux) of file bookkeeping per ~2 KB chunk, so a 783-chunk
+cold sync took 2 to 10 s; batched, it takes about 0.5 s. Every chunk in a batch is verified
+before any of it lands, and every read still re-verifies. A torn index drops its pack (those
+chunks are re-fetched), a chunk that fails its check on read is removed from its index, and
+pruning deletes dead packs and compacts mostly-dead ones. Chunks stored one file per chunk
+(`chunk/<sha256>`) by older releases are still read.
+
 Sync, read and clear share one cross-tab lock, so two tabs never write the same cache at once.
 
 ## Runtime dependencies
@@ -144,7 +154,8 @@ failures are verdicts and are never retried.
 | A tampered chunk or wrong key is refused | `pnpm demo` step 4 (one bit flipped in the key gives `SignatureError`); the unit suite under `src/` |
 | A second sync over a filled store downloads nothing | `pnpm demo` step 3 (`chunks fetched 0 (reused 783)`) |
 | The built Worker enforces raw-key, keyring, and revoked-signer trust roots | `pnpm test:browser`, `test/browser/engine-keyring.spec.ts` in real Chromium |
-| A cached chunk rewritten at rest by same-origin code is refused, never served, and re-fetched | `pnpm test:browser`, `test/browser/warm-sync.spec.ts` in real Chromium OPFS |
+| A cached chunk rewritten at rest by same-origin code is refused, never served, and re-fetched | `pnpm test:browser`, `test/browser/warm-sync.spec.ts` in real Chromium OPFS (the chunk is rewritten inside its pack) |
+| A cold sync of the 783-chunk fixture finishes under 5 s with OPFS chunk writes under 1.5 ms per chunk, and a substituted chunk is still refused with nothing promoted | `pnpm test:browser`, `test/browser/sync-throughput.spec.ts` in Chromium, Firefox and WebKit; `src/engine/opfsPack.test.ts` and `src/engine/syncBatch.test.ts` |
 | Warm boot re-verifies every cached chunk with bounded concurrency | `src/engine/syncConcurrency.test.ts`; timings from `test/browser/warm-sync.spec.ts` |
 | SQLite state and vectors persist in OPFS across restarts with zero external requests | `pnpm test:browser`, `test/browser/sqlite-vector.spec.ts` |
 | The published `dist/` matches the source | `pnpm verify:dist` plus `test/dist-contract.test.ts`, both in `pnpm gate` |

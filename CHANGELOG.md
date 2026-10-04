@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-04
+
+Cold sync is about 4x faster in Firefox on macOS and 10x faster on Linux. Signature checks, hash checks and
+fail-closed behaviour are unchanged, and so is the signed bundle format.
+
+### Changed
+
+- **OPFS chunks are written in batches.** Firefox spends 2.5 ms (macOS) to 10 ms (Linux) of
+  file bookkeeping on every OPFS file, and does not overlap them. With one file per ~2 KB
+  chunk, a cold sync of the 783-chunk fixture took 2.1-3.1 s on macOS and 10.1 s on Linux.
+  Sync now hands verified chunks to the store in batches of up to 128 chunks or 4 MiB, and
+  the OPFS store lands each batch as one pack file plus one index, each through a single sync
+  access handle with a single flush. Measured on the 783-chunk fixture (macOS, local HTTP):
+
+  | Browser (store) | Before | After |
+  | --- | --- | --- |
+  | Firefox (OPFS) | 2.1-3.1 s | 0.5 s |
+  | Firefox (OPFS), Linux container | 10.1 s | 1.05 s |
+  | Chromium (OPFS) | 0.50-0.57 s | 0.39 s |
+  | WebKit (IndexedDB; Playwright's WebKit has no OPFS) | 0.50 s | 0.51 s |
+
+  Every chunk in a batch is verified before any of it lands; a bad chunk lands nothing.
+  Reads still re-verify every chunk. Chunks stored one file per chunk by older releases are
+  still read, and pruning now also deletes dead packs and compacts mostly-dead ones.
+
+### Added
+
+- `CacheStore.putChunksCompressed(chunks)`, optional. Sync uses it when a store has it;
+  custom stores without it keep getting one `putChunkCompressed` per chunk. New exported
+  type `CompressedChunk`.
+
+### Tests
+
+- `test/browser/sync-throughput.spec.ts` (Chromium, Firefox, WebKit): a cold sync of the
+  783-chunk fixture over plain HTTP must finish under 5 s, and with OPFS the chunk writes
+  must cost under 1.5 ms per chunk (before this change: 15-19 ms in Firefox, 2.3 ms in
+  Chromium). A substituted chunk is refused with nothing promoted, and the SQLite
+  insert phase is timed (one transaction: 16-46 ms; one autocommit per row: 0.6-1.7 s).
+- `src/engine/opfsPack.test.ts` and `src/engine/syncBatch.test.ts`: batch bounds, two files
+  per batch, all-or-nothing verification, at-rest tampering inside a pack, torn and forged
+  indexes, legacy reads, pruning, compaction, quota retry.
+- The at-rest tamper proof in `warm-sync.spec.ts` now rewrites the chunk inside its pack.
+
 ## [0.2.1] - 2026-10-04
 
 Hardens SQLite import, makes a refused OPFS root a typed error, and adds Firefox and WebKit

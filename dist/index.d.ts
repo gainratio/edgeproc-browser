@@ -12,7 +12,7 @@ export { canPromotePointer, OpfsCacheStore, selectHighestPointer, } from "./engi
 export { openPersistentCacheStore, type PersistentCacheStore, type PersistentStoreOptions, requestPersistentStorage, } from "./engine/persistentStore.js";
 export type { ClearOk, ClearRequest, EngineErr, EngineRequest, EngineResponse, ReadFileOk, ReadFileRequest, SyncOk, SyncProgressResponse, SyncRequest, } from "./engine/protocol.js";
 export { type KeyringSyncArgs, MAX_CHUNK_RETRY_BUDGET_MS, materializeFile, PointerExpiredError, pointerSigningBytes, RollbackError, type SyncArgs, SyncCapError, type SyncProgress, syncIndex, } from "./engine/sync.js";
-export type { CacheBackend, CacheStore, ChunkRef, EngineSyncResult, FetchBytes, FetchBytesOptions, FileEntry, IndexManifest, StoragePreference, SyncResult, Verify, VersionPointer, } from "./engine/types.js";
+export type { CacheBackend, CacheStore, ChunkRef, CompressedChunk, EngineSyncResult, FetchBytes, FetchBytesOptions, FileEntry, IndexManifest, StoragePreference, SyncResult, Verify, VersionPointer, } from "./engine/types.js";
 export { DEFAULT_EMBED_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, WorkerCrashError, WorkerTimeoutError, } from "./engine/workerFault.js";
 export { declaredContentSize, decompress, decompressBounded, } from "./engine/zstd.js";
 //# sourceMappingURL=index.d.ts.map

@@ -76,6 +76,10 @@ export interface CacheStore {
     hasChunk(chunkHash: string): Promise<boolean>;
     /** Decompress → sha256 → verify == chunkHash (fail-closed) → store. */
     putChunkCompressed(chunkHash: string, compressed: Uint8Array, expectedSize: number): Promise<void>;
+    /** Optional batch form of {@link putChunkCompressed}: verify EVERY chunk
+     * (fail-closed) before landing ANY, then store them in one storage write.
+     * Sync uses it when present; stores without it get one put per chunk. */
+    putChunksCompressed?(chunks: ReadonlyArray<CompressedChunk>): Promise<void>;
     /** Read → decompress → verify == chunkHash (fail-closed) → return plaintext. */
     getChunk(chunkHash: string, expectedSize: number): Promise<Uint8Array>;
     putManifest(manifestBytes: Uint8Array): Promise<string>;
@@ -88,6 +92,14 @@ export interface CacheStore {
     pruneInactive(): Promise<void>;
     /** Explicitly clear this cache namespace. */
     clear(): Promise<void>;
+}
+/** One fetched chunk as it travels to {@link CacheStore.putChunksCompressed}. */
+export interface CompressedChunk {
+    readonly hash: string;
+    /** Verbatim zstd bytes from the network, not yet trusted. */
+    readonly compressed: Uint8Array;
+    /** Signed uncompressed size from the manifest. */
+    readonly size: number;
 }
 /** Transport seam: fetch raw bytes for a URL (injectable for tests). */
 export interface FetchBytesOptions {

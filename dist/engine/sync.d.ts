@@ -75,6 +75,12 @@ export interface SyncArgs {
         readonly maxTotalFetchBytes?: number;
     };
 }
+/** Fetched chunks are handed to a batch-capable store in groups of at most
+ * this many chunks or bytes. Each batch is one storage write (one OPFS pack
+ * file) instead of one per chunk; the bound also caps how many fetched bytes
+ * wait in memory before landing. */
+export declare const MAX_STORE_BATCH_CHUNKS = 128;
+export declare const MAX_STORE_BATCH_BYTES: number;
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export declare const MAX_CHUNK_RETRY_BUDGET_MS: number;
 /** Sync verified under a trust-root keyring instead of a single verifier:

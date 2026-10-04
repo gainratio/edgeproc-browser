@@ -1,4 +1,43 @@
+import { readFile } from "node:fs/promises";
+import { join, normalize } from "node:path";
 import { defineConfig, type Plugin } from "vite";
+
+const FIXTURE_BUNDLE = join(
+	import.meta.dirname,
+	"src",
+	"engine",
+	"__fixtures__",
+	"bundle",
+);
+
+// Serves the committed signed bundle over real HTTP at /__bundle/ (Vite's own
+// static serving refuses the *.key trust root). No Playwright interception,
+// so the throughput proof times the browser, not the test's route handler.
+function fixtureBundle(): Plugin {
+	return {
+		name: "edgeproc-test-fixture-bundle",
+		configureServer(server) {
+			server.middlewares.use("/__bundle/", (request, response, next) => {
+				const relative = normalize(
+					decodeURIComponent((request.url ?? "").split("?")[0] ?? ""),
+				);
+				if (relative.includes("..")) {
+					response.statusCode = 400;
+					response.end();
+					return;
+				}
+				readFile(join(FIXTURE_BUNDLE, relative)).then(
+					(body) => {
+						response.setHeader("content-type", "application/octet-stream");
+						response.setHeader("cross-origin-resource-policy", "same-origin");
+						response.end(body);
+					},
+					() => next(),
+				);
+			});
+		},
+	};
+}
 
 // Test-only control surface for the Chromium proofs. SQLite's OPFS VFS used
 // to be installed by spawning its async proxy from a URL: a network fetch
@@ -49,7 +88,7 @@ function opfsProxyProbe(): Plugin {
 // headers make the real-browser fixture match the documented deployment
 // contract instead of testing a capability consumers would not have.
 export default defineConfig({
-	plugins: [opfsProxyProbe()],
+	plugins: [opfsProxyProbe(), fixtureBundle()],
 	server: {
 		headers: {
 			"Cross-Origin-Embedder-Policy": "require-corp",

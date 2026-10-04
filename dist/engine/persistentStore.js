@@ -50,6 +50,21 @@ class CoordinatedCacheStore {
     async putChunkCompressed(hash, compressed, expectedSize) {
         await this.#retryQuota(() => this.#primary.putChunkCompressed(hash, compressed, expectedSize));
     }
+    /** Batches go to the primary only, like single chunks; a primary without
+     * batch support gets one put per chunk. */
+    async putChunksCompressed(chunks) {
+        const primary = this.#primary;
+        const putBatch = primary.putChunksCompressed;
+        await this.#retryQuota(async () => {
+            if (putBatch !== undefined) {
+                await putBatch.call(primary, chunks);
+                return;
+            }
+            for (const chunk of chunks) {
+                await primary.putChunkCompressed(chunk.hash, chunk.compressed, chunk.size);
+            }
+        });
+    }
     async getChunk(hash, expectedSize) {
         try {
             return await this.#primary.getChunk(hash, expectedSize);

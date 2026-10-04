@@ -129,6 +129,7 @@ export type {
 	CacheBackend,
 	CacheStore,
 	ChunkRef,
+	CompressedChunk,
 	EngineSyncResult,
 	FetchBytes,
 	FetchBytesOptions,

@@ -120,10 +120,52 @@ function codeOf(error: unknown): string {
 	return error instanceof EngineOperationError ? error.code : String(error);
 }
 
+async function writeAt(
+	file: FileSystemFileHandle,
+	position: number,
+	data: Uint8Array | string,
+	keepExistingData: boolean,
+): Promise<void> {
+	const writable = await file.createWritable({ keepExistingData });
+	await writable.write({
+		type: "write",
+		position,
+		data: data as Uint8Array<ArrayBuffer> | string,
+	});
+	await writable.close();
+}
+
+/** Redirect the chunk's slot in its pack index to `bytes`, appended to the
+ * pack's data file. False when no pack holds the chunk. */
+async function overwritePacked(
+	root: FileSystemDirectoryHandle,
+	chunkHash: string,
+	bytes: Uint8Array,
+): Promise<boolean> {
+	const packs = await root.getDirectoryHandle("pack", { create: true });
+	for await (const [name, handle] of packs.entries()) {
+		if (!name.endsWith(".idx") || handle.kind !== "file") continue;
+		const index = JSON.parse(await (await handle.getFile()).text()) as {
+			chunks: Array<[string, number, number]>;
+		};
+		const at = index.chunks.findIndex(([hash]) => hash === chunkHash);
+		if (at < 0) continue;
+		const data = await packs.getFileHandle(name.slice(0, -".idx".length));
+		const end = (await data.getFile()).size;
+		await writeAt(data, end, bytes, true);
+		index.chunks[at] = [chunkHash, end, bytes.byteLength];
+		await writeAt(handle, 0, JSON.stringify(index), false);
+		return true;
+	}
+	return false;
+}
+
 /** Same-origin code rewrites one cached chunk at rest, exactly as an XSS or a
- * compromised dependency on the page could. */
+ * compromised dependency on the page could: inside its pack when one holds
+ * it, else at the one-file-per-chunk location. */
 async function overwriteChunk(chunkHash: string, bytes: Uint8Array) {
 	const root = await navigator.storage.getDirectory();
+	if (await overwritePacked(root, chunkHash, bytes)) return;
 	const chunks = await root.getDirectoryHandle("chunk");
 	const file = await chunks.getFileHandle(chunkHash, { create: true });
 	const writable = await file.createWritable();

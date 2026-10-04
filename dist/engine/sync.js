@@ -28,6 +28,12 @@ const CHUNK_RETRY_BASE_DELAY_MS = 250;
 /** Byte-level progress is rate-limited to this interval; chunk completions
  * and retries are always reported. */
 const PROGRESS_INTERVAL_MS = 250;
+/** Fetched chunks are handed to a batch-capable store in groups of at most
+ * this many chunks or bytes. Each batch is one storage write (one OPFS pack
+ * file) instead of one per chunk; the bound also caps how many fetched bytes
+ * wait in memory before landing. */
+export const MAX_STORE_BATCH_CHUNKS = 128;
+export const MAX_STORE_BATCH_BYTES = 4 * 1024 * 1024;
 /** Maximum silent backoff before one chunk fetch is declared unreachable. */
 export const MAX_CHUNK_RETRY_BUDGET_MS = CHUNK_RETRY_BASE_DELAY_MS * (2 ** (CHUNK_FETCH_ATTEMPTS - 1) - 1) +
     CHUNK_RETRY_BASE_DELAY_MS * (CHUNK_FETCH_ATTEMPTS - 1);
@@ -458,6 +464,10 @@ class ChunkProgress {
             },
         };
     }
+    /** All bytes are in; the chunk counts as completed once it is stored. */
+    received(ref) {
+        this.#inFlight.set(ref.hash, ref.size);
+    }
     completed(ref, wireBytes) {
         this.#inFlight.delete(ref.hash);
         this.#done += ref.size;
@@ -483,6 +493,52 @@ class ChunkProgress {
         });
     }
 }
+/** Per-chunk storage: what every CacheStore supports. */
+function storeEach(store, progress) {
+    return async (ref, compressed) => {
+        await store.putChunkCompressed(ref.hash, compressed, ref.size);
+        progress.completed(ref, compressed.byteLength);
+    };
+}
+/** Groups fetched chunks into batches for `putChunksCompressed`. Batches are
+ * written one after another; the fetch worker that fills a batch waits for it
+ * to land, which bounds the bytes held in memory. */
+function batchWriter(putBatch, progress) {
+    let pending = [];
+    let pendingBytes = 0;
+    let written = Promise.resolve();
+    const flush = () => {
+        const batch = pending;
+        pending = [];
+        pendingBytes = 0;
+        if (batch.length > 0) {
+            written = written.then(async () => {
+                await putBatch(batch);
+                for (const chunk of batch) {
+                    progress.completed(chunk, chunk.compressed.byteLength);
+                }
+            });
+        }
+        return written;
+    };
+    const add = async (ref, compressed) => {
+        pending.push({ hash: ref.hash, compressed, size: ref.size });
+        pendingBytes += compressed.byteLength;
+        progress.received(ref);
+        if (pending.length >= MAX_STORE_BATCH_CHUNKS ||
+            pendingBytes >= MAX_STORE_BATCH_BYTES) {
+            await flush();
+        }
+    };
+    return { add, flush };
+}
+function chunkSink(store, progress) {
+    const putBatch = store.putChunksCompressed;
+    if (putBatch === undefined) {
+        return { add: storeEach(store, progress), flush: () => Promise.resolve() };
+    }
+    return batchWriter((chunks) => putBatch.call(store, chunks), progress);
+}
 async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, progress, sleep) {
     let next = 0;
     let total = 0;
@@ -490,6 +546,7 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
     let inFlight = 0;
     const budgetWaiters = [];
     let failure;
+    const sink = chunkSink(store, progress);
     const reserve = async () => {
         while (remaining === 0 && inFlight > 0 && failure === undefined) {
             await new Promise((resolve) => {
@@ -527,8 +584,7 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
                     return;
                 consumed = compressed.byteLength;
                 total += consumed;
-                await store.putChunkCompressed(ref.hash, compressed, ref.size);
-                progress.completed(ref, consumed);
+                await sink.add(ref, compressed);
             }
             catch (error) {
                 failure ??=
@@ -544,6 +600,7 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
     await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_CHUNK_FETCHES, missing.length) }, worker));
     if (failure !== undefined)
         throw failure;
+    await sink.flush();
     return total;
 }
 /** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
