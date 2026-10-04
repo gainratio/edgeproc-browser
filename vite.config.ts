@@ -14,6 +14,11 @@ function opfsProxyProbe(): Plugin {
 		name: "edgeproc-test-opfs-proxy-probe",
 		configureServer(server) {
 			server.middlewares.use((request, response, next) => {
+				// Vite's 304 Not Modified drops the COEP/COOP headers below, and
+				// WebKit then refuses the cached worker module ("blocked by
+				// Cross-Origin-Embedder-Policy"). Always answer 200 with them.
+				delete request.headers["if-none-match"];
+				delete request.headers["if-modified-since"];
 				const url = request.url ?? "";
 				if (url.startsWith("/__test/opfs-proxy")) {
 					const hold = new URL(url, "http://127.0.0.1").searchParams.get(

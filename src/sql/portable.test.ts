@@ -7,7 +7,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
-import { SqlEngine } from "./engine";
+import { SqlEngine, type SqlRawDatabase } from "./engine";
 import { createHead } from "./portable";
 import type { SqlSerializer } from "./serializer";
 import { SqlImportRejectedError, type SqlImportRejection } from "./types";
@@ -19,6 +19,27 @@ beforeAll(async () => {
 
 function open(): SqlEngine {
 	return new SqlEngine(sqlite.openMemory(), {
+		storage: { persistence: "memory", reason: "requested" },
+		memoryProfile: MEMORY_PROFILES.lite,
+		serializer: sqlite.serializer,
+	});
+}
+
+/** A connection with an app-defined (not innocuous) SQL function `app_fn`. */
+function openWithAppFunction(
+	appFunction: (a: unknown) => unknown = (a) => a,
+): SqlEngine {
+	const raw = sqlite.openMemory() as SqlRawDatabase & {
+		createFunction(
+			name: string,
+			fn: (ctx: unknown, a: unknown) => unknown,
+			options: { readonly deterministic: boolean },
+		): void;
+	};
+	raw.createFunction("app_fn", (_ctx, a) => appFunction(a), {
+		deterministic: true,
+	});
+	return new SqlEngine(raw, {
 		storage: { persistence: "memory", reason: "requested" },
 		memoryProfile: MEMORY_PROFILES.lite,
 		serializer: sqlite.serializer,
@@ -563,6 +584,83 @@ describe("exportDatabase / importDatabase on the pinned build", () => {
 		expect(() => sqlite.serializer.serialize(withoutPointer)).toThrow(
 			/no native pointer/,
 		);
+	});
+
+	it("rejects a generated column that calls an app function; the live DB keeps working", () => {
+		const source = openWithAppFunction();
+		source.exec(
+			"CREATE TABLE crafted(a INTEGER, g INTEGER GENERATED ALWAYS AS (app_fn(a)) STORED); INSERT INTO crafted(a) VALUES (1)",
+		);
+		const bytes = source.exportDatabase();
+		const target = openWithAppFunction();
+		target.exec(
+			"CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT); INSERT INTO settings VALUES ('theme', 'dark')",
+		);
+		const before = snapshot(target);
+		expect(rejection(() => target.importDatabase(bytes))).toBe("corrupt");
+		expect(snapshot(target)).toEqual(before);
+		// The live connection is not left broken: reads, writes, a fresh
+		// import, and no scratch schema left attached.
+		target.exec("INSERT INTO settings VALUES ('lang', 'en')");
+		expect(target.query("SELECT count(*) AS n FROM settings")).toEqual([
+			{ n: 2 },
+		]);
+		expect(
+			target
+				.query("SELECT name FROM pragma_database_list")
+				.map((row) => row.name),
+		).toEqual(["main"]);
+		target.importDatabase(seedTarget().exportDatabase());
+		expect(userTables(target)).toEqual(userTables(seedTarget()));
+	});
+
+	it("does not fire app functions from an imported trigger or view", () => {
+		const calls: number[] = [];
+		const appFunction = (a: unknown) => {
+			calls.push(Number(a));
+			return 1;
+		};
+		const source = openWithAppFunction(appFunction);
+		source.exec(`
+			CREATE TABLE t(a);
+			CREATE TABLE log(x);
+			CREATE TRIGGER t_spy AFTER INSERT ON t BEGIN
+				INSERT INTO log VALUES (app_fn(new.a));
+			END;
+			CREATE VIEW v AS SELECT app_fn(a) AS y FROM t;
+		`);
+		const target = openWithAppFunction(appFunction);
+		const outcome = rejection(() =>
+			target.importDatabase(source.exportDatabase(), TRUSTED),
+		);
+		if (outcome === "accepted") {
+			// Imported: the schema exists, but the app function cannot be
+			// reached from it under trusted_schema = OFF.
+			expect(() => target.exec("INSERT INTO t VALUES (7)")).toThrow(
+				/unsafe use of app_fn/,
+			);
+			expect(() => target.query("SELECT * FROM v")).toThrow(
+				/unsafe use of app_fn/,
+			);
+		}
+		expect(calls).toEqual([]);
+	});
+
+	it("rejects a maxBytes that is not a positive integer", () => {
+		const bytes = seedSource().exportDatabase();
+		for (const maxBytes of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
+			const target = seedTarget();
+			const before = snapshot(target);
+			expect(() => target.importDatabase(bytes, { maxBytes })).toThrow(
+				RangeError,
+			);
+			expect(snapshot(target)).toEqual(before);
+		}
+		// The limit is inclusive: exactly the file's size imports.
+		seedTarget().importDatabase(bytes, {
+			...TRUSTED,
+			maxBytes: bytes.byteLength,
+		});
 	});
 
 	it("refuses an import over the size limit before reading it", () => {

@@ -1,9 +1,11 @@
 // @vitest-environment node
 
+import { readFile } from "node:fs/promises";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
+import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
-import { SqlEngine, type SqlRawDatabase } from "./engine";
+import { SqlEngine, type SqlRawDatabase, type SqlRawStatement } from "./engine";
 
 let sqlite: NodeSqlite;
 beforeAll(async () => {
@@ -21,6 +23,78 @@ function open(
 		memoryProfile: profile,
 	});
 }
+
+/** A real connection whose statement lifecycle and transaction modes are recorded. */
+function tracked(raw: SqlRawDatabase) {
+	const log = {
+		prepared: 0,
+		finalized: 0,
+		qualifiers: [] as string[],
+		closed: false,
+	};
+	const wrap = (statement: SqlRawStatement): SqlRawStatement => ({
+		bind: (values) => statement.bind(values),
+		step: () => statement.step(),
+		get: (target) => statement.get(target),
+		reset: (clear) => statement.reset(clear),
+		finalize: () => {
+			log.finalized += 1;
+			return statement.finalize();
+		},
+	});
+	const db: SqlRawDatabase = {
+		exec: (options) => raw.exec(options),
+		selectObjects: (sql, bind) => raw.selectObjects(sql, bind),
+		prepare: (sql) => {
+			const statement = wrap(raw.prepare(sql));
+			log.prepared += 1;
+			return statement;
+		},
+		transaction: (qualifier, callback) => {
+			log.qualifiers.push(qualifier);
+			return raw.transaction(qualifier, callback);
+		},
+		close: () => {
+			log.closed = true;
+			raw.close();
+		},
+	};
+	return { db, log };
+}
+
+/** A real connection with selected SQL answered by `answer` instead. */
+function forged(
+	raw: SqlRawDatabase,
+	answer: (sql: string) => Array<Record<string, unknown>> | undefined,
+): SqlRawDatabase {
+	return {
+		exec: (options) => raw.exec(options),
+		prepare: (sql) => raw.prepare(sql),
+		transaction: (qualifier, callback) => raw.transaction(qualifier, callback),
+		close: () => raw.close(),
+		selectObjects: (sql, bind) => answer(sql) ?? raw.selectObjects(sql, bind),
+	};
+}
+
+/** A file-backed connection (Emscripten MEMFS, so the journal is real). */
+async function openFile(name: string): Promise<SqlRawDatabase> {
+	const module = await sqlite3InitModule({
+		wasmBinary: new Uint8Array(
+			await readFile(
+				new URL("../vector/sqlite/assets/sqlite3.wasm", import.meta.url),
+			),
+		),
+		print: () => undefined,
+		printErr: () => undefined,
+	});
+	return new module.oo1.DB(`/${name}.sqlite3`) as unknown as SqlRawDatabase;
+}
+
+const OPFS = {
+	persistence: "opfs",
+	pool: "p",
+	file: "/p.sqlite3",
+} as const;
 
 function vector(values: ReadonlyArray<number>): Float32Array {
 	return new Float32Array(values);
@@ -120,6 +194,85 @@ describe("SqlEngine on the pinned SQLite build", () => {
 		).toThrow(/unexpected SQLite runtime/);
 	});
 
+	it.each([
+		["no version row", []],
+		["another sqlite-vector", [{ sqlite: "3.53.4", vector: "9.9.9", fts5: 1 }]],
+		["no FTS5", [{ sqlite: "3.53.4", vector: "1.1.2", fts5: 0 }]],
+	])("refuses a runtime with %s", (_label, row) => {
+		const raw = forged(sqlite.openMemory(), (sql) =>
+			sql.includes("sqlite_version()") ? row : undefined,
+		);
+		expect(
+			() =>
+				new SqlEngine(raw, {
+					storage: MEMORY,
+					memoryProfile: MEMORY_PROFILES.lite,
+				}),
+		).toThrow(/unexpected SQLite runtime/);
+	});
+
+	it("reports FTS5 and JSON1 as the connection answers, not as assumed", () => {
+		let constructed = false;
+		const raw = forged(sqlite.openMemory(), (sql) => {
+			if (!constructed) return undefined;
+			if (sql.includes("sqlite_version()")) {
+				return [{ sqlite: "3.53.4", vector: "1.1.2", fts5: 0 }];
+			}
+			return sql.includes("json_valid") ? [{ ok: 0 }] : undefined;
+		});
+		const db = new SqlEngine(raw, {
+			storage: MEMORY,
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		constructed = true;
+		expect(db.runtimeInfo()).toMatchObject({ fts5: false, json1: false });
+		db.close();
+	});
+
+	it("binds exec parameters", () => {
+		const db = open();
+		db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)");
+		db.exec("INSERT INTO t(v) VALUES (?), (?)", ["a", "b"]);
+		expect(db.query("SELECT v FROM t ORDER BY id")).toEqual([
+			{ v: "a" },
+			{ v: "b" },
+		]);
+		db.close();
+	});
+
+	it("finalizes every statement it prepares, and writes under BEGIN IMMEDIATE", () => {
+		const { db: raw, log } = tracked(sqlite.openMemory());
+		const db = new SqlEngine(raw, {
+			storage: MEMORY,
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL)");
+		db.query("SELECT 1");
+		expect(() => db.query("SELECT * FROM missing")).toThrow(/no such table/);
+		expect(() =>
+			db.query("INSERT INTO t(v) VALUES (?) RETURNING id", [null]),
+		).toThrow(/NOT NULL/);
+		db.transaction([
+			{ sql: "INSERT INTO t(v) VALUES (?)", bind: ["x"] },
+			{ sql: "INSERT INTO t(v) VALUES (?)", rows: [["y"]] },
+		]);
+		expect(() =>
+			db.transaction([{ sql: "INSERT INTO t(v) VALUES (NULL)" }]),
+		).toThrow(/NOT NULL/);
+		db.executeMany("INSERT INTO t(v) VALUES (?)", [["z"]]);
+		const once = db.prepare("SELECT v FROM t");
+		db.allPrepared(once);
+		db.finalize(once);
+		expect(log.finalized).toBe(log.prepared);
+		expect(log.qualifiers).toEqual(["IMMEDIATE", "IMMEDIATE", "IMMEDIATE"]);
+
+		db.prepare("SELECT v FROM t");
+		expect(log.finalized).toBe(log.prepared - 1);
+		db.close();
+		expect(log.finalized).toBe(log.prepared);
+		expect(log.closed).toBe(true);
+	});
+
 	it("reports changes and the last rowid from exec", () => {
 		const db = open();
 		db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)");
@@ -140,7 +293,7 @@ describe("SqlEngine on the pinned SQLite build", () => {
 			{ sql: "SELECT v FROM t ORDER BY id" },
 		]);
 		expect(ok.changes).toBe(3);
-		expect(ok.results[2]).toEqual([{ v: "x" }, { v: "y" }, { v: "z" }]);
+		expect(ok.results).toEqual([[], [], [{ v: "x" }, { v: "y" }, { v: "z" }]]);
 		expect(() =>
 			db.transaction([
 				{ sql: "INSERT INTO t(v) VALUES ('w')" },
@@ -177,6 +330,9 @@ describe("SqlEngine on the pinned SQLite build", () => {
 		expect(db.runPrepared(insert, ["b"]).lastInsertRowid).toBe(2);
 		expect(db.allPrepared(select, { ":id": 2 })).toEqual([{ v: "b" }]);
 		expect(db.allPrepared(select, { ":id": 9 })).toEqual([]);
+		expect(db.allPrepared(select, { ":id": 2 })).toEqual([{ v: "b" }]);
+		// Bindings are cleared after each run: unbound, :id is NULL.
+		expect(db.allPrepared(select)).toEqual([]);
 		db.finalize(insert);
 		expect(() => db.runPrepared(insert, ["c"])).toThrow(
 			/prepared statement .* is not open/,
@@ -243,5 +399,36 @@ describe("SqlEngine on the pinned SQLite build", () => {
 					memoryProfile: MEMORY_PROFILES.lite,
 				}),
 		).toThrow(/privacy pragmas were not applied/);
+	});
+
+	it("turns on secure_delete with a DELETE journal for a persistent file", async () => {
+		const db = new SqlEngine(await openFile("engine-privacy"), {
+			storage: OPFS,
+			memoryProfile: MEMORY_PROFILES.lite,
+		});
+		expect(db.query("PRAGMA secure_delete")).toEqual([{ secure_delete: 1 }]);
+		expect(db.query("PRAGMA journal_mode")).toEqual([
+			{ journal_mode: "delete" },
+		]);
+		db.close();
+	});
+
+	it("refuses a persistent file whose secure_delete does not stick", async () => {
+		const raw = await openFile("engine-insecure");
+		const ignoring: SqlRawDatabase = {
+			...forged(raw, () => undefined),
+			exec: (options) =>
+				options.sql === "PRAGMA secure_delete = ON"
+					? undefined
+					: raw.exec(options),
+		};
+		expect(
+			() =>
+				new SqlEngine(ignoring, {
+					storage: OPFS,
+					memoryProfile: MEMORY_PROFILES.lite,
+				}),
+		).toThrow(/privacy pragmas were not applied/);
+		raw.close();
 	});
 });

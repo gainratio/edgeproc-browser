@@ -8,6 +8,7 @@
 // "in-use" (nothing is deleted; try again once that context closes it).
 
 import { type SqlLocks, sqlDatabasePoolName, stableIdentity } from "./open.js";
+import { SqlStorageUnavailableError } from "./types.js";
 
 export type OpfsPoolRemoval = "removed" | "absent" | "in-use";
 
@@ -77,8 +78,20 @@ export async function sqliteVectorPoolName(name: string): Promise<string> {
 	return `edgeproc-vector-${await stableIdentity(name)}`;
 }
 
+/**
+ * The OPFS root, or the same typed refusal openSqlDatabase reports. A browser
+ * that refuses the root (Safari private mode, Playwright's WebKit) throws a
+ * bare DOMException like "UnknownError"; callers branch on the type instead.
+ */
 async function defaultRoot(): Promise<OpfsRoot> {
-	return navigator.storage.getDirectory();
+	try {
+		return await navigator.storage.getDirectory();
+	} catch (error) {
+		throw new SqlStorageUnavailableError(
+			"opfs-unavailable",
+			`OPFS root refused: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 }
 
 function defaultLocks(): SqlLocks | undefined {

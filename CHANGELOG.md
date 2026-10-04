@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-04
+
+Hardens SQLite import, makes a refused OPFS root a typed error, and adds Firefox and WebKit
+to CI. No API changes; one new `RangeError` for a bad `maxBytes`.
+
+### Fixed
+
+- **A crafted backup could break the live connection.** A file whose `STORED` generated
+  column calls one of your app's SQL functions passed validation (the scratch connection
+  does not have your functions), then failed to load on the live connection with a raw
+  `SQLITE_CORRUPT`. The scratch schema could not be detached, so every later statement on
+  that connection failed too. The import now loads the file's schema before changing anything,
+  refuses it as `SqlImportRejectedError("corrupt")`, and always detaches the scratch schema
+  (with `writable_schema` on for that one `DETACH`), so the connection keeps working.
+- **`maxBytes: NaN` turned the import size limit off** (`n > NaN` is always false).
+  `maxBytes` must now be a positive integer; `NaN`, `Infinity`, `0`, a negative or a
+  fractional value throws `RangeError`.
+- **`removeSqlDatabase` / `removeOpfsPool` threw a bare DOMException when the browser
+  refuses the OPFS root** (Playwright's WebKit: `UnknownError`). They now throw
+  `SqlStorageUnavailableError("opfs-unavailable")`, the same typed reason `openSqlDatabase`
+  reports.
+
+### Tests
+
+- A behavioural test for `trusted_schema = OFF`: an imported trigger or view that calls an
+  app-defined function does not run it.
+- `test/browser/cross-browser.spec.ts` runs in Chromium, Firefox and WebKit: OPFS open (or,
+  in Playwright's WebKit, the typed `opfs-unavailable` memory fallback), a SQL round trip
+  with FTS5, export/import, and memory-profile detection without `navigator.deviceMemory`.
+  CI installs all three engines.
+- The test server now always answers 200: Vite's `304 Not Modified` dropped the COEP/COOP
+  headers, and WebKit then refused the cached Worker module.
+
 ## [0.2.0] - 2026-10-04
 
 The first npm release since 0.1.1. If you were installing this package from a git

@@ -145,6 +145,8 @@ await removeOpfsPool("edgereco-catalogue");
 
 `removeSqlDatabase` takes the same owner lock as `openSqlDatabase`, so it never deletes a
 database this origin has open. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
+If the browser refuses the OPFS root (Safari private browsing, Playwright's WebKit), both throw
+`SqlStorageUnavailableError("opfs-unavailable")`, the same typed reason `openSqlDatabase` reports.
 
 ## Export and import (backup, or move to another device)
 
@@ -218,11 +220,17 @@ that text is checked first, and anything unexpected is refused as `"unsafe-schem
 - virtual tables only from `virtualTableModules` (default `["fts5"]`), checked twice: by the
   statement grammar, and by SQLite itself in a connection that has every other module dropped;
 - after an import the connection keeps `PRAGMA trusted_schema = OFF`, so imported views,
-  triggers, defaults and indexes can only call innocuous functions.
+  triggers, defaults and indexes can only call innocuous functions. Calling one of your app's
+  own SQL functions from them fails with "unsafe use of ..." instead of running it;
+- a schema that only fails to load on your connection (for example a `STORED` generated column
+  that calls one of your app's functions) is refused as `"corrupt"` before anything changes,
+  and the connection is left working.
 
 Not copied: `sqlite_stat*` (run `ANALYZE` if you use it). SQLite never drops `sqlite_sequence`, so
 an empty one can remain after importing a file without `AUTOINCREMENT`. `vector_init(...)` is per connection:
 call it again after an import, as after any reopen. Default size limit: 256 MiB (`maxBytes`).
+`maxBytes` must be a positive integer; `NaN`, `Infinity`, `0` or a negative value throws
+`RangeError` rather than switching the limit off.
 
 ### Secrets and settings belong to the app layer
 
@@ -262,3 +270,6 @@ This library moves the database and nothing else. An app that also needs setting
   FTS5 + vectors, typed rejections, and a second Worker blocked by the import's owner lock.
 - `test/browser/sql-seam.spec.ts`: the real Worker in Chromium on OPFS — persistence across
   reopen, second-owner fallback, and pool removal.
+- `test/browser/cross-browser.spec.ts`: the same seam in Chromium, Firefox and WebKit — OPFS
+  open (or, in Playwright's WebKit, the typed `opfs-unavailable` fallback), a SQL round trip,
+  export/import, and the memory profile picked without `navigator.deviceMemory`.

@@ -1,10 +1,11 @@
 // @vitest-environment node
 
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import {
 	applyMemoryProfile,
+	currentMemoryEnvironment,
 	detectMemoryTier,
 	MEMORY_PROFILES,
 	type MemoryEnvironment,
@@ -105,6 +106,19 @@ describe("detectMemoryTier", () => {
 			"lite",
 		);
 	});
+	it("only treats a multi-touch MacIntel as an iPad", () => {
+		expect(detectMemoryTier({ platform: "MacIntel", maxTouchPoints: 1 })).toBe(
+			"lite",
+		);
+		expect(detectMemoryTier({ platform: "Win32", maxTouchPoints: 10 })).toBe(
+			"lite",
+		);
+	});
+	it("keeps full when deviceMemory is high and cores are plentiful", () => {
+		expect(detectMemoryTier({ deviceMemory: 8, hardwareConcurrency: 3 })).toBe(
+			"full",
+		);
+	});
 	it("ignores garbage values", () => {
 		const bad = { deviceMemory: Number.NaN } as MemoryEnvironment;
 		expect(detectMemoryTier(bad)).toBe("lite");
@@ -123,6 +137,47 @@ describe("resolveMemoryProfile", () => {
 	});
 	it("rejects an unknown tier", () => {
 		expect(() => resolveMemoryProfile("huge" as never)).toThrow(TypeError);
+		expect(() => resolveMemoryProfile("huge" as never)).toThrow(
+			"unsupported memory profile: huge",
+		);
+	});
+});
+
+describe("currentMemoryEnvironment", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+	it("copies the navigator signals", () => {
+		vi.stubGlobal("navigator", {
+			deviceMemory: 4,
+			hardwareConcurrency: 6,
+			userAgent: IPHONE,
+			platform: "iPhone",
+			maxTouchPoints: 5,
+		});
+		expect(currentMemoryEnvironment()).toEqual({
+			deviceMemory: 4,
+			hardwareConcurrency: 6,
+			userAgent: IPHONE,
+			platform: "iPhone",
+			maxTouchPoints: 5,
+		});
+		expect(resolveMemoryProfile().tier).toBe("minimal");
+	});
+	it("returns no signals when there is no navigator", () => {
+		vi.stubGlobal("navigator", undefined);
+		expect(currentMemoryEnvironment()).toEqual({});
+	});
+});
+
+describe("readMemoryProfile", () => {
+	it("falls back to lite when the cache size matches no profile", async () => {
+		const db = await openRaw();
+		db.exec("PRAGMA cache_size = -1234");
+		expect(readMemoryProfile(db)).toMatchObject({
+			tier: "lite",
+			cacheSizeKiB: 1234,
+		});
 	});
 });
 
@@ -149,6 +204,12 @@ describe("applyMemoryProfile reads the PRAGMAs back", () => {
 		};
 		expect(() => applyMemoryProfile(ignoring, MEMORY_PROFILES.minimal)).toThrow(
 			/memory profile/,
+		);
+	});
+	it("fails closed with its own error when a PRAGMA returns no row", () => {
+		const empty = { exec: () => undefined, selectObjects: () => [] };
+		expect(() => applyMemoryProfile(empty, MEMORY_PROFILES.lite)).toThrow(
+			"SQLite did not apply the lite memory profile",
 		);
 	});
 });

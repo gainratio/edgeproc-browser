@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openSqlStorage, sqlDatabasePoolName } from "./open";
 import {
 	type OpfsRoot,
@@ -6,6 +6,7 @@ import {
 	removeSqlDatabase,
 	sqliteVectorPoolName,
 } from "./opfsPool";
+import { SqlStorageUnavailableError } from "./types";
 
 function domError(name: string): Error {
 	const error = new Error(name);
@@ -56,6 +57,21 @@ describe("removeOpfsPool", () => {
 		expect(root.entries.has(".busy")).toBe(true);
 	});
 
+	it("reports in-use for InvalidModificationError as well", async () => {
+		const root = new FakeRoot();
+		root.failure = domError("InvalidModificationError");
+		expect(await removeOpfsPool("busy", { root })).toBe("in-use");
+	});
+
+	it("rethrows a null rejection unchanged", async () => {
+		const root: OpfsRoot = {
+			removeEntry: async () => {
+				throw null;
+			},
+		};
+		await expect(removeOpfsPool("pool", { root })).rejects.toBeNull();
+	});
+
 	it("rethrows anything it cannot classify", async () => {
 		const root = new FakeRoot();
 		root.failure = domError("SecurityError");
@@ -86,6 +102,82 @@ describe("removeOpfsPool", () => {
 });
 
 describe("removeSqlDatabase", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("asks for the owner lock exclusively and only if it is free", async () => {
+		const root = new FakeRoot();
+		const inner = navigatorLikeLocks();
+		const seen: Array<{ mode?: string; ifAvailable?: boolean }> = [];
+		const locks = {
+			request<T>(
+				name: string,
+				options: {
+					readonly mode?: "exclusive";
+					readonly ifAvailable?: boolean;
+				},
+				callback: (lock: unknown) => Promise<T>,
+			): Promise<T> {
+				seen.push(options);
+				return inner.request(name, options, callback);
+			},
+		};
+		expect(await removeSqlDatabase("modes", { root, locks })).toBe("absent");
+		expect(seen).toEqual([{ mode: "exclusive", ifAvailable: true }]);
+	});
+
+	it("uses navigator.locks by default, so an open database is in-use", async () => {
+		const root = new FakeRoot();
+		const pool = await sqlDatabasePoolName("held");
+		root.entries.add(`.${pool}`);
+		const locks = navigatorLikeLocks();
+		vi.stubGlobal("navigator", { locks });
+		const owner = await openSqlStorage(
+			{
+				openMemory: () => ({}),
+				installPool: async () => ({ OpfsSAHPoolDb: class {} }),
+				locks,
+				warn: () => undefined,
+				lockWaitMs: 10,
+			},
+			{ name: "held" },
+		);
+		expect(await removeSqlDatabase("held", { root })).toBe("in-use");
+		expect(root.entries.has(`.${pool}`)).toBe(true);
+		owner.release();
+	});
+
+	it.each([
+		[new Error("denied"), "OPFS root refused: denied"],
+		["not an Error", "OPFS root refused: not an Error"],
+	])(
+		"turns a refused OPFS root (%s) into opfs-unavailable",
+		async (failure, message) => {
+			vi.stubGlobal("navigator", {
+				storage: {
+					getDirectory: async () => {
+						throw failure;
+					},
+				},
+			});
+			const removing = removeSqlDatabase("refused");
+			await expect(removing).rejects.toBeInstanceOf(SqlStorageUnavailableError);
+			await expect(removing).rejects.toMatchObject({
+				reason: "opfs-unavailable",
+				message,
+			});
+		},
+	);
+
+	it("removes without a lock where there is no navigator at all", async () => {
+		const root = new FakeRoot();
+		const pool = await sqlDatabasePoolName("bare");
+		root.entries.add(`.${pool}`);
+		vi.stubGlobal("navigator", undefined);
+		expect(await removeSqlDatabase("bare", { root })).toBe("removed");
+	});
+
 	it("deletes a closed database's pool and is idempotent", async () => {
 		const root = new FakeRoot();
 		const pool = await sqlDatabasePoolName("old");

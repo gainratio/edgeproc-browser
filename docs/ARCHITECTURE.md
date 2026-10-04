@@ -151,7 +151,9 @@ failures are verdicts and are never retried.
 | A Vite app emits exactly one engine Worker | `test/vite-consumer.test.ts` |
 | The README's claims and links stay true | `test/readme.contract.test.ts` |
 
-**Not proven here:** browsers other than Chromium (CI runs Chromium only), real OPFS locking
+**Not proven here:** real Safari, and OPFS in WebKit at all (Playwright's WebKit refuses the
+OPFS root, so `test/browser/cross-browser.spec.ts` proves the typed `opfs-unavailable`
+fallback there; Firefox and Chromium open OPFS for real), real OPFS locking
 under jsdom (see below), and behavior on a compromised device.
 
 ### Known gaps in unit-test coverage
