@@ -55,6 +55,9 @@ export declare class SqliteCacheStore implements CacheStore {
      * only raise this one. Idempotent: running it twice changes nothing.
      */
     importLegacy(input: LegacyImport): void;
+    /** Raise (never lower) the floor with legacy pointers; one transaction,
+     * migration state untouched. */
+    raiseLegacyFloor(pointers: ReadonlyArray<VersionPointer | null>): void;
     markMigrationDone(): void;
 }
 /** The fields `samePointer` compares, in a fixed order: one string per release. */

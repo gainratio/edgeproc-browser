@@ -254,14 +254,12 @@ test("a legacy rollback floor above the release survives migration and refuses i
 	page,
 	browserName,
 }) => {
-	test.skip(
-		browserName === "webkit",
-		"no OPFS in Playwright WebKit: no 0.2.x OPFS store can exist",
-	);
 	test.setTimeout(120_000);
 	const errors = await open(page);
 	// The 0.2.x IndexedDB floor says sequence 5 was already promoted; the
-	// bundle served now is sequence 1. A floor is never lowered by migration.
+	// bundle served now is sequence 1. The floor is never lowered: not by
+	// migration (OPFS), and not by the in-memory fallback (WebKit, where
+	// 0.2.x really did keep its whole cache in IndexedDB).
 	await page.evaluate((seed) => window.sqliteStore.seedLegacy(seed), {
 		chunks: [],
 		manifest: null,
@@ -273,6 +271,12 @@ test("a legacy rollback floor above the release survives migration and refuses i
 	const again = await boot(page, "edgeproc-browser");
 	expect(again.outcome).toBe("rollback");
 	const after = await page.evaluate(() => window.sqliteStore.audit());
-	expect(after.idbKeys).toEqual([]);
+	if (browserName === "webkit") {
+		// Memory mode reads the old floor but never writes or deletes it.
+		expect(after.idbKeys).toEqual(["active"]);
+	} else {
+		// Migrated into SQLite (where it now lives), then deleted.
+		expect(after.idbKeys).toEqual([]);
+	}
 	expect(errors).toEqual([]);
 });

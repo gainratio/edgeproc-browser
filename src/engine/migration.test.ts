@@ -12,6 +12,7 @@ import { SqlEngine } from "../sql/engine";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { chunkBytes, signedChunkRefs } from "./fixtures";
 import {
+	LegacyFloorUnavailableError,
 	type LegacySnapshot,
 	type LegacySource,
 	migrateLegacyStores,
@@ -64,6 +65,11 @@ class FakeSource implements LegacySource {
 	public data: LegacySnapshot;
 	public constructor(data: LegacySnapshot) {
 		this.data = data;
+	}
+	public failPointers = false;
+	public readPointers(): Promise<ReadonlyArray<VersionPointer | null>> {
+		if (this.failPointers) return Promise.reject(new Error("floor unreadable"));
+		return Promise.resolve(this.removed ? [] : this.data.pointers);
 	}
 	public read(): Promise<LegacySnapshot> {
 		if (this.failRead) return Promise.reject(new Error("crash during read"));
@@ -157,7 +163,7 @@ describe("migrateLegacyStores", () => {
 		expect(chunkCount(db)).toBe(4);
 	});
 
-	it("leaves everything unchanged when the copy transaction dies midway, then completes", async () => {
+	it("copies nothing when the copy transaction dies midway (the floor already holds), then completes", async () => {
 		const db = engine();
 		let crash = true;
 		const crashing: ChunkSqlConnection = {
@@ -175,7 +181,9 @@ describe("migrateLegacyStores", () => {
 			"power cut",
 		);
 		expect(chunkCount(db)).toBe(0);
-		expect(await store.readFloor()).toBe(-1);
+		// The floor is imported in its own transaction BEFORE the copy, so a
+		// copy that dies still leaves the legacy floor in force (was -1 here).
+		expect(await store.readFloor()).toBe(3);
 		expect(source.removed).toBe(false);
 
 		crash = false;
@@ -185,7 +193,7 @@ describe("migrateLegacyStores", () => {
 		});
 	});
 
-	it("does not mark done or delete when a legacy store cannot be read", async () => {
+	it("does not mark done or delete when a legacy store cannot be read, but keeps its floor", async () => {
 		const store = SqliteCacheStore.open(engine());
 		const source = new FakeSource(snapshot([pointer(2)]));
 		source.failRead = true;
@@ -193,6 +201,21 @@ describe("migrateLegacyStores", () => {
 			"crash during read",
 		);
 		expect(store.migrationState()).toBe("none");
+		expect(source.removed).toBe(false);
+		expect(await store.readFloor()).toBe(2);
+		await expect(store.promote(pointer(1))).rejects.toBeInstanceOf(
+			RollbackError,
+		);
+	});
+
+	it("refuses with LegacyFloorUnavailableError, changing nothing, when the floor cannot be read", async () => {
+		const store = SqliteCacheStore.open(engine());
+		const source = new FakeSource(snapshot([pointer(2)]));
+		source.failPointers = true;
+		await expect(migrateLegacyStores(store, [source])).rejects.toBeInstanceOf(
+			LegacyFloorUnavailableError,
+		);
+		expect(await store.readFloor()).toBe(-1);
 		expect(source.removed).toBe(false);
 	});
 });

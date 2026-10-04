@@ -154,6 +154,17 @@ function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
 
 /** Lay down exactly what @gainratio/browser 0.2.x left behind. */
 async function seedLegacy(seed: LegacySeed): Promise<void> {
+	if (
+		seed.chunks.length > 0 ||
+		seed.manifest !== null ||
+		seed.opfsPointer !== null
+	) {
+		await seedOpfs(seed);
+	}
+	await seedIndexedDb(seed);
+}
+
+async function seedOpfs(seed: LegacySeed): Promise<void> {
 	const root = await navigator.storage.getDirectory();
 	const chunkDir = await root.getDirectoryHandle("chunk", { create: true });
 	for (const chunk of seed.chunks) {
@@ -177,6 +188,10 @@ async function seedLegacy(seed: LegacySeed): Promise<void> {
 			encoder.encode(JSON.stringify(seed.opfsPointer)),
 		);
 	}
+}
+
+async function seedIndexedDb(seed: LegacySeed): Promise<void> {
+	const encoder = new TextEncoder();
 	const open = indexedDB.open(LEGACY_DB, 1);
 	open.onupgradeneeded = () => open.result.createObjectStore(LEGACY_STORE);
 	const db = await idbRequest(open);

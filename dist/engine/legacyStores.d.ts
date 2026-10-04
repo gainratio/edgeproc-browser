@@ -23,5 +23,5 @@ export interface LegacyDirectory {
         recursive?: boolean;
     }): Promise<void>;
 }
-export declare function opfsLegacySource(root?: () => Promise<LegacyDirectory>): LegacySource;
+export declare function opfsLegacySource(openRoot?: () => Promise<LegacyDirectory>): LegacySource;
 //# sourceMappingURL=legacyStores.d.ts.map

@@ -174,10 +174,13 @@ async function handleClear(req: ClearRequest): Promise<EngineResponse> {
 			req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser",
 		...(indexedDbLayout === undefined ? {} : { indexedDbLayout }),
 	});
-	return withChunkStore(configuration, async (cacheStore) => {
-		await cacheStore.clear();
-		return { ok: true, id: req.id, kind: "clear" };
-	});
+	return configuration.database.run(
+		async (cacheStore) => {
+			await cacheStore.clear();
+			return { ok: true, id: req.id, kind: "clear" } as const;
+		},
+		{ reset: true },
+	);
 }
 
 /** Ask the browser not to evict this origin's storage (best effort). */

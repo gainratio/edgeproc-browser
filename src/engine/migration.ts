@@ -1,4 +1,6 @@
 // One-time move from the 0.2.x stores into SQLite. Steps, each safe to crash:
+//   0. read every legacy FLOOR and raise ours with it (one transaction); if a
+//      floor cannot be read, stop: LegacyFloorUnavailableError, fail closed
 //   1. read every legacy store (nothing changes if a read fails)
 //   2. verify each chunk by its content address; drop what fails
 //   3. ONE transaction: insert chunks + manifests, raise the floor (never
@@ -32,11 +34,44 @@ export interface LegacySnapshot {
 	readonly pointers: ReadonlyArray<VersionPointer | null>;
 }
 
-/** A 0.2.x store: read it whole, then delete it. */
+/** A 0.2.x store: its floor alone, the whole store, then delete it. */
 export interface LegacySource {
 	readonly label: string;
+	/** Only the durable pointers (the rollback floor). Small and read first. */
+	readPointers(): Promise<ReadonlyArray<VersionPointer | null>>;
 	read(): Promise<LegacySnapshot>;
 	remove(): Promise<void>;
+}
+
+/** A 0.2.x rollback floor exists but could not be read. Nothing may be
+ * promoted until it is (or the user explicitly resets the cache): accepting
+ * a release without it could accept a rollback the old floor would refuse. */
+export class LegacyFloorUnavailableError extends Error {
+	public constructor(cause: unknown) {
+		super(
+			`legacy rollback floor unavailable (storage): ${cause instanceof Error ? cause.message : String(cause)}`,
+			{ cause },
+		);
+		this.name = "LegacyFloorUnavailableError";
+	}
+}
+
+/** Raise the store's floor with every legacy source's pointers (never lower
+ * it). Throws LegacyFloorUnavailableError, changing nothing, if any source's
+ * floor cannot be read. Read-only on the legacy side. */
+export async function importLegacyFloor(
+	store: SqliteCacheStore,
+	sources: ReadonlyArray<LegacySource>,
+): Promise<void> {
+	let pointers: ReadonlyArray<VersionPointer | null>;
+	try {
+		pointers = (
+			await Promise.all(sources.map((source) => source.readPointers()))
+		).flat();
+	} catch (error) {
+		throw new LegacyFloorUnavailableError(error);
+	}
+	store.raiseLegacyFloor(pointers);
 }
 
 export interface MigrationReport {
@@ -60,6 +95,9 @@ export async function migrateLegacyStores(
 			floor: await store.readFloor(),
 		};
 	}
+	// The floor first, on its own: whatever happens to the bulk copy below,
+	// the old floor is already in force (or nothing runs at all).
+	await importLegacyFloor(store, sources);
 	const snapshots = await Promise.all(sources.map((source) => source.read()));
 	const { chunks, skipped } = await verifiedChunks(snapshots);
 	const manifests = await verifiedManifests(snapshots);

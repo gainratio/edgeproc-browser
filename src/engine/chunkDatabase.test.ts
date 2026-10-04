@@ -25,6 +25,8 @@ import {
 	chunkBytes,
 } from "./fixtures";
 import type { LegacySnapshot, LegacySource } from "./migration";
+import { RollbackError } from "./sync";
+import type { VersionPointer } from "./types";
 
 let sqlite: NodeSqlite;
 beforeAll(async () => {
@@ -52,17 +54,33 @@ function persistentFile(): SqlRawDatabase {
 	};
 }
 
-function legacy(data: LegacySnapshot): LegacySource & { reads: number } {
+function legacy(
+	data: LegacySnapshot,
+): LegacySource & { reads: number; removed: number } {
 	const source = {
 		label: "legacy",
 		reads: 0,
+		removed: 0,
 		read: () => {
 			source.reads += 1;
 			return Promise.resolve(data);
 		},
-		remove: () => Promise.resolve(),
+		readPointers: () => Promise.resolve(data.pointers),
+		remove: () => {
+			source.removed += 1;
+			return Promise.resolve();
+		},
 	};
 	return source;
+}
+
+function pointer(sequence: number): VersionPointer {
+	return {
+		manifest_hash: "d".repeat(64),
+		version: `v${sequence}`,
+		sequence,
+		signature: `sig-${sequence}`,
+	};
 }
 
 function host(options: {
@@ -230,6 +248,7 @@ describe("ChunkDatabase", () => {
 		const broken: LegacySource = {
 			label: "broken",
 			read: () => Promise.reject(new Error("legacy unreadable")),
+			readPointers: () => Promise.resolve([pointer(5)]),
 			remove: () => Promise.resolve(),
 		};
 		const { database, warn } = host({ sources: [broken] });
@@ -260,10 +279,10 @@ describe("ChunkDatabase", () => {
 			present: await store.hasChunk(HASH),
 		}));
 		expect(second).toEqual({ status: first, present: true });
-		expect(sources).not.toHaveBeenCalled();
+		expect(sources).toHaveBeenCalledTimes(1);
 	});
 
-	it("reports pool-in-use when a foreign context holds the pool past the wait", async () => {
+	it("fails CLOSED on pool-in-use: never an empty in-memory floor beside a persisted one", async () => {
 		const locks = new FakeLocks();
 		const lock = poolOwnerLock(await sqlDatabasePoolName("shop-chunks"));
 		let free: () => void = () => undefined;
@@ -276,14 +295,114 @@ describe("ChunkDatabase", () => {
 				}),
 		);
 		const { database } = host({ locks });
-		const status = await database.run((_store, storage) =>
-			Promise.resolve(storage),
-		);
-		expect(status).toMatchObject({
-			persistence: "memory",
+		await expect(
+			database.run((store) => store.promote(pointer(1))),
+		).rejects.toMatchObject({
+			name: "SqlStorageUnavailableError",
 			reason: "pool-in-use",
 		});
 		free();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const status = await database.run((_store, storage) =>
+			Promise.resolve(storage),
+		);
+		expect(status).toMatchObject({ persistence: "opfs" });
+	});
+});
+
+describe("ChunkDatabase anti-rollback floor (each rollback attempt)", () => {
+	const refused = () =>
+		Promise.reject(
+			Object.assign(new Error("UnknownError"), { name: "UnknownError" }),
+		);
+
+	it("a migration that fails after reading the floor still imports it, and keeps the legacy store", async () => {
+		const broken = Object.assign(
+			legacy({ chunks: [], manifests: [], pointers: [pointer(5)] }),
+			{
+				read: () => Promise.reject(new Error("chunk dir unreadable")),
+			},
+		);
+		const { database, warn } = host({ sources: [broken] });
+		await expect(
+			database.run((store) => store.promote(pointer(4))),
+		).rejects.toBeInstanceOf(RollbackError);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/chunk dir unreadable/),
+		);
+		expect(broken.removed).toBe(0);
+		await database.run((store) => store.promote(pointer(6)));
+	});
+
+	it("fails CLOSED when the legacy floor itself cannot be read", async () => {
+		const unreadable = Object.assign(
+			legacy({ chunks: [], manifests: [], pointers: [] }),
+			{
+				readPointers: () => Promise.reject(new Error("idb broken")),
+			},
+		);
+		const { database } = host({ sources: [unreadable] });
+		const promoted = vi.fn();
+		await expect(
+			database.run(async (store) => {
+				promoted();
+				await store.promote(pointer(1));
+			}),
+		).rejects.toThrow(/legacy rollback floor unavailable.*idb broken/);
+		expect(promoted).not.toHaveBeenCalled();
+	});
+
+	it("an explicit reset (clear) still runs when the legacy floor is unreadable, and deletes it", async () => {
+		const unreadable = Object.assign(
+			legacy({ chunks: [], manifests: [], pointers: [] }),
+			{
+				readPointers: () => Promise.reject(new Error("idb broken")),
+			},
+		);
+		const { database } = host({ sources: [unreadable] });
+		await database.run((store) => store.clear(), { reset: true });
+		expect(unreadable.removed).toBe(1);
+	});
+
+	it("in-memory mode honours the 0.2.x IndexedDB floor, and never deletes it", async () => {
+		const source = legacy({
+			chunks: [],
+			manifests: [],
+			pointers: [pointer(5)],
+		});
+		const { database } = host({ install: refused, sources: [source] });
+		await expect(
+			database.run((store) => store.promote(pointer(4))),
+		).rejects.toBeInstanceOf(RollbackError);
+		await database.run((store) => store.promote(pointer(5)));
+		expect(source.removed).toBe(0);
+		expect(source.reads).toBe(0);
+	});
+
+	it("in-memory mode fails CLOSED when the legacy floor cannot be read", async () => {
+		const unreadable = Object.assign(
+			legacy({ chunks: [], manifests: [], pointers: [] }),
+			{
+				readPointers: () => Promise.reject(new Error("idb broken")),
+			},
+		);
+		const { database } = host({ install: refused, sources: [unreadable] });
+		await expect(
+			database.run((store) => store.promote(pointer(1))),
+		).rejects.toThrow(/legacy rollback floor unavailable/);
+	});
+
+	it("a re-download (tamper eviction) never touches the floor", async () => {
+		const { database } = host({});
+		await database.run(async (store) => {
+			await store.putChunkCompressed(HASH, chunkBytes(HASH), SIZE);
+			await store.promote(pointer(3), [HASH]);
+		});
+		await database.run((store) =>
+			store.getChunk(HASH, SIZE + 1).catch(() => undefined),
+		);
+		expect(await database.run((store) => store.hasChunk(HASH))).toBe(false);
+		expect(await database.run((store) => store.readFloor())).toBe(3);
 	});
 });
 
@@ -316,6 +435,7 @@ describe("ChunkDatabase refusals", () => {
 		const broken: LegacySource = {
 			label: "broken",
 			read: () => Promise.reject("plain string"),
+			readPointers: () => Promise.resolve([]),
 			remove: () => Promise.resolve(),
 		};
 		const { database, warn } = host({ sources: [broken] });

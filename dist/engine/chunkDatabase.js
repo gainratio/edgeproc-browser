@@ -8,13 +8,16 @@
 // instead of one tab owning it for its whole life, and every session opens a
 // fresh connection, so it always sees the other tabs' commits.
 //
-// Fallback: if OPFS is refused (Playwright's WebKit, private browsing) or a
-// foreign context holds the pool, this Worker switches to ONE in-memory
-// database for the rest of its life, reports it in a typed SqlStorage status,
-// and re-downloads each session. It never falls back to IndexedDB.
+// Fallback: if OPFS is refused (Playwright's WebKit, private browsing), this
+// Worker switches to ONE in-memory database for the rest of its life, reports
+// it in a typed SqlStorage status, re-downloads each session, and enforces the
+// 0.2.x IndexedDB floor if one exists (read-only). It never writes IndexedDB.
+// A pool held by a foreign context fails the operation closed instead: an
+// empty in-memory floor next to a persisted one could accept a rollback.
 import { SqlEngine } from "../sql/engine.js";
+import { SqlStorageUnavailableError } from "../sql/types.js";
 import { validatedNamespace } from "./cacheLock.js";
-import { migrateLegacyStores } from "./migration.js";
+import { importLegacyFloor, LegacyFloorUnavailableError, migrateLegacyStores, } from "./migration.js";
 import { SqliteCacheStore } from "./sqliteStore.js";
 /** The SQL database a cache namespace's chunks live in. */
 export function chunkDatabaseName(namespace) {
@@ -40,6 +43,7 @@ export class ChunkDatabase {
         return new Promise((resolve, reject) => {
             this.#queue.push({
                 shared: options.shared === true,
+                reset: options.reset === true,
                 operation,
                 resolve: resolve,
                 reject,
@@ -66,11 +70,30 @@ export class ChunkDatabase {
         const session = await this.#open();
         try {
             for (let batch = this.#nextBatch(); batch.length > 0; batch = this.#nextBatch()) {
-                await Promise.all(batch.map(({ operation, resolve, reject }) => withFlush(session.store, () => operation(session.store, session.storage)).then(resolve, reject)));
+                await Promise.all(batch.map((queued) => this.#runOne(session, queued)));
             }
         }
         finally {
             await session.close();
+        }
+    }
+    async #runOne(session, queued) {
+        const { operation, resolve, reject, reset } = queued;
+        if (session.floorRefusal !== null && !reset) {
+            reject(session.floorRefusal);
+            return;
+        }
+        try {
+            const value = await withFlush(session.store, () => operation(session.store, session.storage));
+            if (reset) {
+                for (const source of this.#options.legacySources()) {
+                    await source.remove();
+                }
+            }
+            resolve(value);
+        }
+        catch (error) {
+            reject(error);
         }
     }
     /** The next exclusive operation alone, or every leading shared one. */
@@ -88,12 +111,21 @@ export class ChunkDatabase {
             return this.#memorySession(this.#memory);
         const opened = await this.#options.open(chunkDatabaseName(this.#options.namespace));
         if (opened.storage.persistence === "memory") {
-            this.#memory = {
-                engine: this.#engine(opened.raw, opened.storage),
-                storage: opened.storage,
-            };
             await opened.release();
-            return this.#memorySession(this.#memory);
+            if (opened.storage.reason === "pool-in-use") {
+                // A persisted floor exists in a file we cannot open right now. An
+                // empty in-memory floor beside it could accept a rollback: refuse.
+                opened.raw.close();
+                throw new SqlStorageUnavailableError("pool-in-use", `chunk database is held by another context (${opened.storage.detail ?? "pool-in-use"}); retry`);
+            }
+            const engine = this.#engine(opened.raw, opened.storage);
+            const memory = {
+                engine,
+                storage: opened.storage,
+                floorRefusal: await this.#legacyFloorInto(SqliteCacheStore.open(engine)),
+            };
+            this.#memory = memory.floorRefusal === null ? memory : null;
+            return this.#memorySession(memory);
         }
         let engine;
         const close = async () => {
@@ -110,11 +142,25 @@ export class ChunkDatabase {
         try {
             engine = this.#engine(opened.raw, opened.storage);
             const store = SqliteCacheStore.open(engine);
-            await this.#migrateOnce(store);
-            return { store, storage: opened.storage, close };
+            const floorRefusal = await this.#migrateOnce(store);
+            return { store, storage: opened.storage, floorRefusal, close };
         }
         catch (error) {
             await close();
+            throw error;
+        }
+    }
+    /** Memory mode (OPFS refused): no SQLite floor can persist, so the 0.2.x
+     * IndexedDB floor, if any, is read (never written, never deleted) and
+     * enforced for this Worker's life. */
+    async #legacyFloorInto(store) {
+        try {
+            await importLegacyFloor(store, this.#options.legacySources());
+            return null;
+        }
+        catch (error) {
+            if (error instanceof LegacyFloorUnavailableError)
+                return error;
             throw error;
         }
     }
@@ -122,6 +168,7 @@ export class ChunkDatabase {
         return {
             store: SqliteCacheStore.open(memory.engine),
             storage: memory.storage,
+            floorRefusal: memory.floorRefusal ?? null,
             close: async () => undefined,
         };
     }
@@ -131,18 +178,23 @@ export class ChunkDatabase {
             memoryProfile: this.#options.memoryProfile,
         });
     }
-    /** A failed migration never blocks the operation: the sync re-downloads,
-     * nothing legacy is deleted, and the next session tries again. */
+    /** A failed BULK copy never blocks the operation: the legacy floor was
+     * imported first, the sync re-downloads, nothing legacy is deleted, and
+     * the next session tries again. An unreadable FLOOR blocks everything but
+     * an explicit reset (returned as the session's refusal). */
     async #migrateOnce(store) {
         if (this.#migrated)
-            return;
+            return null;
         try {
             await migrateLegacyStores(store, this.#options.legacySources());
             this.#migrated = true;
         }
         catch (error) {
+            if (error instanceof LegacyFloorUnavailableError)
+                return error;
             this.#options.warn(`legacy cache migration did not complete (${error instanceof Error ? error.message : String(error)}); re-downloading`);
         }
+        return null;
     }
 }
 /** Verified chunks still in the ingest buffer are committed even when the

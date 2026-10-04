@@ -247,6 +247,13 @@ export class SqliteCacheStore {
             this.#db.exec("INSERT INTO legacy_migration(id, state) VALUES (1, 'copied') ON CONFLICT(id) DO UPDATE SET state = 'copied' WHERE state <> 'done'");
         });
     }
+    /** Raise (never lower) the floor with legacy pointers; one transaction,
+     * migration state untouched. */
+    raiseLegacyFloor(pointers) {
+        this.#db.immediate(() => {
+            this.#writeRow(mergeLegacyFloor(this.#readRow(), pointers));
+        });
+    }
     markMigrationDone() {
         this.#db.exec("INSERT INTO legacy_migration(id, state) VALUES (1, 'done') ON CONFLICT(id) DO UPDATE SET state = 'done'");
     }

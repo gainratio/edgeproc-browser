@@ -303,6 +303,19 @@ describe("legacy readers fail closed on unexpected errors", () => {
 		);
 	});
 
+	it("reads a REFUSED OPFS root as no legacy store (no 0.2.x OPFS cache can exist there)", async () => {
+		const refusedRoot = () =>
+			Promise.reject(new DOMException("refused", "UnknownError"));
+		const source = opfsLegacySource(refusedRoot);
+		expect(await source.readPointers()).toEqual([]);
+		expect(await source.read()).toEqual({
+			chunks: [],
+			manifests: [],
+			pointers: [],
+		});
+		await source.remove();
+	});
+
 	it("reads the real OPFS root by default", async () => {
 		const root = new FakeDir();
 		vi.stubGlobal("navigator", {

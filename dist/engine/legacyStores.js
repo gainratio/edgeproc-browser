@@ -31,6 +31,21 @@ export function resolveIndexedDbLayout(options = {}, defaultDatabase = cacheData
 export function indexedDbLegacySource(layout, factory = indexedDB) {
     return {
         label: `indexeddb:${layout.database}/${layout.store}`,
+        readPointers: async () => {
+            const db = await openExisting(factory, layout);
+            if (db === null)
+                return [];
+            try {
+                const store = db
+                    .transaction(layout.store, "readonly")
+                    .objectStore(layout.store);
+                const value = await settle(store.get(ACTIVE));
+                return value === undefined ? [] : [pointerFromValue(value)];
+            }
+            finally {
+                db.close();
+            }
+        },
         read: async () => {
             const db = await openExisting(factory, layout);
             if (db === null)
@@ -167,11 +182,30 @@ export function settle(request) {
         request.onerror = () => reject(request.error);
     });
 }
-export function opfsLegacySource(root = defaultOpfsRoot) {
+export function opfsLegacySource(openRoot = defaultOpfsRoot) {
+    // A browser that refuses the OPFS root (Safari private mode, Playwright's
+    // WebKit) refused it to 0.2.x too: there is no OPFS store to read or floor
+    // to honour. Any OTHER failure inside a readable root still propagates.
+    const root = async () => {
+        try {
+            return await openRoot();
+        }
+        catch {
+            return null;
+        }
+    };
     return {
         label: "opfs:origin-root",
+        readPointers: async () => {
+            const dir = await root();
+            if (dir === null)
+                return [];
+            return Promise.all(OPFS_POINTERS.map((name) => readPointerFile(dir, name)));
+        },
         read: async () => {
             const dir = await root();
+            if (dir === null)
+                return EMPTY;
             const [chunks, manifests, pointers] = await Promise.all([
                 readObjects(dir, "chunk"),
                 readObjects(dir, "manifest"),
@@ -181,6 +215,8 @@ export function opfsLegacySource(root = defaultOpfsRoot) {
         },
         remove: async () => {
             const dir = await root();
+            if (dir === null)
+                return;
             for (const name of OPFS_ENTRIES) {
                 await removeIfPresent(dir, name);
             }

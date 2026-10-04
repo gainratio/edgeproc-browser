@@ -22,6 +22,9 @@ export type ChunkOperation<T> = (store: SqliteCacheStore, storage: SqlStorage) =
  * (each still a sequence of synchronous SQLite calls on one connection). */
 export interface ChunkRunOptions {
     readonly shared?: boolean;
+    /** The user's explicit cache reset: runs even when a legacy floor is
+     * unreadable, and deletes the legacy stores after it. */
+    readonly reset?: boolean;
 }
 /**
  * One session = the cross-tab cache lock, then the SQLite pool, held while

@@ -339,6 +339,16 @@ export class SqliteCacheStore implements CacheStore {
 		});
 	}
 
+	/** Raise (never lower) the floor with legacy pointers; one transaction,
+	 * migration state untouched. */
+	public raiseLegacyFloor(
+		pointers: ReadonlyArray<VersionPointer | null>,
+	): void {
+		this.#db.immediate(() => {
+			this.#writeRow(mergeLegacyFloor(this.#readRow(), pointers));
+		});
+	}
+
 	public markMigrationDone(): void {
 		this.#db.exec(
 			"INSERT INTO legacy_migration(id, state) VALUES (1, 'done') ON CONFLICT(id) DO UPDATE SET state = 'done'",
