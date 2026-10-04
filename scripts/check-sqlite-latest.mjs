@@ -16,7 +16,7 @@
 //   node scripts/check-sqlite-latest.mjs            # report only
 //   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo \
 //     node scripts/check-sqlite-latest.mjs --issue  # also upsert the issue
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 export const ISSUE_TITLE = "SQLite/sqlite-vector update available";
@@ -33,6 +33,7 @@ const VERSION = /^v?(\d+(?:\.\d+){2,3})$/;
 const SHA3 = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const BACKPORT = /^Backport of SQLite check-in ([0-9a-f]{10,64})\b/m;
 
 /** "sqlite-src-3530400.zip" -> "3.53.4"; a non-zero 4th field is kept. */
 export function versionFromSrcName(name) {
@@ -137,7 +138,23 @@ export function parseEmsdkTags(page, pinnedDigest) {
 	};
 }
 
-function sqliteSection(pinned, sqlite) {
+/**
+ * Local patches that backport an upstream SQLite check-in: the ones a newer
+ * release can make unnecessary. A backport's header starts with
+ * "Backport of SQLite check-in <hash>"; other local patches are ignored.
+ */
+export function parseBackports(patches) {
+	return patches.flatMap(({ name, text }) => {
+		const m = BACKPORT.exec(text);
+		return m === null ? [] : [{ patch: name, checkIn: m[1] }];
+	});
+}
+
+function backportLine({ patch, checkIn }) {
+	return `- Local patch \`scripts/sqlite-wasm-patches/${patch}\` backports check-in [${checkIn}](https://sqlite.org/src/info/${checkIn}). If this release contains it (the check-in's "path-to-release" timeline says), drop the patch and its \`PATCHED_*_SHA256\` change; otherwise rebase it.`;
+}
+
+function sqliteSection(pinned, sqlite, backports) {
 	if (compareVersions(pinned.sqliteVersion, sqlite.version) >= 0) return null;
 	return [
 		`### SQLite ${pinned.sqliteVersion} -> ${sqlite.version}`,
@@ -145,6 +162,7 @@ function sqliteSection(pinned, sqlite) {
 		`- \`SQLITE_URL=${sqlite.url}\``,
 		`- \`SQLITE_SHA3=${sqlite.sha3}\``,
 		"- Also update the `sqlite-src-NNNNNNN` directory name used later in the script.",
+		...backports.map(backportLine),
 	].join("\n");
 }
 
@@ -167,9 +185,9 @@ function emsdkSection(pinned, emsdk) {
 }
 
 /** Whether any pin is behind, and the issue body that says what to pin. */
-export function assess(pinned, latest) {
+export function assess(pinned, latest, backports = []) {
 	const sections = [
-		sqliteSection(pinned, latest.sqlite),
+		sqliteSection(pinned, latest.sqlite, backports),
 		vectorSection(pinned, latest.vector),
 		emsdkSection(pinned, latest.emsdk),
 	].filter((s) => s !== null);
@@ -232,6 +250,19 @@ async function latestVector(fetchImpl) {
 	return { tag: rel.tag_name, commit };
 }
 
+function localBackports() {
+	const dir = new URL("./sqlite-wasm-patches/", import.meta.url);
+	return parseBackports(
+		readdirSync(dir)
+			.filter((name) => name.endsWith(".patch"))
+			.sort()
+			.map((name) => ({
+				name,
+				text: readFileSync(new URL(name, dir), "utf8"),
+			})),
+	);
+}
+
 async function main() {
 	const script = readFileSync(
 		fileURLToPath(new URL("./build-sqlite-vector-wasm.sh", import.meta.url)),
@@ -240,11 +271,15 @@ async function main() {
 	const pinned = parsePinned(script);
 	const page = await (await request(fetch, SQLITE_DOWNLOAD_PAGE)).text();
 	const hub = await (await request(fetch, EMSDK_TAGS)).json();
-	const result = assess(pinned, {
-		sqlite: parseSqliteDownloadPage(page),
-		vector: await latestVector(fetch),
-		emsdk: parseEmsdkTags(hub, pinned.emsdkDigest),
-	});
+	const result = assess(
+		pinned,
+		{
+			sqlite: parseSqliteDownloadPage(page),
+			vector: await latestVector(fetch),
+			emsdk: parseEmsdkTags(hub, pinned.emsdkDigest),
+		},
+		localBackports(),
+	);
 	console.log(result.behind ? result.body : "All pins are current.");
 	if (!result.behind || !process.argv.includes("--issue")) return;
 	const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repo } = process.env;

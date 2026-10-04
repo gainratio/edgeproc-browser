@@ -7,8 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-04
+
+Integrity hotfix. Upgrade if you use `@gainratio/browser/sql` or `@gainratio/browser/vector/sqlite`
+with OPFS storage.
+
 ### Fixed
 
+- **A crash in the middle of a write transaction could leave a half-written database.**
+  Affected: OPFS databases opened through `/sql` (`openSqlDatabase`) and the persistent
+  `/vector/sqlite` index, both of which use SQLite's `opfs-sahpool` VFS with the rollback
+  journal (`journal_mode=DELETE`). In the pinned SQLite 3.53.4 that VFS always told the pager
+  some connection held a RESERVED lock, so the pager never treated a leftover journal as hot
+  and never rolled it back. If the Worker died mid-transaction (tab closed or crashed, the
+  Worker terminated, the device killed the page) after the pager had spilled pages to the
+  database file, the next open read a mix of old and new pages. `PRAGMA integrity_check`
+  often still said `ok`; the damage showed up as wrong data, or as `SQLITE_CORRUPT`. In
+  Chromium a Worker killed with an open transaction came back torn in 20 of 20 rounds.
+  Not affected: `@gainratio/browser/sqlite` on `opfs-wl`, and memory-only databases.
+  The fix is SQLite's own: check-in
+  [ea1d55e202e6e](https://sqlite.org/src/info/ea1d55e202e6e) (branch-3.53; trunk
+  [9168a6f1be](https://sqlite.org/src/info/9168a6f1be), forum report
+  [b2fbb61642](https://sqlite.org/forum/forumpost/b2fbb61642)), backported verbatim as local
+  patch `0002` because no 3.53.x release carries it yet. SQLite, sqlite-vector and emsdk are
+  unchanged.
+  **What upgrading does:** a hot journal left by a crash is rolled back on the next open, so
+  an interrupted transaction disappears as a whole. **What it cannot do:** a database that was
+  already torn before the upgrade has no journal left to replay, and `integrity_check` cannot
+  tell you. If a crash could have hit a write on 0.2.1 or earlier, check your own invariants
+  (counts, sums, cross-table references) or rebuild the data from its source.
 - **Removing a pool right after closing it could report `"in-use"` and leave it on disk.**
   `index.dispose()` resolved once SQLite closed the database, but the vector Worker kept the
   pool's OPFS sync access handles open until the browser tore the Worker down, so

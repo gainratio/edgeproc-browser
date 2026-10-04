@@ -1,7 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Firefox and WebKit run the cross-browser proof; Chromium runs every spec.
-const CROSS_BROWSER = /cross-browser\.spec\.ts$/;
+// Firefox and WebKit run the cross-browser and crash-recovery proofs;
+// Chromium runs every spec.
+const CROSS_BROWSER = /(cross-browser|hot-journal)\.spec\.ts$/;
 
 export default defineConfig({
 	testDir: "test/browser",

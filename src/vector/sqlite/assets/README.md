@@ -22,11 +22,33 @@ reproduces all three files with a digest-pinned Emscripten image.
 
 ## Local patches
 
-`scripts/sqlite-wasm-patches/0001-opfs-async-proxy-inline-and-alive.patch`
-sits on top of the pinned upstream files; the build script applies it after
-the Emscripten build, so the table below lists the patched outputs. Upstream
-3.53.4 is the latest release (npm `@sqlite.org/sqlite-wasm@3.53.4-build1`
-carries the same code), so there is nothing newer to upgrade to.
+Two patches in `scripts/sqlite-wasm-patches/` sit on top of the pinned
+upstream files; the build script applies them in order after the Emscripten
+build, so the table below lists the patched outputs. Upstream 3.53.4 is the
+latest release (npm `@sqlite.org/sqlite-wasm@3.53.4-build1` carries the same
+code), so there is nothing newer to upgrade to.
+
+### 0002: opfs-sahpool rolls back hot journals (upstream backport)
+
+`0002-sahpool-check-reserved-lock.patch` is SQLite check-in
+[ea1d55e202e6e](https://sqlite.org/src/info/ea1d55e202e6e) on branch-3.53
+(the same change as trunk check-in
+[9168a6f1be](https://sqlite.org/src/info/9168a6f1be); forum report
+[b2fbb61642](https://sqlite.org/forum/forumpost/b2fbb61642)), copied verbatim
+from `ext/wasm/api/sqlite3-vfs-opfs-sahpool.c-pp.js` into the built bundle.
+
+Why: 3.53.4's sahpool `xCheckReservedLock` always answered "a RESERVED lock is
+held", so the pager never treated a leftover rollback journal as hot. A Worker
+killed mid-transaction left a torn database that `PRAGMA integrity_check`
+could still call `ok`. With the patch the answer comes from the pool's open
+handles, the next open rolls the journal back, and
+`test/browser/hot-journal.spec.ts` proves it for `/sql` and `/vector/sqlite`.
+Drop the patch when the pinned release contains ea1d55e202e6e;
+`scripts/check-sqlite-latest.mjs` says so in its weekly issue.
+
+### 0001: the OPFS async proxy is inline and reports itself alive
+
+`0001-opfs-async-proxy-inline-and-alive.patch`.
 
 Why: `sqlite3.mjs` installs its `opfs` and `opfs-wl` VFSes by spawning
 `sqlite3-opfs-async-proxy.js` as a nested Worker and gives that spawn 4 s (its
@@ -56,7 +78,7 @@ are in `test/browser/opfs-install.spec.ts`.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `sqlite3.mjs` | 811,287 | `7111103823ce7e51c165724bee0bf66e8048fb7fb9bfbce69c7f2ee664e4a5fa` |
+| `sqlite3.mjs` | 812,357 | `9386833bbe0c3d723e1f2d25721917c790cfce4d01770c605c59ff2eb7b6d7b2` |
 | `sqlite3.wasm` | 934,257 | `a847545f7c58e1bdf9074cda354cfbd992c7edadf67cf4011e76297317c2565a` |
 | `sqlite3-opfs-async-proxy.js` | 42,696 | `e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7` |
 
