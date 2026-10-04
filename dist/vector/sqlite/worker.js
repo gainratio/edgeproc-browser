@@ -89,7 +89,7 @@ async function openIndex(options) {
         if (persistence === "opfs") {
             configurePersistentDatabase(database);
         }
-        const opened = new SqliteDatabaseVectorIndex(options, database, persistence === "opfs");
+        const opened = new SqliteDatabaseVectorIndex({ ...options, memoryProfile: options.memoryProfile ?? "auto" }, database, persistence === "opfs");
         const runtime = opened.runtimeInfo();
         if (runtime.sqliteVersion !== "3.53.4" ||
             runtime.vectorVersion !== "1.1.2" ||

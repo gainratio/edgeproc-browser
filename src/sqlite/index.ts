@@ -22,3 +22,16 @@ export {
 	SqliteStateSchemaError,
 	type SqliteStateStoreOptions,
 } from "./database.js";
+export {
+	applyMemoryProfile,
+	currentMemoryEnvironment,
+	detectMemoryTier,
+	MEMORY_PROFILES,
+	type MemoryEnvironment,
+	type MemoryProfile,
+	type MemoryProfileSetting,
+	type MemoryTier,
+	readMemoryProfile,
+	resolveMemoryProfile,
+	type TempStore,
+} from "./memoryProfile.js";

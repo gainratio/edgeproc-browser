@@ -123,7 +123,7 @@ async function openStore(options) {
     try {
         if (persistence === "opfs")
             configurePersistentDatabase(runtime.database);
-        const opened = new SqliteStateStoreDatabase(options, runtime.database, runtime, persistence === "opfs");
+        const opened = new SqliteStateStoreDatabase({ ...options, memoryProfile: options.memoryProfile ?? "auto" }, runtime.database, runtime, persistence === "opfs");
         const info = await opened.runtimeInfo();
         if (info.sqliteVersion !== "3.53.4") {
             throw new Error(`unexpected SQLite runtime: ${info.sqliteVersion}`);

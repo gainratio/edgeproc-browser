@@ -1,1 +1,1 @@
-{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../src/vector/sqlite/index.ts"],"names":[],"mappings":"AAAA,OAAO,EACN,uBAAuB,EACvB,uBAAuB,GAGvB,MAAM,aAAa,CAAC;AACrB,OAAO,EAEN,yBAAyB,GAKzB,MAAM,eAAe,CAAC"}
+{"version":3,"file":"index.js","sourceRoot":"","sources":["../../../src/vector/sqlite/index.ts"],"names":[],"mappings":"AAKA,OAAO,EACN,uBAAuB,EACvB,uBAAuB,GAGvB,MAAM,aAAa,CAAC;AACrB,OAAO,EAEN,yBAAyB,GAMzB,MAAM,eAAe,CAAC"}
