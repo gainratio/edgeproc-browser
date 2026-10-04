@@ -1,3 +1,4 @@
+import type { SqlStorage } from "../sql/types.js";
 /** One content-defined chunk: `hash` is the bare hex sha256 of its plaintext. */
 export interface ChunkRef {
     readonly hash: string;
@@ -62,14 +63,17 @@ export interface SyncResult {
      * are current: surface that to the user. Absent in every other case. */
     readonly expired?: true;
 }
-export type CacheBackend = "indexeddb" | "opfs+indexeddb";
-export type StoragePreference = "auto" | "indexeddb";
-/** Sync outcome plus the durable backend selected by the Worker. */
+/** Where the chunk cache lives: SQLite on OPFS, or SQLite in memory
+ * (re-downloaded every session) when OPFS was refused. Never IndexedDB. */
+export type CacheBackend = "sqlite-opfs" | "sqlite-memory";
+/** Sync outcome plus where the Worker's chunk cache actually lives. */
 export interface EngineSyncResult extends SyncResult {
     readonly cacheBackend: CacheBackend;
+    /** The full typed status: the OPFS pool and file, or why it is in memory. */
+    readonly cacheStorage: SqlStorage;
 }
 /**
- * Local content-addressed store. The OPFS-backed and in-memory implementations
+ * Local content-addressed store. The SQLite-backed and in-memory implementations
  * share this surface — the seam edge-proc's `cas.py` `CacheStore` Protocol names.
  */
 export interface CacheStore {
@@ -81,7 +85,8 @@ export interface CacheStore {
     putManifest(manifestBytes: Uint8Array): Promise<string>;
     getManifest(manifestHash: string): Promise<Uint8Array>;
     readActive(): Promise<VersionPointer | null>;
-    promote(pointer: VersionPointer): Promise<void>;
+    /** Make `pointer` active. With `chunks`, refuse unless every one is stored. */
+    promote(pointer: VersionPointer, chunks?: ReadonlyArray<string>): Promise<void>;
     /** Delete the pointer only if it has not raced to a newer authenticated value. */
     clearActiveIf(expected: VersionPointer): Promise<boolean>;
     /** Drop content not reachable from the active release. */

@@ -7,7 +7,7 @@ How to use `@gainratio/browser` 0.1.1 in an app. For how it works inside, see
 
 | Import | What it gives you |
 | --- | --- |
-| `@gainratio/browser` | `EngineClient` (talks to the Worker), `syncIndex` and `MemoryCacheStore` (the checking core, also usable in Node), error classes, keyring helpers, the network monitor channel |
+| `@gainratio/browser` | `EngineClient` (talks to the Worker), `syncIndex` and `MemoryCacheStore` (the checking core, also usable in Node), error classes, keyring helpers, the network monitor channel. Lower level: `SqliteCacheStore`, `ChunkDatabase`, `chunkDatabaseName`, `pointerIdentity` and `migrateLegacyStores` (the chunk store the Worker uses) |
 | `@gainratio/browser/worker` | The Worker entry. Import it from your own worker file |
 | `@gainratio/browser/spawn` | `spawnEngineClient()` for unbundled browser ESM, where you have no bundler to own the Worker URL |
 | `@gainratio/browser/vector` | `FlatVectorIndex` and `PackedVectorIndex`, exact in-memory similarity search |
@@ -56,6 +56,27 @@ const result = await client.sync(bundleBaseUrl, pubkeyUrl, {
 const bytes = await client.readFile("catalog_meta.json"); // checked, or it throws
 await client.clear(); // same cross-tab lock as sync and read
 ```
+
+### Where the cache lives
+
+Every sync result says where the checked chunks are kept:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `result.cacheBackend` | `"sqlite-opfs"` | One SQLite database on OPFS. It survives a reload |
+| | `"sqlite-memory"` | One in-memory SQLite database for this Worker's life. Re-downloaded next session |
+| `result.cacheStorage` | `{ persistence: "opfs", pool, file }` | The OPFS pool and file in use |
+| | `{ persistence: "memory", reason, detail }` | Why it fell back: `"opfs-unavailable"` (Safari private mode, Playwright WebKit) or `"pool-in-use"` (another context held the pool past 5 s) |
+
+```ts
+if (result.cacheBackend === "sqlite-memory") {
+  showNotice("Offline copy will not survive a reload in this browser.");
+}
+```
+
+There is no storage backend to choose, and the cache never uses IndexedDB. The database is
+named `${cacheNamespace}-chunks` (`chunkDatabaseName(namespace)`). In memory mode the
+anti-rollback floor also lasts only for that Worker's life.
 
 `wantedPaths: undefined` syncs every signed file. `wantedPaths: []` checks and promotes only
 the signed pointer and manifest, so an app can look at the catalog first and fetch a chosen
@@ -282,7 +303,8 @@ There are no environment variables or config files. Everything is an argument:
 | `new EngineClient(worker, options)` | `idleTimeoutMs` | How long a Worker may go without any progress before `WorkerTimeoutError` (default 60 s) |
 | `fetchBytes(url, options)` | `onBytes`, `FETCH_STALL_TIMEOUT_MS` | Streaming byte progress; a request with no bytes for 30 s is a stall (`NetworkError`), a slow one is never cut off |
 | `syncIndex(...)` | `keyring` or `verify`, `now` | Trust root for direct use; `now` injects the expiry clock |
-| Persistent store | `indexedDbLayout` | Reuse an existing IndexedDB database, store and key layout |
+| `client.sync` / `client.clear` options | `cacheNamespace` | Names the cache: its SQLite database (`${cacheNamespace}-chunks`) and its cross-tab lock |
+| `client.sync` / `client.clear` options | `indexedDbLayout` | Only where a 0.2.x cache kept its IndexedDB floor and chunks. Read once to migrate into SQLite, then deleted. Set it only if you set it before |
 | `createSqliteVectorIndex` / `createSqliteStateStore` | `name`, `dimension`, `initialSchemaVersion` | Which local database to open, and its shape |
 
 There are no secrets in the browser: the public key is public, and the private signing key

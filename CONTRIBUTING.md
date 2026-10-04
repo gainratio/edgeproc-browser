@@ -33,8 +33,9 @@ is a bug worth reporting.
    coverage slips. Raise them when a change earns it; never lower them. This
    package is a browser boundary, not pure logic, so a few paths genuinely
    cannot be reached under jsdom; `vitest.config.ts` names each exclusion and
-   why. `src/engine/opfsStore.ts` is excluded as a **known gap, not as covered
-   code** — read the comment there before assuming anything about it.
+   why. They are Worker entry points and the Worker-only SQLite loader
+   (`src/sql/workerRuntime.ts`); the chunk store itself is tested against the
+   real `sqlite3.wasm`.
 4. Add a line to `CHANGELOG.md` under `[Unreleased]`.
 5. Open a pull request describing what changed and why.
 
@@ -70,9 +71,9 @@ To bump:
   error classes consumers catch by identity, like `SignatureError` and
   `RollbackError` — is a public API contract. Deprecate and add; never rename in
   place.
-- **Adding a runtime dependency.** There are exactly three (`@noble/ed25519`,
-  `@hpcc-js/wasm-zstd`, `idb-keyval`), each doing signatures, decompression, or
-  IndexedDB access that has no business being hand-rolled. A third needs the same justification: make the
+- **Adding a runtime dependency.** There are exactly two (`@noble/ed25519` and
+  `@hpcc-js/wasm-zstd`), doing signatures and decompression, which have no
+  business being hand-rolled. Storage uses the bundled SQLite WASM. A third needs the same justification: make the
   case in the issue before writing the code.
 - **Widening the surface without a use case.** New exports need a caller.
 

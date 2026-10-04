@@ -1,56 +1,74 @@
-// The sync engine's Worker entry. It owns the OPFS store (sync access handles
-// are Worker-only) and the engine; the main thread drives it over postMessage.
+// The sync engine's Worker entry. It owns the SQLite chunk database (opfs-sahpool
+// needs Worker-only sync access handles) and the engine; the main thread drives it over postMessage.
 // One concern: route a request to the engine, reply with a typed envelope.
 /// <reference lib="webworker" />
+import { openSqlStorage } from "../sql/open.js";
+import { loadSqlite, workerStorageDeps } from "../sql/workerRuntime.js";
+import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
 import { cacheDatabaseName, runWithCacheLock } from "./cacheLock.js";
+import { ChunkDatabase } from "./chunkDatabase.js";
 import { classifyEngineError } from "./engineError.js";
 import { fetchBytes } from "./fetchBytes.js";
-import { resolveIndexedDbLayout, } from "./indexedDbStore.js";
 import { loadTrustRoot } from "./keyring.js";
+import { indexedDbLegacySource, opfsLegacySource, resolveIndexedDbLayout, } from "./legacyStores.js";
 import { installNetworkSentinel } from "./networkSentinel.js";
-import { openPersistentCacheStore, requestPersistentStorage, } from "./persistentStore.js";
 import { materializeFile, syncIndex } from "./sync.js";
 const DECODER = new TextDecoder();
+/** Operations are serialized by the cache lock first, so a pool owner that
+ * outlasts this is a foreign context (or a page that never closed it). */
+const POOL_WAIT_MS = 5_000;
 // This Worker fetches the signed bundle, so its traffic must be visible to the
 // tab's network counter — the window cannot see a Worker's resource timeline.
 installNetworkSentinel("engine-worker");
 let storeState = null;
-function store(configuration) {
+/** The Worker's chunk database. Its configuration is fixed by first use. */
+function chunks(configuration) {
     const namespace = configuration?.namespace ?? "edgeproc-browser";
-    const storageBackend = configuration?.storageBackend ?? "auto";
     const indexedDbLayout = resolveIndexedDbLayout(configuration?.indexedDbLayout, cacheDatabaseName(namespace));
     if (storeState === null) {
         storeState = {
             namespace,
-            storageBackend,
             indexedDbLayout,
-            promise: openPersistentCacheStore({
+            database: new ChunkDatabase({
                 namespace,
-                storageBackend,
-                indexedDbLayout,
+                open: async (name) => openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
+                    name,
+                    fallback: "memory",
+                }),
+                memoryProfile: resolveMemoryProfile("auto"),
+                legacySources: () => [
+                    opfsLegacySource(),
+                    indexedDbLegacySource(indexedDbLayout),
+                ],
+                warn: (message) => console.warn(message),
+                withLock: (operation) => runWithCacheLock(lockManager(), operation, namespace),
             }),
         };
     }
     else if (storeState.namespace !== namespace ||
-        storeState.storageBackend !== storageBackend ||
         storeState.indexedDbLayout.database !== indexedDbLayout.database ||
         storeState.indexedDbLayout.store !== indexedDbLayout.store ||
         storeState.indexedDbLayout.separator !== indexedDbLayout.separator) {
         throw new Error("engine worker cache configuration cannot change after first use");
     }
-    return storeState.promise;
+    return storeState;
+}
+/** Queue on the chunk database: it takes the cross-tab lock, then the pool. */
+function withChunkStore(configuration, operation, shared = false) {
+    return configuration.database.run(operation, { shared });
+}
+function backendOf(storage) {
+    return storage.persistence === "opfs" ? "sqlite-opfs" : "sqlite-memory";
 }
 async function handleSync(req) {
-    requestPersistentStorage(navigator.storage);
-    const namespace = req.cacheNamespace ?? "edgeproc-browser";
-    const cacheStore = await store({
-        namespace,
-        storageBackend: req.storageBackend ?? "auto",
+    requestPersistentStorage();
+    const configuration = chunks({
+        namespace: req.cacheNamespace ?? "edgeproc-browser",
         ...(req.indexedDbLayout === undefined
             ? {}
             : { indexedDbLayout: req.indexedDbLayout }),
     });
-    return runWithCacheLock(lockManager(), async () => {
+    return withChunkStore(configuration, async (cacheStore, storage) => {
         // The trust root: a legacy raw 32-byte key (a keyring of one) or an
         // edgeproc.keyring/v1 JSON document, fetched no-store and size-capped.
         const keyring = await loadTrustRoot(req.pubkeyUrl, fetchBytes);
@@ -81,35 +99,35 @@ async function handleSync(req) {
             ok: true,
             id: req.id,
             kind: "sync",
-            result: { ...result, cacheBackend: cacheStore.cacheBackend },
+            result: {
+                ...result,
+                cacheBackend: backendOf(storage),
+                cacheStorage: storage,
+            },
         };
-    }, namespace);
+    });
 }
 async function handleReadFile(req) {
-    const configuration = storeState ?? {
-        namespace: "edgeproc-browser",
-        storageBackend: "auto",
-    };
-    const cacheStore = await store(configuration);
-    return runWithCacheLock(lockManager(), async () => {
+    return withChunkStore(storeState ?? chunks(), async (cacheStore) => {
         const manifest = await loadActiveManifest(cacheStore);
         const bytes = await materializeFile(cacheStore, manifest, req.path);
         return { ok: true, id: req.id, kind: "readFile", bytes };
-    }, configuration.namespace);
+    }, true);
 }
 async function handleClear(req) {
-    const namespace = req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser";
-    const storageBackend = req.storageBackend ?? storeState?.storageBackend ?? "auto";
     const indexedDbLayout = req.indexedDbLayout ?? storeState?.indexedDbLayout;
-    const cacheStore = await store({
-        namespace,
-        storageBackend,
+    const configuration = chunks({
+        namespace: req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser",
         ...(indexedDbLayout === undefined ? {} : { indexedDbLayout }),
     });
-    return runWithCacheLock(lockManager(), async () => {
+    return withChunkStore(configuration, async (cacheStore) => {
         await cacheStore.clear();
         return { ok: true, id: req.id, kind: "clear" };
-    }, namespace);
+    });
+}
+/** Ask the browser not to evict this origin's storage (best effort). */
+function requestPersistentStorage() {
+    void navigator.storage?.persist?.().catch(() => false);
 }
 async function loadActiveManifest(cacheStore) {
     const active = await cacheStore.readActive();

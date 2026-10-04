@@ -1,5 +1,5 @@
 // Thin main-thread client over the Worker engine. The main thread cannot touch
-// OPFS sync access handles, so it only sends typed requests and awaits replies.
+// OPFS sync access handles (SQLite's opfs-sahpool needs them), so it only sends typed requests and awaits replies.
 // One in-flight map keyed by request id correlates responses to promises.
 //
 // Failure semantics: a Worker that crashes before replying (init throw, script
@@ -11,16 +11,16 @@
 // EVERY failure path also TERMINATES the Worker, and that is the load-bearing
 // half. An 'error' event is an uncaught throw inside the Worker, not proof the
 // Worker died; a deadline expiring says nothing about the Worker at all. Left
-// running, either one keeps its OPFS sync access handle — which is exclusive,
+// running, either one can keep the SQLite pool's OPFS handles and owner lock,
 // so the next EngineClient cannot open the store — while no caller will ever
 // read from it again. Settling the promises without releasing the thread just
 // trades a hung caller for a leaked one.
 
 import { EngineOperationError } from "./engineError.js";
-import type { IndexedDbLayoutOptions } from "./indexedDbStore.js";
+import type { IndexedDbLayoutOptions } from "./legacyStores.js";
 import type { EngineRequest, EngineResponse } from "./protocol.js";
 import type { SyncProgress } from "./sync.js";
-import type { EngineSyncResult, StoragePreference } from "./types.js";
+import type { EngineSyncResult } from "./types.js";
 import {
 	DEFAULT_REQUEST_TIMEOUT_MS,
 	WorkerCrashError,
@@ -57,16 +57,17 @@ export interface EngineSyncOptions {
 	readonly expectedChannel?: string | null;
 	/** undefined fetches all files; [] authenticates/promotes only the catalog. */
 	readonly wantedPaths?: ReadonlyArray<string>;
-	readonly storageBackend?: StoragePreference;
+	/** Names this cache: its SQLite database and its cross-tab lock. */
 	readonly cacheNamespace?: string;
-	/** Existing consumers can declaratively retain their database/store/key layout. */
+	/** Where a 0.2.x cache kept its IndexedDB rollback floor. Read once to
+	 * migrate into SQLite (the floor is never lowered), then deleted. */
 	readonly indexedDbLayout?: IndexedDbLayoutOptions;
 	readonly onProgress?: (progress: SyncProgress) => void;
 }
 
 export type EngineStorageOptions = Pick<
 	EngineSyncOptions,
-	"storageBackend" | "cacheNamespace" | "indexedDbLayout"
+	"cacheNamespace" | "indexedDbLayout"
 >;
 
 interface Pending {
@@ -159,9 +160,6 @@ export class EngineClient {
 				...(options.wantedPaths !== undefined
 					? { wantedPaths: options.wantedPaths }
 					: {}),
-				...(options.storageBackend !== undefined
-					? { storageBackend: options.storageBackend }
-					: {}),
 				...(options.cacheNamespace !== undefined
 					? { cacheNamespace: options.cacheNamespace }
 					: {}),
@@ -195,9 +193,6 @@ export class EngineClient {
 		const response = await this.#send({
 			kind: "clear",
 			id: this.#allocId(),
-			...(options.storageBackend === undefined
-				? {}
-				: { storageBackend: options.storageBackend }),
 			...(options.cacheNamespace === undefined
 				? {}
 				: { cacheNamespace: options.cacheNamespace }),

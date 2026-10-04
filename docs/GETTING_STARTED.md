@@ -94,7 +94,8 @@ EDGEPROC_BENCH_BUNDLE=/path/to/bundle EDGEPROC_BENCH_OUT=bench.json \
 | `src/engine/integrity.ts`, `crypto.ts`, `canonical.ts`, `zstd.ts` | Hash checks, Ed25519, canonical JSON bytes, bounded decompression |
 | `src/engine/keyring.ts` | Raw-key and keyring trust roots, key ids, revocation |
 | `src/engine/client.ts`, `worker.ts`, `protocol.ts` | Main-thread `EngineClient`, the Worker entry, and the messages between them |
-| `src/engine/opfsStore.ts`, `indexedDbStore.ts`, `persistentStore.ts`, `memoryStore.ts` | Where checked chunks and pointers are stored |
+| `src/engine/sqliteStore.ts`, `chunkDatabase.ts`, `memoryStore.ts` | Where checked chunks, the pointer and the rollback floor are stored (one SQLite database per cache, or memory in tests) |
+| `src/engine/migration.ts`, `legacyStores.ts` | One-time migration of a 0.2.x OPFS/IndexedDB cache into SQLite; `legacyStores.ts` is the only module allowed to read IndexedDB |
 | `src/engine/networkSentinel.ts` | Reports the Worker's own network requests to the page |
 | `src/vector/` | Exact similarity search: in memory, and in SQLite (`vector/sqlite/`, with the WASM in `assets/`) |
 | `src/sqlite/` | The app-state store over the same SQLite Worker |

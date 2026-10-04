@@ -159,8 +159,9 @@ signs one small pointer file that names the list of pieces. Your page gives the 
 and the public-key URL to a Web Worker. The Worker checks the pointer's signature against
 your key, refuses a pointer older than the one it already has, then downloads only the
 pieces it is missing and checks each one against its hash. Only when everything passes does
-the new version replace the old one in the browser's storage (OPFS, or IndexedDB where OPFS
-is missing). Any failure is a typed error, and the last good version stays.
+the new version replace the old one in the browser's storage: one SQLite database on OPFS,
+or an in-memory one where OPFS is refused (that copy is re-downloaded next session). Any
+failure is a typed error, and the last good version stays.
 
 The Worker also reports every network request it made back to the page, so you can count
 them. More in [Architecture](docs/ARCHITECTURE.md).

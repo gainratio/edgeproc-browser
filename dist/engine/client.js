@@ -1,5 +1,5 @@
 // Thin main-thread client over the Worker engine. The main thread cannot touch
-// OPFS sync access handles, so it only sends typed requests and awaits replies.
+// OPFS sync access handles (SQLite's opfs-sahpool needs them), so it only sends typed requests and awaits replies.
 // One in-flight map keyed by request id correlates responses to promises.
 //
 // Failure semantics: a Worker that crashes before replying (init throw, script
@@ -11,7 +11,7 @@
 // EVERY failure path also TERMINATES the Worker, and that is the load-bearing
 // half. An 'error' event is an uncaught throw inside the Worker, not proof the
 // Worker died; a deadline expiring says nothing about the Worker at all. Left
-// running, either one keeps its OPFS sync access handle — which is exclusive,
+// running, either one can keep the SQLite pool's OPFS handles and owner lock,
 // so the next EngineClient cannot open the store — while no caller will ever
 // read from it again. Settling the promises without releasing the thread just
 // trades a hung caller for a leaked one.
@@ -68,9 +68,6 @@ export class EngineClient {
             ...(options.wantedPaths !== undefined
                 ? { wantedPaths: options.wantedPaths }
                 : {}),
-            ...(options.storageBackend !== undefined
-                ? { storageBackend: options.storageBackend }
-                : {}),
             ...(options.cacheNamespace !== undefined
                 ? { cacheNamespace: options.cacheNamespace }
                 : {}),
@@ -100,9 +97,6 @@ export class EngineClient {
         const response = await this.#send({
             kind: "clear",
             id: this.#allocId(),
-            ...(options.storageBackend === undefined
-                ? {}
-                : { storageBackend: options.storageBackend }),
             ...(options.cacheNamespace === undefined
                 ? {}
                 : { cacheNamespace: options.cacheNamespace }),

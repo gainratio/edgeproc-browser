@@ -19,8 +19,18 @@
 // their keyring/expiry subclasses) rather
 // than returning something the caller might use.
 
+export {
+	canPromotePointer,
+	selectHighestPointer,
+} from "./engine/activePointer.js";
 // --- canonical JSON: the exact bytes a signature is taken over ---
 export { canonicalBytes, type JsonValue } from "./engine/canonical.js";
+// --- content-addressed stores: SQLite (real) and in-memory (tests) ---
+export {
+	ChunkDatabase,
+	type ChunkDatabaseOptions,
+	chunkDatabaseName,
+} from "./engine/chunkDatabase.js";
 export {
 	EngineClient,
 	type EngineClientOptions,
@@ -44,12 +54,6 @@ export {
 	NetworkError,
 	ResponseTooLargeError,
 } from "./engine/fetchBytes.js";
-export {
-	IndexedDbCacheStore,
-	type IndexedDbLayout,
-	type IndexedDbLayoutOptions,
-	resolveIndexedDbLayout,
-} from "./engine/indexedDbStore.js";
 // --- integrity: bounded decompression + content-address verification ---
 export {
 	decompressAndVerify,
@@ -72,8 +76,18 @@ export {
 	UnknownKeyError,
 	verifyWithKeyring,
 } from "./engine/keyring.js";
-// --- content-addressed stores: in-memory (tests, ephemeral) and OPFS (real) ---
+export {
+	type IndexedDbLayout,
+	type IndexedDbLayoutOptions,
+	resolveIndexedDbLayout,
+} from "./engine/legacyStores.js";
 export { MemoryCacheStore } from "./engine/memoryStore.js";
+export {
+	type LegacySnapshot,
+	type LegacySource,
+	type MigrationReport,
+	migrateLegacyStores,
+} from "./engine/migration.js";
 // --- the network sentinel: makes a Worker's traffic visible to the tab ---
 // This is the module that lets a "no backend calls" claim be MEASURED rather
 // than asserted. A window-side PerformanceObserver cannot see a Worker's
@@ -87,17 +101,6 @@ export {
 	type SentinelEntry,
 	toSentinelEntries,
 } from "./engine/networkSentinel.js";
-export {
-	canPromotePointer,
-	OpfsCacheStore,
-	selectHighestPointer,
-} from "./engine/opfsStore.js";
-export {
-	openPersistentCacheStore,
-	type PersistentCacheStore,
-	type PersistentStoreOptions,
-	requestPersistentStorage,
-} from "./engine/persistentStore.js";
 // --- the Worker boundary: request/response protocol + the main-thread client ---
 export type {
 	ClearOk,
@@ -111,6 +114,11 @@ export type {
 	SyncProgressResponse,
 	SyncRequest,
 } from "./engine/protocol.js";
+export {
+	type ChunkSqlConnection,
+	pointerIdentity,
+	SqliteCacheStore,
+} from "./engine/sqliteStore.js";
 // --- the sync state machine + file reassembly ---
 export {
 	type KeyringSyncArgs,
@@ -134,7 +142,6 @@ export type {
 	FetchBytesOptions,
 	FileEntry,
 	IndexManifest,
-	StoragePreference,
 	SyncResult,
 	Verify,
 	VersionPointer,

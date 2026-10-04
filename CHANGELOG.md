@@ -39,6 +39,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edit the workflow, so the tag ruleset and protected environment in repo settings are what
   stop that.
 
+## [0.3.0] - 2026-10-04
+
+The chunk cache moves to one SQLite database per cache, on OPFS. This is a storage format
+change. On the first session after upgrading, a 0.2.x cache is checked and migrated once;
+anything that cannot be migrated is simply downloaded again. IndexedDB is no longer used.
+
+### Breaking
+
+- **New storage format.** The OPFS one-file-per-chunk store (origin-root `chunk/`,
+  `manifest/`, `active`, `active.a`, `active.b`, `mutation.lock`) and the IndexedDB store and
+  floor are gone. Chunks, manifests, the active pointer and the rollback floor now live in one
+  SQLite database named `${cacheNamespace}-chunks`, opened through the library's SQL seam
+  (`opfs-sahpool`, pool owner Web Lock, `MemoryProfile` limits, `secure_delete=ON`).
+- **Removed exports:** `OpfsCacheStore`, `IndexedDbCacheStore`, `openPersistentCacheStore`,
+  `PersistentCacheStore`, `PersistentStoreOptions`, `requestPersistentStorage`, and the
+  `StoragePreference` type. `canPromotePointer` and `selectHighestPointer` are still exported.
+- **Removed option:** `storageBackend` on `EngineClient.sync` and `clear`. There is no backend
+  to choose.
+- **Changed status values:** `cacheBackend` is now `"sqlite-opfs"` or `"sqlite-memory"`
+  (`"opfs+indexeddb"` and `"indexeddb"` are gone).
+- **`indexedDbLayout` changed meaning.** It now only says where a 0.2.x cache kept its
+  IndexedDB floor and chunks, so they can be migrated once.
+- **Runtime dependency removed:** `idb-keyval`.
+
+### Added
+
+- `SqliteCacheStore`, `ChunkSqlConnection`, `pointerIdentity`, `ChunkDatabase`,
+  `ChunkDatabaseOptions`, `chunkDatabaseName`, `migrateLegacyStores`, `LegacySource`,
+  `LegacySnapshot` and `MigrationReport`. `resolveIndexedDbLayout`, `IndexedDbLayout` and
+  `IndexedDbLayoutOptions` stay, now from the migration reader.
+- **`result.cacheStorage`** on every sync: `{ persistence: "opfs", pool, file }`, or
+  `{ persistence: "memory", reason: "opfs-unavailable" | "pool-in-use", detail }`.
+- **Tabs take turns on one file.** The engine Worker holds storage only for a session (cache
+  Web Lock, then pool owner lock, run the queued work, release), opening a fresh connection
+  each time. Two tabs syncing and reading at once both persist to OPFS and share chunks.
+- **One-time migration** from the 0.2.x OPFS and IndexedDB stores. Every chunk is checked by
+  content address and copied in one transaction; the floor is never lowered. It is
+  crash-resumable and idempotent. On failure it warns, deletes nothing, and retries next
+  session. Only the library's own IndexedDB keys are deleted.
+- **In-memory fallback.** If OPFS is refused or another context holds the pool past 5 s, the
+  Worker uses one in-memory SQLite database for its life and re-downloads each session.
+
+### Security
+
+- The rollback floor shares a row with the pointer, and a SQLite trigger refuses any update
+  that lowers it. `promote()` is one `BEGIN IMMEDIATE` transaction that refuses if any needed
+  chunk is missing, so no pointer can name a missing chunk.
+- Every read still re-hashes the chunk and fails closed; a bad row is deleted and re-fetched.
+  A BLOB tampered through SQL is refused (proved in a real browser).
+- `storageGuard.test.ts` fails if any shipped module except the migration reader touches
+  IndexedDB or Web Storage, or if that reader ever writes.
+
+### Known limitations
+
+- In memory mode (Safari private mode, Playwright WebKit) the rollback floor lasts only for
+  that Worker's life, and every session downloads again.
+
+### Consumer migration
+
+Remove the `storageBackend` option:
+
+```ts
+// before (0.2.x)
+await client.sync(bundleUrl, keyUrl, { storageBackend: "indexeddb" });
+// after (0.3.0)
+await client.sync(bundleUrl, keyUrl);
+```
+
+Tell users when the cache will not persist:
+
+```ts
+// before (0.2.x)
+if (result.cacheBackend === "indexeddb") { /* ... */ }
+// after (0.3.0)
+if (result.cacheStorage.persistence === "memory") {
+  console.warn("cache is in memory:", result.cacheStorage.reason);
+}
+```
+
+Swap direct store imports:
+
+```ts
+// before (0.2.x)
+import { OpfsCacheStore } from "@gainratio/browser";
+// after (0.3.0)
+import { SqliteCacheStore } from "@gainratio/browser";
+```
+
+Keep `indexedDbLayout` only if you passed it before, so your old cache is found and migrated.
+If you never set it, do nothing.
+
 ## [0.2.1] - 2026-10-04
 
 Hardens SQLite import, makes a refused OPFS root a typed error, and adds Firefox and WebKit
