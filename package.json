@@ -68,12 +68,17 @@
 			"types": "./dist/sqlite/index.d.ts",
 			"import": "./dist/sqlite/index.js"
 		},
+		"./sql": {
+			"types": "./dist/sql/index.d.ts",
+			"import": "./dist/sql/index.js"
+		},
 		"./package.json": "./package.json"
 	},
 	"sideEffects": [
 		"./dist/engine/worker.js",
 		"./dist/vector/sqlite/worker.js",
-		"./dist/sqlite/worker.js"
+		"./dist/sqlite/worker.js",
+		"./dist/sql/worker.js"
 	],
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json && node scripts/copy-vector-assets.mjs",

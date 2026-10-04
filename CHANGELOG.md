@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`@gainratio/browser/sql`: a typed SQL seam.** `openSqlDatabase({ name })` opens a named
+  SQLite database in the library's Worker, on OPFS (`opfs-sahpool`, owner-locked), with the
+  memory profile applied and FTS5, JSON1 and sqlite-vector on one connection. Typed `exec`,
+  `query`, `transaction`, `executeMany` and prepared statements. An in-memory fallback is
+  opt-in and reported in `db.storage`. `removeSqlDatabase` / `removeOpfsPool` delete old
+  pools idempotently. Consumers no longer load `sqlite3.mjs` by path. See docs/sql.md.
+- CI rebuilds `dist/` from empty and fails if it differs from the committed build.
+
 ### Fixed
 
 - **A second tab no longer fails to open the SQLite state store.** SQLite's

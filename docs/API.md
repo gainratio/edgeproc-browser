@@ -253,6 +253,22 @@ cross-origin-isolated page: serve `Cross-Origin-Opener-Policy: same-origin` and
 rather than falling back to unsafe sharing. See [sqlite-state.md](sqlite-state.md) for
 migrations, backups, headers and ownership.
 
+## Your own SQL: FTS5, JSON1 and vectors in one database
+
+`@gainratio/browser/sql` opens a named SQLite database in the library's Worker, on OPFS, with
+the memory profile applied, and gives you typed `exec`, `query`, `transaction`,
+`executeMany` and prepared statements. See [sql.md](sql.md) for the quickstart, the storage
+status and how to delete old pools.
+
+```ts
+import { openSqlDatabase } from "@gainratio/browser/sql";
+
+const db = await openSqlDatabase({ name: "notes" });
+await db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS notes USING fts5(body)");
+await db.executeMany("INSERT INTO notes(body) VALUES (?)", [["buy milk"], ["call mum"]]);
+const hits = await db.query("SELECT body FROM notes WHERE notes MATCH ? ORDER BY bm25(notes)", ["milk"]);
+```
+
 ## Configuration
 
 There are no environment variables or config files. Everything is an argument:
