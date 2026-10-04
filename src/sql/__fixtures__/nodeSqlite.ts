@@ -6,9 +6,11 @@ import { readFile } from "node:fs/promises";
 
 import sqlite3InitModule from "../../vector/sqlite/assets/sqlite3.mjs";
 import type { SqlRawDatabase } from "../engine.js";
+import { createSqlSerializer, type SqlSerializer } from "../serializer.js";
 
 export interface NodeSqlite {
 	openMemory(): SqlRawDatabase;
+	readonly serializer: SqlSerializer;
 }
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -32,6 +34,7 @@ export function loadNodeSqlite(): Promise<NodeSqlite> {
 				printErr: () => undefined,
 			});
 			return {
+				serializer: createSqlSerializer(sqlite),
 				openMemory: () =>
 					new sqlite.oo1.DB(":memory:") as unknown as SqlRawDatabase,
 			};

@@ -9,6 +9,7 @@ import type {
 } from "./protocol.js";
 import {
 	type SqlDatabaseOptions,
+	SqlImportRejectedError,
 	SqlStorageUnavailableError,
 } from "./types.js";
 
@@ -56,6 +57,10 @@ export function createSqlWorkerHandler(
 				return engine.allPrepared(request.statement, request.bind);
 			case "finalize":
 				return engine.finalize(request.statement);
+			case "export":
+				return engine.exportDatabase();
+			case "import":
+				return engine.importDatabase(request.bytes, request.options);
 			case "runtime-info":
 				return engine.runtimeInfo();
 			case "close": {
@@ -87,6 +92,13 @@ export function createSqlWorkerHandler(
 function serializeError(error: unknown): SqlWorkerError {
 	if (error instanceof SqlStorageUnavailableError) {
 		return { name: error.name, message: error.message, reason: error.reason };
+	}
+	if (error instanceof SqlImportRejectedError) {
+		return {
+			name: error.name,
+			message: error.message,
+			rejection: error.reason,
+		};
 	}
 	return {
 		name: error instanceof Error ? error.name : "Error",

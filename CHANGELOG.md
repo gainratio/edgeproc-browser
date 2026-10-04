@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `query`, `transaction`, `executeMany` and prepared statements. An in-memory fallback is
   opt-in and reported in `db.storage`. `removeSqlDatabase` / `removeOpfsPool` delete old
   pools idempotently. Consumers no longer load `sqlite3.mjs` by path. See docs/sql.md.
+- **SQLite export/import in `@gainratio/browser/sql`.** `exportDatabase(db | name)` returns
+  the database as a SQLite file (`sqlite3_serialize`). `importDatabase(db | name, bytes,
+  { expectedSchema })` checks the header, `integrity_check`, `application_id`,
+  `user_version` and your read-only checks in a scratch connection, then swaps the data in
+  one transaction; any failure leaves the old database intact. By name it runs under the
+  owner Web Lock. The file's schema text is treated as untrusted: one plain CREATE per row,
+  triggers/views only with `allowTriggersAndViews`, virtual tables only from
+  `virtualTableModules` (default fts5), `trusted_schema = OFF` afterwards. See docs/sql.md.
 - CI rebuilds `dist/` from empty and fails if it differs from the committed build.
 
 ### Fixed

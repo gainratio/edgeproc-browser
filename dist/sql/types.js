@@ -7,4 +7,13 @@ export class SqlStorageUnavailableError extends Error {
         this.reason = reason;
     }
 }
+/** The incoming file was refused during validation; your database is unchanged. */
+export class SqlImportRejectedError extends Error {
+    reason;
+    constructor(reason, message) {
+        super(message);
+        this.name = "SqlImportRejectedError";
+        this.reason = reason;
+    }
+}
 //# sourceMappingURL=types.js.map

@@ -32,12 +32,21 @@ interface SqliteModule {
 		): number;
 		sqlite3_js_db_export(
 			database: SqliteOo1Database | number | bigint,
+			schema?: string,
 		): Uint8Array;
 		sqlite3_errstr(code: number): string;
+		sqlite3_complete(sql: string): number;
+		sqlite3_drop_modules(
+			database: number | bigint,
+			keep: number | bigint,
+		): number;
 	};
 	readonly wasm: {
 		allocFromTypedArray(bytes: Uint8Array): number | bigint;
 		dealloc(pointer: number | bigint): void;
+		scopedAllocPush(): unknown;
+		scopedAllocPop(scope: unknown): void;
+		scopedAllocMainArgv(list: ReadonlyArray<string>): number | bigint;
 	};
 }
 

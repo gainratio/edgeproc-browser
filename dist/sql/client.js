@@ -1,6 +1,6 @@
 // Main-thread proxy for the library's SQL Worker. Every call is one message;
 // the Worker runs them one at a time on a single SQLite connection.
-import { SqlStorageUnavailableError, } from "./types.js";
+import { SqlImportRejectedError, SqlStorageUnavailableError, } from "./types.js";
 /**
  * Open a named SQLite database in the library's Worker: OPFS (opfs-sahpool)
  * with the device memory profile applied, FTS5, JSON1 and sqlite-vector on the
@@ -88,6 +88,16 @@ class WorkerSqlDatabase {
             finalize: () => this.#call({ operation: "finalize", statement }),
         };
     }
+    exportDatabase() {
+        return this.#call({ operation: "export" });
+    }
+    importDatabase(bytes, options) {
+        return this.#call({
+            operation: "import",
+            bytes,
+            ...(options === undefined ? {} : { options }),
+        });
+    }
     runtimeInfo() {
         return this.#call({ operation: "runtime-info" });
     }
@@ -109,10 +119,42 @@ class WorkerSqlDatabase {
         return this.#connection.request(request);
     }
 }
+/**
+ * Export a database: an open handle, or a name — opened on OPFS (never a
+ * memory fallback) under its owner lock, exported, closed.
+ */
+export async function exportDatabase(target, options = {}) {
+    return withDatabase(target, options, (db) => db.exportDatabase());
+}
+/**
+ * Replace a database with `bytes`: an open handle, or a name. By name it is
+ * opened on OPFS under the owner Web Lock, so no other tab or Worker can
+ * write while the import runs; if one already has it open, this fails
+ * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
+ */
+export async function importDatabase(target, bytes, options = {}) {
+    const { workerFactory, ...importOptions } = options;
+    return withDatabase(target, workerFactory === undefined ? {} : { workerFactory }, (db) => db.importDatabase(bytes, importOptions));
+}
+async function withDatabase(target, options, action) {
+    if (typeof target !== "string")
+        return action(target);
+    const db = await openSqlDatabase({ name: target, persistence: "opfs", fallback: "none" }, options);
+    try {
+        return await action(db);
+    }
+    finally {
+        await db.close();
+    }
+}
 function withBind(bind) {
     return bind === undefined ? {} : { bind };
 }
 function reconstructError(error) {
+    if (error.name === "SqlImportRejectedError" &&
+        error.rejection !== undefined) {
+        return new SqlImportRejectedError(error.rejection, error.message);
+    }
     if (error.name === "SqlStorageUnavailableError" &&
         error.reason !== undefined) {
         return new SqlStorageUnavailableError(error.reason, error.message);

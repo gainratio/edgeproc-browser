@@ -1,4 +1,4 @@
-import type { SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlStatement } from "./types.js";
+import type { SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlImportOptions, SqlImportRejection, SqlStatement } from "./types.js";
 type WithId<T> = T & {
     readonly id: number;
 };
@@ -31,6 +31,12 @@ export type SqlWorkerRequest = WithId<{
     readonly operation: "finalize";
     readonly statement: number;
 } | {
+    readonly operation: "export";
+} | {
+    readonly operation: "import";
+    readonly bytes: Uint8Array;
+    readonly options?: SqlImportOptions;
+} | {
     readonly operation: "runtime-info";
 } | {
     readonly operation: "close";
@@ -39,6 +45,7 @@ export interface SqlWorkerError {
     readonly name: string;
     readonly message: string;
     readonly reason?: SqlFallbackReason;
+    readonly rejection?: SqlImportRejection;
 }
 export type SqlWorkerResponse = {
     readonly id: number;

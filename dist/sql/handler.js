@@ -1,6 +1,6 @@
 // The Worker side of the protocol, free of Worker globals so it can be driven
 // in-process by tests. Requests run strictly one at a time, in arrival order.
-import { SqlStorageUnavailableError, } from "./types.js";
+import { SqlImportRejectedError, SqlStorageUnavailableError, } from "./types.js";
 export function createSqlWorkerHandler(open) {
     let current;
     let queue = Promise.resolve();
@@ -32,6 +32,10 @@ export function createSqlWorkerHandler(open) {
                 return engine.allPrepared(request.statement, request.bind);
             case "finalize":
                 return engine.finalize(request.statement);
+            case "export":
+                return engine.exportDatabase();
+            case "import":
+                return engine.importDatabase(request.bytes, request.options);
             case "runtime-info":
                 return engine.runtimeInfo();
             case "close": {
@@ -63,6 +67,13 @@ export function createSqlWorkerHandler(open) {
 function serializeError(error) {
     if (error instanceof SqlStorageUnavailableError) {
         return { name: error.name, message: error.message, reason: error.reason };
+    }
+    if (error instanceof SqlImportRejectedError) {
+        return {
+            name: error.name,
+            message: error.message,
+            rejection: error.reason,
+        };
     }
     return {
         name: error instanceof Error ? error.name : "Error",

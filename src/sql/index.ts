@@ -8,6 +8,8 @@ export type {
 	MemoryTier,
 } from "../sqlite/memoryProfile.js";
 export {
+	exportDatabase,
+	importDatabase,
 	type OpenSqlDatabaseOptions,
 	openSqlDatabase,
 	type SqlDatabase,
@@ -32,7 +34,12 @@ export {
 	type SqlBindValue,
 	type SqlDatabaseOptions,
 	type SqlExecResult,
+	type SqlExpectedSchema,
 	type SqlFallbackReason,
+	type SqlImportOptions,
+	SqlImportRejectedError,
+	type SqlImportRejection,
+	type SqlImportResult,
 	type SqlRow,
 	type SqlRuntimeInfo,
 	type SqlStatement,

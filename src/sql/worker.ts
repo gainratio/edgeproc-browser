@@ -10,6 +10,7 @@ import { SqlEngine, type SqlRawDatabase } from "./engine.js";
 import { createSqlWorkerHandler, type OpenedSqlEngine } from "./handler.js";
 import { openSqlStorage, type SqlLocks } from "./open.js";
 import type { SqlWorkerRequest } from "./protocol.js";
+import { createSqlSerializer } from "./serializer.js";
 import type { SqlDatabaseOptions } from "./types.js";
 
 const LOCK_WAIT_MS = 2_000;
@@ -49,6 +50,7 @@ async function openEngine(
 		const engine = new SqlEngine(opened.raw, {
 			storage: opened.storage,
 			memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
+			serializer: createSqlSerializer(sqlite),
 		});
 		return { engine, release: opened.release };
 	} catch (error) {
