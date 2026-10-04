@@ -79,6 +79,15 @@ jobs:
         # in src/ and fails in dist/ is invisible to every source-level test.
         run: pnpm gate
 
+      - name: Verify committed dist/ matches src/
+        # The gate's verify:dist sees modified and new files, but tsc never
+        # deletes outputs, so a stale file left in dist/ by a removed source
+        # would pass. Rebuilding into an EMPTY dist/ turns it into a deletion.
+        run: |
+          rm -rf dist
+          pnpm build
+          pnpm verify:dist
+
   browser:
     name: Chromium (Worker + OPFS + sqlite-vector)
     runs-on: ubuntu-latest

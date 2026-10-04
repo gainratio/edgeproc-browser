@@ -34,9 +34,12 @@ export default defineConfig({
 				// exercised in test/browser/sqlite-vector.spec.ts under Chromium.
 				"src/vector/sqlite/worker.ts",
 				"src/sqlite/worker.ts",
+				"src/sql/worker.ts",
 				// Type-only worker message contracts.
 				"src/vector/sqlite/protocol.ts",
 				"src/sqlite/protocol.ts",
+				"src/sql/protocol.ts",
+				"src/sql/index.ts",
 				"src/**/*.d.ts",
 				"src/**/*.d.mts",
 				// ── A NAMED GAP, NOT A CLEAN EXCLUSION ────────────────────────

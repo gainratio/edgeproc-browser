@@ -238,6 +238,8 @@ and a walkthrough of a first change.
   a first change.
 - [SQLite state store](docs/sqlite-state.md): migrations, backups, headers and ownership.
 - [SQLite memory profile](docs/memory-profile.md): page cache and heap limits sized to the device.
+- [SQL in the browser](docs/sql.md): one OPFS SQLite database with FTS5, JSON1 and vectors,
+  run in the library's Worker.
 - [Dependencies](docs/dependencies.md): why each dependency is here.
 - [SECURITY.md](SECURITY.md): threat model, key rotation, and how to report a vulnerability.
 - [CONTRIBUTING.md](CONTRIBUTING.md): what a change needs and what gets pushed back on.

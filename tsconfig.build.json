@@ -16,6 +16,7 @@
 		"src/**/*.test.ts",
 		"src/engine/fixtures.ts",
 		"src/engine/__fixtures__/**",
+		"src/**/__fixtures__/**",
 		"test"
 	]
 }
