@@ -2,9 +2,10 @@
 // (783 distinct ~2.5 KB chunks, the shape of edge-reco's real catalog bundle)
 // served over plain HTTP by the Vite server (/__bundle/), with no request interception.
 //
-//   1. budget: a cold sync of the whole bundle finishes under
-//      COLD_SYNC_BUDGET_MS in every engine, and when OPFS is the store, the
-//      time spent writing chunks stays under OPFS_WRITE_BUDGET_MS_PER_CHUNK.
+//   1. budget: when OPFS is the store, the time spent writing chunks stays
+//      under OPFS_WRITE_BUDGET_MS_PER_CHUNK. Wall-clock time is logged, not
+//      gated: it depends on the network and on machine load, so it flakes in
+//      CI, while one-file-per-chunk writes miss this budget 2-18x.
 //   2. tamper: a chunk served as another chunk's valid zstd frame is still
 //      refused and nothing is promoted.
 //
@@ -25,9 +26,6 @@ const FIXTURE = join(
 	"bundle",
 );
 
-/** Cold sync wall-clock ceiling for the 783-chunk fixture, any engine. Firefox
- * took 10.1 s here in a Linux container with one OPFS file per chunk. */
-const COLD_SYNC_BUDGET_MS = 5_000;
 /** Time inside the store's chunk writes, per chunk, when OPFS is the store.
  * One file per chunk cost 2.3-17 ms (Chromium/Firefox, macOS/Linux); batched
  * packs cost 0.2-0.6 ms. Independent of network speed, so it holds on slow CI. */
@@ -57,7 +55,7 @@ test.describe("cold sync throughput", () => {
 	});
 
 	for (const backend of ["auto", "indexeddb"] as const) {
-		test(`cold-syncs the full bundle (${backend}) under the budget`, async ({
+		test(`cold-syncs the full bundle (${backend}) within the write budget`, async ({
 			page,
 			browserName,
 		}) => {
@@ -72,7 +70,6 @@ test.describe("cold sync throughput", () => {
 				console.log(`[throughput] ${browserName} ${rounded}`);
 			}
 			expect(timings.chunksFetched).toBe(chunkHashes().length);
-			expect(timings.wallMs).toBeLessThan(COLD_SYNC_BUDGET_MS);
 			if (timings.backend === "opfs+indexeddb") {
 				expect(timings.putMs / timings.chunksFetched).toBeLessThan(
 					OPFS_WRITE_BUDGET_MS_PER_CHUNK,

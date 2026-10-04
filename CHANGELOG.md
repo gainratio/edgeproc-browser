@@ -28,6 +28,11 @@ fail-closed behaviour are unchanged, and so is the signed bundle format.
   | Chromium (OPFS) | 0.50-0.57 s | 0.39 s |
   | WebKit (IndexedDB; Playwright's WebKit has no OPFS) | 0.50 s | 0.51 s |
 
+  Tabs share the pack directory: each rescans it on a miss and before pruning, so packs
+  another tab wrote or removed are seen. Writers hold the `edgeproc-opfs-packs` Web Lock
+  shared; unindexed or torn files are deleted only by a sweep that gets it exclusively
+  without waiting, so no tab deletes another tab's half-written pack (and without Web
+  Locks nothing unindexed is deleted).
   Every chunk in a batch is verified before any of it lands; a bad chunk lands nothing.
   Reads still re-verify every chunk. Chunks stored one file per chunk by older releases are
   still read, and pruning now also deletes dead packs and compacts mostly-dead ones.
@@ -41,8 +46,8 @@ fail-closed behaviour are unchanged, and so is the signed bundle format.
 ### Tests
 
 - `test/browser/sync-throughput.spec.ts` (Chromium, Firefox, WebKit): a cold sync of the
-  783-chunk fixture over plain HTTP must finish under 5 s, and with OPFS the chunk writes
-  must cost under 1.5 ms per chunk (before this change: 15-19 ms in Firefox, 2.3 ms in
+  783-chunk fixture over plain HTTP must keep OPFS chunk writes under 1.5 ms per chunk
+  (wall time is logged, not gated, since it depends on network and load) (before this change: 15-19 ms in Firefox, 2.3 ms in
   Chromium). A substituted chunk is refused with nothing promoted, and the SQLite
   insert phase is timed (one transaction: 16-46 ms; one autocommit per row: 0.6-1.7 s).
 - `src/engine/opfsPack.test.ts` and `src/engine/syncBatch.test.ts`: batch bounds, two files

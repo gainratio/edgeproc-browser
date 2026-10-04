@@ -11,6 +11,10 @@ export interface FakeOpfsStats {
 	filesCreated: number;
 	/** When set, the next file created gets this handle failure. */
 	nextCreateFailure: Error | undefined;
+	/** Names of files in the order their sync access handles flushed. */
+	readonly flushes: string[];
+	/** Per-name handle failure for files created later (by exact name or suffix). */
+	failCreate: ((name: string) => Error | undefined) | undefined;
 }
 
 /** One OPFS file as a growable byte buffer; the sync access handle reads/writes it. */
@@ -20,10 +24,16 @@ export class FakeFile {
 	/** Real OPFS semantics: a sync access handle is EXCLUSIVE per file. */
 	public handleOpen = false;
 	public syncHandlesOpened = 0;
+	public readonly name: string;
 	readonly #stats: FakeOpfsStats | undefined;
 
-	public constructor(stats?: FakeOpfsStats) {
+	public constructor(stats?: FakeOpfsStats, name = "") {
 		this.#stats = stats;
+		this.name = name;
+	}
+
+	public recordFlush(): void {
+		this.#stats?.flushes.push(this.name);
 	}
 
 	public createSyncAccessHandle(): Promise<FileSystemSyncAccessHandle> {
@@ -76,7 +86,9 @@ class FakeSyncHandle {
 	public truncate(size: number): void {
 		this.#file.bytes = this.#file.bytes.slice(0, size);
 	}
-	public flush(): void {}
+	public flush(): void {
+		this.#file.recordFlush();
+	}
 	public close(): void {
 		this.#file.handleOpen = false;
 	}
@@ -93,6 +105,8 @@ export class FakeDir {
 			syncHandles: 0,
 			filesCreated: 0,
 			nextCreateFailure: undefined,
+			flushes: [],
+			failCreate: undefined,
 		};
 	}
 
@@ -119,8 +133,9 @@ export class FakeDir {
 			if (opts?.create !== true) {
 				return Promise.reject(new DOMException(name, "NotFoundError"));
 			}
-			file = new FakeFile(this.stats);
-			file.handleFailure = this.stats.nextCreateFailure;
+			file = new FakeFile(this.stats, name);
+			file.handleFailure =
+				this.stats.nextCreateFailure ?? this.stats.failCreate?.(name);
 			this.stats.nextCreateFailure = undefined;
 			this.stats.filesCreated += 1;
 			this.files.set(name, file);
@@ -138,11 +153,61 @@ export class FakeDir {
 	}
 }
 
-/** Point navigator.storage.getDirectory at a fresh fake OPFS root; return the root. */
-export function stubOpfs(): FakeDir {
+interface Held {
+	shared: number;
+	exclusive: boolean;
+}
+
+/** Web Locks with the semantics the stores use: shared/exclusive modes and
+ * `ifAvailable` (the callback gets null when the lock is taken). `hold` lets a
+ * test play another tab that holds a lock. */
+export class FakeLocks {
+	readonly #held = new Map<string, Held>();
+
+	public async request<T>(
+		name: string,
+		options: LockOptions,
+		callback: (lock: Lock | null) => Promise<T>,
+	): Promise<T> {
+		const mode = options.mode ?? "exclusive";
+		while (!this.#available(name, mode)) {
+			if (options.ifAvailable === true) return callback(null);
+			await new Promise((resolve) => setTimeout(resolve, 1));
+		}
+		const release = this.hold(name, mode);
+		try {
+			return await callback({ name, mode } as Lock);
+		} finally {
+			release();
+		}
+	}
+
+	public hold(name: string, mode: LockMode): () => void {
+		const held = this.#held.get(name) ?? { shared: 0, exclusive: false };
+		if (mode === "exclusive") held.exclusive = true;
+		else held.shared += 1;
+		this.#held.set(name, held);
+		return () => {
+			if (mode === "exclusive") held.exclusive = false;
+			else held.shared -= 1;
+		};
+	}
+
+	#available(name: string, mode: LockMode): boolean {
+		const held = this.#held.get(name);
+		if (held === undefined) return true;
+		if (held.exclusive) return false;
+		return mode === "shared" || held.shared === 0;
+	}
+}
+
+/** Point navigator.storage.getDirectory at a fresh fake OPFS root; return the
+ * root. `locks` is the fake Web Locks API, or null for a browser without it. */
+export function stubOpfs(locks: FakeLocks | null = new FakeLocks()): FakeDir {
 	const root = new FakeDir();
 	vi.stubGlobal("navigator", {
 		storage: { getDirectory: (): Promise<FakeDir> => Promise.resolve(root) },
+		...(locks === null ? {} : { locks }),
 	} as unknown as Navigator);
 	return root;
 }

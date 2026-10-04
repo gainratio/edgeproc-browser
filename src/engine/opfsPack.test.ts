@@ -7,7 +7,7 @@
 // read re-verifies (decompress -> SHA-256 -> compare) and self-heals.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type FakeDir, stubOpfs } from "./__fixtures__/fakeOpfs.js";
+import { type FakeDir, FakeLocks, stubOpfs } from "./__fixtures__/fakeOpfs.js";
 import { chunkBytes, signedChunkRefs } from "./fixtures.js";
 import { IntegrityError } from "./integrity.js";
 import { OpfsCacheStore } from "./opfsStore.js";
@@ -412,5 +412,177 @@ describe("pruning and clearing packs", () => {
 		for (const chunk of batch) {
 			expect(await store.hasChunk(chunk.hash)).toBe(false);
 		}
+	});
+});
+
+async function promoteChunks(
+	store: OpfsCacheStore,
+	chunks: ReadonlyArray<CompressedChunk>,
+	sequence = 1,
+): Promise<void> {
+	const manifestHash = await store.putManifest(
+		new TextEncoder().encode(
+			JSON.stringify({
+				files: [{ chunks: chunks.map((chunk) => ({ hash: chunk.hash })) }],
+			}),
+		),
+	);
+	await store.promote({
+		manifest_hash: manifestHash,
+		version: `v${sequence}`,
+		bundle_id: null,
+		channel: null,
+		sequence,
+		signature: "s",
+	});
+}
+
+describe("packs written by another tab", () => {
+	it("are found by a store that scanned before they existed", async () => {
+		stubOpfs();
+		const early = await OpfsCacheStore.open();
+		const batch = chunksOf(3);
+		expect(await early.hasChunk(batch[0]?.hash ?? "")).toBe(false);
+
+		const other = await OpfsCacheStore.open();
+		await other.putChunksCompressed(batch);
+
+		for (const chunk of batch) {
+			expect(await early.hasChunk(chunk.hash)).toBe(true);
+			expect((await early.getChunk(chunk.hash, chunk.size)).byteLength).toBe(
+				chunk.size,
+			);
+		}
+	});
+
+	it("are not deleted when a stale store prunes", async () => {
+		const root = stubOpfs();
+		const stale = await OpfsCacheStore.open();
+		await stale.hasChunk("a".repeat(64));
+		const batch = chunksOf(3);
+		const other = await OpfsCacheStore.open();
+		await other.putChunksCompressed(batch);
+		await promoteChunks(other, batch);
+
+		await stale.pruneInactive();
+
+		expect(packIndexes(root)).toHaveLength(1);
+		const fresh = await OpfsCacheStore.open();
+		for (const chunk of batch) {
+			expect(await fresh.hasChunk(chunk.hash)).toBe(true);
+		}
+	});
+
+	it("are forgotten when another tab removed them", async () => {
+		stubOpfs();
+		const reader = await OpfsCacheStore.open();
+		const batch = chunksOf(2);
+		await reader.putChunksCompressed(batch);
+		const other = await OpfsCacheStore.open();
+		await other.clear();
+		// Any miss rescans; the rescan forgets packs whose index is gone.
+		await reader.hasChunk("c".repeat(64));
+
+		expect(await reader.hasChunk(batch[1]?.hash ?? "")).toBe(false);
+		await expect(
+			reader.getChunk(batch[0]?.hash ?? "", batch[0]?.size ?? 0),
+		).rejects.toThrow();
+	});
+
+	it("are pruned by a stale store when they are no longer live", async () => {
+		const root = stubOpfs();
+		const stale = await OpfsCacheStore.open();
+		await stale.hasChunk("a".repeat(64));
+		const other = await OpfsCacheStore.open();
+		const [dead, live] = [chunksOf(2), chunksOf(4).slice(2)];
+		await other.putChunksCompressed(dead);
+		await other.putChunksCompressed(live);
+		await promoteChunks(other, live);
+
+		await stale.pruneInactive();
+
+		expect(packIndexes(root)).toHaveLength(1);
+		const fresh = await OpfsCacheStore.open();
+		expect(await fresh.hasChunk(dead[0]?.hash ?? "")).toBe(false);
+		expect(await fresh.hasChunk(live[0]?.hash ?? "")).toBe(true);
+	});
+
+	it("leave an in-flight write alone until no writer holds the pack lock", async () => {
+		const locks = new FakeLocks();
+		const root = stubOpfs(locks);
+		const store = await OpfsCacheStore.open();
+		const [chunk] = chunksOf(1);
+		if (chunk === undefined) throw new Error("tiny");
+		await store.putChunksCompressed([chunk]);
+		await promoteChunks(store, [chunk]);
+		// Another tab is mid-write: its data file exists, its index does not yet.
+		const release = locks.hold("edgeproc-opfs-packs", "shared");
+		await packDir(root).getFileHandle("in-flight", { create: true });
+		await packDir(root).getFileHandle("torn.idx", { create: true });
+
+		await store.pruneInactive();
+		await OpfsCacheStore.open().then((other) => other.hasChunk("b".repeat(64)));
+		expect(packDir(root).files.has("in-flight")).toBe(true);
+		expect(packDir(root).files.has("torn.idx")).toBe(true);
+
+		release();
+		await store.pruneInactive();
+		expect(packDir(root).files.has("in-flight")).toBe(false);
+		expect(packDir(root).files.has("torn.idx")).toBe(false);
+		expect(await store.hasChunk(chunk.hash)).toBe(true);
+	});
+
+	it("never deletes unindexed files in a browser without Web Locks", async () => {
+		const root = stubOpfs(null);
+		const store = await OpfsCacheStore.open();
+		const [chunk] = chunksOf(1);
+		if (chunk === undefined) throw new Error("tiny");
+		await store.putChunksCompressed([chunk]);
+		await promoteChunks(store, [chunk]);
+		await packDir(root).getFileHandle("in-flight", { create: true });
+
+		await store.pruneInactive();
+
+		expect(packDir(root).files.has("in-flight")).toBe(true);
+		expect(await store.hasChunk(chunk.hash)).toBe(true);
+	});
+});
+
+describe("pack write ordering", () => {
+	it("flushes the data file before its index", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		await store.putChunksCompressed(chunksOf(2));
+		const [index] = packIndexes(root);
+		const pack = index?.slice(0, -".idx".length);
+		expect(root.stats.flushes).toEqual([pack, index]);
+	});
+
+	it("removes the data file when the index cannot be written", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		root.stats.failCreate = (name) =>
+			name.endsWith(".idx")
+				? new DOMException("full", "QuotaExceededError")
+				: undefined;
+
+		await expect(store.putChunksCompressed(chunksOf(2))).rejects.toBeInstanceOf(
+			StorageQuotaError,
+		);
+		expect(packDir(root).files.size).toBe(0);
+	});
+
+	it("does not leave an orphan index when evicting from a pack whose data is gone", async () => {
+		const root = stubOpfs();
+		const store = await OpfsCacheStore.open();
+		const batch = chunksOf(2);
+		await store.putChunksCompressed(batch);
+		const [index] = packIndexes(root);
+		packDir(root).files.delete(index?.slice(0, -".idx".length) ?? "");
+
+		await expect(
+			store.getChunk(batch[0]?.hash ?? "", batch[0]?.size ?? 0),
+		).rejects.toThrow();
+		expect(packDir(root).files.size).toBe(0);
 	});
 });

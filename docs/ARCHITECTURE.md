@@ -155,7 +155,7 @@ failures are verdicts and are never retried.
 | A second sync over a filled store downloads nothing | `pnpm demo` step 3 (`chunks fetched 0 (reused 783)`) |
 | The built Worker enforces raw-key, keyring, and revoked-signer trust roots | `pnpm test:browser`, `test/browser/engine-keyring.spec.ts` in real Chromium |
 | A cached chunk rewritten at rest by same-origin code is refused, never served, and re-fetched | `pnpm test:browser`, `test/browser/warm-sync.spec.ts` in real Chromium OPFS (the chunk is rewritten inside its pack) |
-| A cold sync of the 783-chunk fixture finishes under 5 s with OPFS chunk writes under 1.5 ms per chunk, and a substituted chunk is still refused with nothing promoted | `pnpm test:browser`, `test/browser/sync-throughput.spec.ts` in Chromium, Firefox and WebKit; `src/engine/opfsPack.test.ts` and `src/engine/syncBatch.test.ts` |
+| A cold sync of the 783-chunk fixture keeps OPFS chunk writes under 1.5 ms per chunk (wall time is logged, not gated), and a substituted chunk is still refused with nothing promoted | `pnpm test:browser`, `test/browser/sync-throughput.spec.ts` in Chromium, Firefox and WebKit; `src/engine/opfsPack.test.ts` and `src/engine/syncBatch.test.ts` |
 | Warm boot re-verifies every cached chunk with bounded concurrency | `src/engine/syncConcurrency.test.ts`; timings from `test/browser/warm-sync.spec.ts` |
 | SQLite state and vectors persist in OPFS across restarts with zero external requests | `pnpm test:browser`, `test/browser/sqlite-vector.spec.ts` |
 | The published `dist/` matches the source | `pnpm verify:dist` plus `test/dist-contract.test.ts`, both in `pnpm gate` |
