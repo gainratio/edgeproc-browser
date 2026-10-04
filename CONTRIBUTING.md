@@ -40,6 +40,30 @@ is a bug worth reporting.
 
 `pnpm lint:fix` will fix formatting for you. `pnpm test:watch` is the fast loop.
 
+## Bumping SQLite, sqlite-vector or emsdk
+
+The rule is to build on the latest SQLite, sqlite-vector and emsdk.
+`scripts/build-sqlite-vector-wasm.sh` pins all three exactly, so builds are
+reproducible. A weekly workflow (`.github/workflows/sqlite-latest.yml`, also
+runnable by hand from the Actions tab) compares those pins with upstream. When
+one is behind, it opens or updates a single issue, **SQLite/sqlite-vector update
+available**, listing the values to pin. Run the same check locally with
+`node scripts/check-sqlite-latest.mjs`.
+
+To bump:
+
+1. In `scripts/build-sqlite-vector-wasm.sh`, set the values from the issue:
+   `SQLITE_URL` and `SQLITE_SHA3` (also rename the `sqlite-src-NNNNNNN`
+   directory used further down), `VECTOR_COMMIT`, and `EMSDK_IMAGE`.
+2. Run the script. It needs Docker, because it builds inside the pinned emsdk
+   image. The first run fails on the output hash checks. That is expected: put
+   the new `sqlite3-bundler-friendly.mjs`, `sqlite3.wasm` and
+   `sqlite3-opfs-async-proxy.js` SHA-256 values into the script, then run it again.
+   If a patch in `scripts/sqlite-wasm-patches/` no longer applies, update it.
+3. Run `pnpm gate` (it includes `verify:dist`) and `pnpm test:browser`.
+4. Add a `CHANGELOG.md` line, open a PR, and release as usual by pushing a
+   `v*` tag after it merges. Close the update issue.
+
 ## Things that will be pushed back on
 
 - **Renaming a shipped export.** Every name in `src/index.ts` — especially the
