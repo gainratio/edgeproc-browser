@@ -9,6 +9,7 @@ import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
 import { SqlEngine } from "./engine";
 import { createHead } from "./portable";
+import type { SqlSerializer } from "./serializer";
 import { SqlImportRejectedError, type SqlImportRejection } from "./types";
 
 let sqlite: NodeSqlite;
@@ -466,6 +467,102 @@ describe("exportDatabase / importDatabase on the pinned build", () => {
 		expect(target.query("PRAGMA trusted_schema")).toEqual([
 			{ trusted_schema: 0 },
 		]);
+	});
+
+	it("a check that returns no rows fails", () => {
+		const bytes = seedSource().exportDatabase();
+		expect(
+			rejection(() =>
+				seedTarget().importDatabase(bytes, {
+					...TRUSTED,
+					expectedSchema: { checks: ["SELECT 1 WHERE 0"] },
+				}),
+			),
+		).toBe("check-failed");
+	});
+
+	it("replaces a database that already has triggers, views, FTS5 and a sequence", () => {
+		const target = seedSource();
+		target.exec("INSERT INTO audit(what) VALUES ('local only')");
+		const other = open();
+		other.exec("CREATE TABLE fresh(a); INSERT INTO fresh VALUES (1)");
+		target.importDatabase(other.exportDatabase());
+		// SQLite never lets sqlite_sequence be dropped; it is left empty.
+		const withoutSequence = (db: SqlEngine) => {
+			const { schema: rows, contents: tables, header: h } = snapshot(db);
+			const { sqlite_sequence: sequence = [], ...rest } = tables as Record<
+				string,
+				unknown
+			>;
+			return {
+				schema: rows.filter((row) => row.name !== "sqlite_sequence"),
+				contents: rest,
+				header: h,
+				sequence,
+			};
+		};
+		expect(withoutSequence(target)).toEqual(withoutSequence(other));
+		// And back again: the sequence and every object return exactly.
+		const source = seedSource();
+		target.importDatabase(source.exportDatabase(), TRUSTED);
+		expect(snapshot(target)).toEqual(snapshot(source));
+	});
+
+	it("rejects a virtual table SQLite cannot open with only the allowed modules", () => {
+		// Stands in for a parse that disagreed with SQLite: the cross-check
+		// alone must refuse it.
+		const dropEverything: SqlSerializer = {
+			...sqlite.serializer,
+			keepOnlyModules: (raw) => sqlite.serializer.keepOnlyModules(raw, []),
+		};
+		const target = new SqlEngine(sqlite.openMemory(), {
+			storage: { persistence: "memory", reason: "requested" },
+			memoryProfile: MEMORY_PROFILES.lite,
+			serializer: dropEverything,
+		});
+		const source = open();
+		source.exec("CREATE VIRTUAL TABLE docs USING fts5(body)");
+		expect(
+			rejection(() => target.importDatabase(source.exportDatabase())),
+		).toBe("unsafe-schema");
+	});
+
+	it("exports a database with no pages as SQLite's own empty file", () => {
+		const noPages: SqlSerializer = {
+			...sqlite.serializer,
+			serialize: (raw) =>
+				raw === bare ? new Uint8Array(0) : sqlite.serializer.serialize(raw),
+		};
+		const bare = sqlite.openMemory();
+		const engine = new SqlEngine(bare, {
+			storage: { persistence: "memory", reason: "requested" },
+			memoryProfile: MEMORY_PROFILES.lite,
+			serializer: noPages,
+		});
+		const bytes = engine.exportDatabase();
+		expect(new TextDecoder().decode(bytes.subarray(0, 15))).toBe(
+			"SQLite format 3",
+		);
+		open().importDatabase(bytes);
+	});
+
+	it("serializer: surfaces sqlite3_deserialize failures and handles without a pointer", () => {
+		const raw = sqlite.openMemory();
+		const bytes = open().exportDatabase();
+		expect(() =>
+			sqlite.serializer.deserialize(raw, "nope", bytes, true),
+		).toThrow(/sqlite3_deserialize failed/);
+		const { pointer: _pointer, ...withoutPointer } = {
+			pointer: undefined,
+			exec: raw.exec.bind(raw),
+			selectObjects: raw.selectObjects.bind(raw),
+			prepare: raw.prepare.bind(raw),
+			transaction: raw.transaction.bind(raw),
+			close: raw.close.bind(raw),
+		};
+		expect(() => sqlite.serializer.serialize(withoutPointer)).toThrow(
+			/no native pointer/,
+		);
 	});
 
 	it("refuses an import over the size limit before reading it", () => {

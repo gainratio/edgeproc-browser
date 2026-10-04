@@ -196,7 +196,7 @@ What import does, in order:
    then the schema text, then your `checks` (read-only: `query_only`, `trusted_schema = OFF`).
 2. **Swap in one `BEGIN IMMEDIATE` transaction** on your connection: the bytes are attached
    as an in-memory schema, your objects are dropped, the file's objects are created and their
-   rows copied (rowids kept), and `integrity_check` runs again before `COMMIT`. A failure
+   rows copied (rowids kept), all before one `COMMIT`. A failure
    half-way (disk full, a module that is missing) rolls all of it back, and SQLite's rollback
    journal makes that hold across a crash. The pinned build has no `sqlite3_backup_*`, so this
    is the same job done in SQL.
@@ -220,7 +220,8 @@ that text is checked first, and anything unexpected is refused as `"unsafe-schem
 - after an import the connection keeps `PRAGMA trusted_schema = OFF`, so imported views,
   triggers, defaults and indexes can only call innocuous functions.
 
-Not copied: `sqlite_stat*` (run `ANALYZE` if you use it). `vector_init(...)` is per connection:
+Not copied: `sqlite_stat*` (run `ANALYZE` if you use it). SQLite never drops `sqlite_sequence`, so
+an empty one can remain after importing a file without `AUTOINCREMENT`. `vector_init(...)` is per connection:
 call it again after an import, as after any reopen. Default size limit: 256 MiB (`maxBytes`).
 
 ### Secrets and settings belong to the app layer

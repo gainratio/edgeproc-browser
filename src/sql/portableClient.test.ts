@@ -152,8 +152,8 @@ describe("exportDatabase / importDatabase through the Worker", () => {
 			{ id: 1, label: "me", data: new Uint8Array([1, 2, 3]) },
 			{ id: 2, label: "you", data: null },
 		]);
-		const again = await db.exportDatabase();
-		await db.importDatabase(again);
+		const again = await exportDatabase(db);
+		await importDatabase(db, again);
 		const rows = await db.query("SELECT * FROM charts ORDER BY id");
 		await db.close();
 		// By name: opened under the owner lock, exported, closed.

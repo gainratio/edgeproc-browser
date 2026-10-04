@@ -9,8 +9,8 @@
 //      read-only checks.
 //   2. SWAP in ONE `BEGIN IMMEDIATE` transaction on the live connection: the
 //      validated bytes are deserialized into an ATTACHed in-memory schema, the
-//      old objects are dropped and the new ones created and copied with SQL,
-//      then integrity_check runs once more before COMMIT. Any failure — disk
+//      old objects are dropped and the new ones created and copied with SQL.
+//      Any failure — disk
 //      full half-way, a missing module — rolls the whole thing back, and the
 //      rollback journal makes that hold across a crash too.
 // The pinned build does not export the sqlite3_backup_* API, so phase 2 is the
@@ -140,7 +140,7 @@ const CREATE_HEAD = {
  * table, also the module it names (lower case).
  */
 export function createHead(row) {
-    const match = CREATE_HEAD[isVirtual(row) ? "virtual" : row.type]?.exec(row.sql ?? "");
+    const match = CREATE_HEAD[isVirtual(row) ? "virtual" : row.type]?.exec(row.sql);
     if (match?.[1] === undefined || unquote(match[1]) !== row.name) {
         return undefined;
     }
@@ -170,8 +170,6 @@ function unquote(identifier) {
  */
 function assertSafeSchema(serializer, rows, options, modules) {
     for (const row of rows) {
-        if (row.sql === null)
-            continue;
         if (!isSingleStatement(serializer, row.sql)) {
             reject("corrupt", `import schema row "${row.name}" holds more than one statement`);
         }
@@ -185,7 +183,7 @@ function assertSafeSchema(serializer, rows, options, modules) {
         }
         const module = head.module;
         if (isVirtual(row) && (module === undefined || !modules.has(module))) {
-            reject("unsafe-schema", `import virtual table "${row.name}" uses module ${module ?? "?"}, not in ${[...modules].join(", ")}`);
+            reject("unsafe-schema", `import virtual table "${row.name}" uses module ${String(module)}, not in ${[...modules].join(", ")}`);
         }
     }
 }
@@ -259,7 +257,6 @@ function swapIn(raw, serializer, bytes) {
             raw.exec({ sql: "PRAGMA defer_foreign_keys = ON" });
             dropMain(raw);
             copyIncoming(raw);
-            assertMainSound(raw);
         });
     }
     finally {
@@ -269,15 +266,18 @@ function swapIn(raw, serializer, bytes) {
 }
 function objects(raw, schema) {
     return raw
-        .selectObjects(`SELECT type, name, sql FROM ${schema}.sqlite_schema
-			 WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY rowid`)
+        .selectObjects(
+    // Automatic indexes (sql IS NULL) come and go with their tables.
+    `SELECT type, name, sql FROM ${schema}.sqlite_schema
+			 WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND sql IS NOT NULL
+			 ORDER BY rowid`)
         .map((row) => ({
         type: String(row.type),
         name: String(row.name),
-        sql: row.sql === null ? null : String(row.sql),
+        sql: String(row.sql),
     }));
 }
-const isVirtual = (row) => row.type === "table" && /^CREATE\s+VIRTUAL\s+TABLE/i.test(row.sql ?? "");
+const isVirtual = (row) => row.type === "table" && /^CREATE\s+VIRTUAL\s+TABLE/i.test(row.sql);
 function dropMain(raw) {
     const before = objects(raw, "main");
     for (const row of before.filter((r) => r.type === "trigger"))
@@ -315,7 +315,7 @@ function copyIncoming(raw) {
     }
     // Indexes, views and triggers after the data: no trigger fires on the copy.
     for (const row of incoming) {
-        if (row.type !== "table" && row.sql !== null)
+        if (row.type !== "table")
             run(raw, row.sql);
     }
     for (const pragma of ["application_id", "user_version"]) {
@@ -349,21 +349,11 @@ function rowidAlias(raw, table, columns, names) {
     const lower = new Set(names.map((name) => name.toLowerCase()));
     return ["rowid", "oid", "_rowid_"].find((alias) => !lower.has(alias));
 }
-function assertMainSound(raw) {
-    const problems = raw
-        .selectObjects("PRAGMA main.integrity_check(10)")
-        .map((row) => String(row.integrity_check));
-    if (problems.length !== 1 || problems[0] !== "ok") {
-        throw new Error(`imported database failed integrity_check: ${problems.join("; ")}`);
-    }
-}
 function hasTable(raw, schema, name) {
     return (raw.selectObjects(`SELECT 1 FROM ${schema}.sqlite_schema WHERE type = 'table' AND name = ?`, [name]).length > 0);
 }
 /** One statement only: prepare runs the first and ignores any tail. */
 function run(raw, sql) {
-    if (sql === null)
-        return;
     const statement = raw.prepare(sql);
     try {
         statement.step();

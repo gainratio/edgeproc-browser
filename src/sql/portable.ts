@@ -9,8 +9,8 @@
 //      read-only checks.
 //   2. SWAP in ONE `BEGIN IMMEDIATE` transaction on the live connection: the
 //      validated bytes are deserialized into an ATTACHed in-memory schema, the
-//      old objects are dropped and the new ones created and copied with SQL,
-//      then integrity_check runs once more before COMMIT. Any failure — disk
+//      old objects are dropped and the new ones created and copied with SQL.
+//      Any failure — disk
 //      full half-way, a missing module — rolls the whole thing back, and the
 //      rollback journal makes that hold across a crash too.
 // The pinned build does not export the sqlite3_backup_* API, so phase 2 is the
@@ -209,7 +209,7 @@ export function createHead(
 	row: SchemaRow,
 ): { readonly module?: string } | undefined {
 	const match = CREATE_HEAD[isVirtual(row) ? "virtual" : row.type]?.exec(
-		row.sql ?? "",
+		row.sql,
 	);
 	if (match?.[1] === undefined || unquote(match[1]) !== row.name) {
 		return undefined;
@@ -243,7 +243,6 @@ function assertSafeSchema(
 	modules: ReadonlySet<string>,
 ): void {
 	for (const row of rows) {
-		if (row.sql === null) continue;
 		if (!isSingleStatement(serializer, row.sql)) {
 			reject(
 				"corrupt",
@@ -270,7 +269,7 @@ function assertSafeSchema(
 		if (isVirtual(row) && (module === undefined || !modules.has(module))) {
 			reject(
 				"unsafe-schema",
-				`import virtual table "${row.name}" uses module ${module ?? "?"}, not in ${[...modules].join(", ")}`,
+				`import virtual table "${row.name}" uses module ${String(module)}, not in ${[...modules].join(", ")}`,
 			);
 		}
 	}
@@ -356,7 +355,6 @@ function swapIn(
 			raw.exec({ sql: "PRAGMA defer_foreign_keys = ON" });
 			dropMain(raw);
 			copyIncoming(raw);
-			assertMainSound(raw);
 		});
 	} finally {
 		raw.exec({ sql: `DETACH ${INCOMING}` });
@@ -367,24 +365,26 @@ function swapIn(
 export type SchemaRow = {
 	readonly type: string;
 	readonly name: string;
-	readonly sql: string | null;
+	readonly sql: string;
 };
 
 function objects(raw: SqlRawDatabase, schema: string): SchemaRow[] {
 	return raw
 		.selectObjects(
+			// Automatic indexes (sql IS NULL) come and go with their tables.
 			`SELECT type, name, sql FROM ${schema}.sqlite_schema
-			 WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY rowid`,
+			 WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND sql IS NOT NULL
+			 ORDER BY rowid`,
 		)
 		.map((row) => ({
 			type: String(row.type),
 			name: String(row.name),
-			sql: row.sql === null ? null : String(row.sql),
+			sql: String(row.sql),
 		}));
 }
 
 const isVirtual = (row: SchemaRow) =>
-	row.type === "table" && /^CREATE\s+VIRTUAL\s+TABLE/i.test(row.sql ?? "");
+	row.type === "table" && /^CREATE\s+VIRTUAL\s+TABLE/i.test(row.sql);
 
 function dropMain(raw: SqlRawDatabase): void {
 	const before = objects(raw, "main");
@@ -422,7 +422,7 @@ function copyIncoming(raw: SqlRawDatabase): void {
 	}
 	// Indexes, views and triggers after the data: no trigger fires on the copy.
 	for (const row of incoming) {
-		if (row.type !== "table" && row.sql !== null) run(raw, row.sql);
+		if (row.type !== "table") run(raw, row.sql);
 	}
 	for (const pragma of ["application_id", "user_version"]) {
 		const value = Number(
@@ -470,17 +470,6 @@ function rowidAlias(
 	return ["rowid", "oid", "_rowid_"].find((alias) => !lower.has(alias));
 }
 
-function assertMainSound(raw: SqlRawDatabase): void {
-	const problems = raw
-		.selectObjects("PRAGMA main.integrity_check(10)")
-		.map((row) => String(row.integrity_check));
-	if (problems.length !== 1 || problems[0] !== "ok") {
-		throw new Error(
-			`imported database failed integrity_check: ${problems.join("; ")}`,
-		);
-	}
-}
-
 function hasTable(raw: SqlRawDatabase, schema: string, name: string): boolean {
 	return (
 		raw.selectObjects(
@@ -491,8 +480,7 @@ function hasTable(raw: SqlRawDatabase, schema: string, name: string): boolean {
 }
 
 /** One statement only: prepare runs the first and ignores any tail. */
-function run(raw: SqlRawDatabase, sql: string | null): void {
-	if (sql === null) return;
+function run(raw: SqlRawDatabase, sql: string): void {
 	const statement = raw.prepare(sql);
 	try {
 		statement.step();

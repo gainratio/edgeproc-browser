@@ -64,6 +64,11 @@ const SQLITE_DESERIALIZE_READONLY = 4;
 export function createSqlSerializer(
 	sqlite: SqlSerializationModule,
 ): SqlSerializer {
+	const assertOk = (code: number, call: string) => {
+		if (code !== sqlite.capi.SQLITE_OK) {
+			throw new Error(`${call} failed: ${sqlite.capi.sqlite3_errstr(code)}`);
+		}
+	};
 	return {
 		serialize: (raw) =>
 			sqlite.capi.sqlite3_js_db_export(pointerOf(raw), "main"),
@@ -75,11 +80,7 @@ export function createSqlSerializer(
 					pointerOf(raw),
 					sqlite.wasm.scopedAllocMainArgv(keep),
 				);
-				if (code !== sqlite.capi.SQLITE_OK) {
-					throw new Error(
-						`sqlite3_drop_modules failed: ${sqlite.capi.sqlite3_errstr(code)}`,
-					);
-				}
+				assertOk(code, "sqlite3_drop_modules");
 			} finally {
 				sqlite.wasm.scopedAllocPop(scope);
 			}
@@ -96,12 +97,8 @@ export function createSqlSerializer(
 				size,
 				readonly ? SQLITE_DESERIALIZE_READONLY : 0,
 			);
-			if (code !== sqlite.capi.SQLITE_OK) {
-				sqlite.wasm.dealloc(copy);
-				throw new Error(
-					`sqlite3_deserialize failed: ${sqlite.capi.sqlite3_errstr(code)}`,
-				);
-			}
+			if (code !== sqlite.capi.SQLITE_OK) sqlite.wasm.dealloc(copy);
+			assertOk(code, "sqlite3_deserialize");
 			return () => sqlite.wasm.dealloc(copy);
 		},
 	};

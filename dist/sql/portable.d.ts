@@ -15,6 +15,6 @@ export declare function createHead(row: SchemaRow): {
 export type SchemaRow = {
     readonly type: string;
     readonly name: string;
-    readonly sql: string | null;
+    readonly sql: string;
 };
 //# sourceMappingURL=portable.d.ts.map
