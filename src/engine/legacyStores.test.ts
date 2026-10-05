@@ -265,6 +265,22 @@ describe("opfsLegacySource", () => {
 		).rejects.toThrow(/unreadable legacy rollback floor/);
 	});
 
+	it("skips a chunk that vanished mid-read, but rethrows any other read error", async () => {
+		const root = legacyRoot();
+		const chunk = root.dirs.get("chunk");
+		if (chunk === undefined) throw new Error("fixture has a chunk dir");
+		chunk.getFileHandle = () =>
+			Promise.reject(new DOMException("gone", "NotFoundError"));
+		expect((await opfsLegacySource(async () => root).read()).chunks).toEqual(
+			[],
+		);
+		chunk.getFileHandle = () =>
+			Promise.reject(new DOMException("io", "UnknownError"));
+		await expect(opfsLegacySource(async () => root).read()).rejects.toThrow(
+			"io",
+		);
+	});
+
 	it("reads nothing from an empty root", async () => {
 		expect(await opfsLegacySource(async () => new FakeDir()).read()).toEqual({
 			chunks: [],

@@ -343,6 +343,16 @@ describe("ChunkDatabase anti-rollback floor (each rollback attempt)", () => {
 		expect(asked).toEqual(["shop-chunks"]);
 	});
 
+	it("in memory mode, propagates an error that is not an unreadable legacy floor", async () => {
+		const { database, sources } = host({ install: refused });
+		sources.mockImplementation(() => {
+			throw new Error("legacy sources unavailable");
+		});
+		await expect(
+			database.run((store) => store.promote(pointer(1))),
+		).rejects.toThrow("legacy sources unavailable");
+	});
+
 	it("fails CLOSED when it cannot tell whether a persisted chunk pool exists", async () => {
 		const { database } = host({
 			install: refused,

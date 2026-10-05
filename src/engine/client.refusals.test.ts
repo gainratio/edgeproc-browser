@@ -496,3 +496,40 @@ describe("explicit cache clear", () => {
 		await expect(pending).resolves.toBeUndefined();
 	});
 });
+
+describe("refusals the happy paths never reach", () => {
+	it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+		"refuses an idle timeout of %s",
+		(idleTimeoutMs) => {
+			expect(
+				() => new EngineClient(fakeWorker().worker, { idleTimeoutMs }),
+			).toThrow(new TypeError("idle timeout must be a positive safe integer"));
+		},
+	);
+
+	it.each([
+		[
+			"readFile",
+			(client: EngineClient) => client.readFile("catalog_meta.json"),
+		],
+		["clear", (client: EngineClient) => client.clear()],
+	] as const)(
+		"%s rejects with the Worker's typed error envelope",
+		async (kind, call) => {
+			const fake = fakeWorker();
+			const pending = call(new EngineClient(fake.worker));
+			fake.reply({
+				ok: false,
+				kind,
+				id: fake.sent[0]?.id ?? 0,
+				error: { code: "integrity", message: `${kind} refused` },
+			} as EngineResponse);
+			const error = await pending.catch((reason: unknown) => reason);
+			expect(error).toBeInstanceOf(EngineOperationError);
+			expect(error).toMatchObject({
+				code: "integrity",
+				message: `${kind} refused`,
+			});
+		},
+	);
+});

@@ -12,6 +12,7 @@ import { FakeLocks } from "./__fixtures__/fakeLocks";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
 import { SqlEngine } from "./engine";
 import {
+	asLegacySahPool,
 	createJournalRecovery,
 	isSqlRecoveryModule,
 	type LegacyMigrationDeps,
@@ -580,5 +581,40 @@ describe("migration through the engine (row-identical copy)", () => {
 			/append-only/,
 		);
 		target.close();
+	});
+});
+
+describe("refusing modules that lack what migration needs", () => {
+	const METHODS = [
+		"getFileNames",
+		"exportFile",
+		"isPaused",
+		"unpauseVfs",
+		"pauseVfs",
+		"removeVfs",
+	] as const;
+	const util = (omit: ReadonlyArray<string>) =>
+		Object.fromEntries(
+			METHODS.filter((name) => !omit.includes(name)).map((name) => [
+				name,
+				() => undefined,
+			]),
+		);
+
+	it("accepts a PoolUtil with every method migration calls", () => {
+		const complete = util([]);
+		expect(asLegacySahPool(complete)).toBe(complete);
+	});
+
+	it("refuses a PoolUtil missing any of them, naming each", () => {
+		expect(() => asLegacySahPool(util(["exportFile", "removeVfs"]))).toThrow(
+			new TypeError("opfs-sahpool PoolUtil lacks exportFile, removeVfs"),
+		);
+	});
+
+	it("refuses to build journal recovery on a module without the unix VFS file APIs", () => {
+		expect(() => createJournalRecovery({})).toThrow(
+			new TypeError("sqlite-wasm module lacks the unix VFS file APIs"),
+		);
 	});
 });
