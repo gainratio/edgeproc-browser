@@ -87,9 +87,9 @@ describe("published artefact contract", () => {
 		const expected = [
 			{
 				file: "sqlite3.mjs",
-				bytes: 814_858,
+				bytes: 815_058,
 				sha256:
-					"97312695804c90280e25717fe300f31188b009a797beb7262524f3f85d66e49a",
+					"21d0b1fa9fafbb2c854d8dd27b6b567da97b8f74e2b3c9958deaca563f2f8b5e",
 			},
 			{
 				file: "sqlite3.wasm",

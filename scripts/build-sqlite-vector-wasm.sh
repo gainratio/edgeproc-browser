@@ -17,7 +17,7 @@ JS_SHA256=f4a630aec3e4862e0c55438f2cc790a77240d194911d47b6520a5fa03bad3d08
 WASM_SHA256=6a6f7e4b0f4249300964bd402a084387eea5df2120d2eca61bdfbff9eb226b58
 OPFS_PROXY_SHA256=0afe66f23424456c0eb1de5f599075fd676d869044a017a1058888007e2dbf92
 # After the local patch set (src/vector/sqlite/assets/README.md, "Local patches").
-PATCHED_JS_SHA256=97312695804c90280e25717fe300f31188b009a797beb7262524f3f85d66e49a
+PATCHED_JS_SHA256=21d0b1fa9fafbb2c854d8dd27b6b567da97b8f74e2b3c9958deaca563f2f8b5e
 PATCHED_OPFS_PROXY_SHA256=e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7
 
 curl --fail --location --silent --show-error "$SQLITE_URL" \
@@ -81,7 +81,8 @@ install -m 0644 "$OUT/sqlite3-opfs-async-proxy.js" \
 # Local patches: the OPFS async proxy is spawned inline (no network fetch) and
 # the installer's zombie timer guards only the Worker load, not OPFS init
 # (0001); the opfs-sahpool VFS reports RESERVED locks truthfully so a hot
-# journal is rolled back after a crash (0002, upstream check-in ea1d55e202e6e).
+# journal is rolled back after a crash (0002, upstream check-in ea1d55e202e6e);
+# its xSleep is a no-op instead of the default VFS's (0003, upstream c9dd4d88e4).
 for patch in "$ROOT"/scripts/sqlite-wasm-patches/*.patch; do
 	git -C "$ROOT" apply --whitespace=nowarn "$patch"
 done

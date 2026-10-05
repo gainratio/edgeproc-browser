@@ -57,6 +57,22 @@ build, so the table below lists the patched outputs. Upstream 3.53.4 is the
 latest release (npm `@sqlite.org/sqlite-wasm@3.53.4-build1` carries the same
 code), so there is nothing newer to upgrade to.
 
+### 0003: opfs-sahpool never sleeps in its busy handler (upstream backport)
+
+`0003-sahpool-xsleep-noop.patch` is SQLite check-in
+[c9dd4d88e4](https://sqlite.org/src/info/c9dd4d88e4) (cherry-picked to
+branch-3.53 as f774529206; forum report
+[3f0794c5d8](https://sqlite.org/forum/forumpost/3f0794c5d8)), copied verbatim
+from `ext/wasm/api/sqlite3-vfs-opfs-sahpool.c-pp.js` into the built bundle.
+
+Why: the sahpool inherited `xSleep` from the default VFS. Contention in a
+sahpool can only come from another handle in the same thread, so a busy handler
+that sleeps freezes that thread without ever letting the other handle finish.
+Upstream makes `xSleep` a no-op. In this build the sahpool's `xLock` never
+returns `SQLITE_BUSY` (upstream's lock rework, 9e2caaa382, is not backported),
+so the busy handler cannot run today; the patch keeps the VFS correct if it
+does. Drop the patch when the pinned release contains c9dd4d88e4.
+
 ### 0002: opfs-sahpool rolls back hot journals (upstream backport)
 
 `0002-sahpool-check-reserved-lock.patch` is SQLite check-in
@@ -107,7 +123,7 @@ are in `test/browser/opfs-install.spec.ts`.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `sqlite3.mjs` | 814,858 | `97312695804c90280e25717fe300f31188b009a797beb7262524f3f85d66e49a` |
+| `sqlite3.mjs` | 815,058 | `21d0b1fa9fafbb2c854d8dd27b6b567da97b8f74e2b3c9958deaca563f2f8b5e` |
 | `sqlite3.wasm` | 932,259 | `6a6f7e4b0f4249300964bd402a084387eea5df2120d2eca61bdfbff9eb226b58` |
 | `sqlite3-opfs-async-proxy.js` | 42,696 | `e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7` |
 
