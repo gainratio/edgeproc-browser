@@ -2,7 +2,7 @@
 
 This binary combines SQLite (public domain), sqlite-vector 1.1.2
 (Apache-2.0; see `LICENSE.sqlite-vector.md`), FP16 headers, and runtime code
-produced by Emscripten 4.0.15, including musl libc components.
+produced by Emscripten 6.0.11, including musl libc components.
 
 ## FP16
 
@@ -113,4 +113,4 @@ musl contains compatibly licensed portions from TRE, Sun Microsystems, David
 Schultz, Steven G. Kargl, Bruce D. Evans, Stephen L. Moshier, Arm Limited, the
 Android Open Source Project, David Burren, Solar Designer, and other credited
 contributors. The complete source notice for the pinned toolchain is available
-at `system/lib/libc/musl/COPYRIGHT` in the Emscripten 4.0.15 source tree.
+at `system/lib/libc/musl/COPYRIGHT` in the Emscripten 6.0.11 source tree.

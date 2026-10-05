@@ -18,7 +18,36 @@ reproduces all three files with a digest-pinned Emscripten image.
 | --- | --- | --- |
 | SQLite | `sqlite-src-3530400.zip` (3.53.4) | SHA3-256 `b834d474b9b393d85a9e3ee4cc11f1329e007e9376a424ee740796f5c4bda3a8` |
 | sqlite-vector | commit `0c2223ada9dce1fa33248c8835a15f51d9a0f655` (1.1.2) | Git object ID |
-| Emscripten | 4.0.15 | image `emscripten/emsdk@sha256:27bc6267cb285223b8aebb7627bfebae7cb3ad2aaa0d5923b8aa5321793033e8` |
+| Emscripten | 6.0.11 | image `emscripten/emsdk@sha256:cdefec943f04fd4b2b2fe23b0a1a346be9fc560ef5784a83faa27dd351381372` |
+
+The build strips with the image's own `llvm-strip` (no apt packages, so the
+image digest pins the whole toolchain). SQLite's makefile runs `wasm-opt
+--all-features`; under Binaryen 133 that turns on the compact-imports
+encoding (import kind `0x7f`), which no shipping browser can compile, so the
+script appends `--disable-compact-imports`.
+
+Emscripten 6.0.2 dropped `wasmBinary` from the loader's default incoming
+Module API; the script passes `-sINCOMING_MODULE_JS_API` with the 6.0.11
+default list plus `wasmBinary`, because the Node entry hands the loader the
+wasm bytes that way.
+
+### Build flags measured and left off (2026-10-04)
+
+Measured on 720 x 384 (edge-reco) and 31,348 x 384 (aml-filter) synthetic
+unit vectors with `vector_full_scan`, plus an FTS5 prefix `MATCH`, in
+Playwright Chromium, Firefox and WebKit:
+
+- **WASM SIMD (`-msimd128`)**: sqlite-vector's `distance-cpu.c` has scalar
+  kernels only (its SIMD kernels are x86 SSE/AVX and ARM NEON files that
+  this build does not compile), so SIMD only enables autovectorisation. It
+  was 5-20% slower in Chromium and WebKit.
+- **Relaxed SIMD (`-mrelaxed-simd`)**: byte-identical to the SIMD build; the
+  compiler emits no relaxed instructions for this code.
+- **`-O3`**: +79% wasm size (1.67 MB) for under 6% in Chromium and none in
+  WebKit.
+- **`-flto`**: 0.2% smaller, no measurable speed change.
+- **Native WASM exceptions**: not applicable; SQLite is C with no
+  `setjmp`/`longjmp` or C++ exceptions.
 
 ## Local patches
 
@@ -78,8 +107,8 @@ are in `test/browser/opfs-install.spec.ts`.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `sqlite3.mjs` | 812,357 | `9386833bbe0c3d723e1f2d25721917c790cfce4d01770c605c59ff2eb7b6d7b2` |
-| `sqlite3.wasm` | 934,257 | `a847545f7c58e1bdf9074cda354cfbd992c7edadf67cf4011e76297317c2565a` |
+| `sqlite3.mjs` | 814,858 | `97312695804c90280e25717fe300f31188b009a797beb7262524f3f85d66e49a` |
+| `sqlite3.wasm` | 932,259 | `6a6f7e4b0f4249300964bd402a084387eea5df2120d2eca61bdfbff9eb226b58` |
 | `sqlite3-opfs-async-proxy.js` | 42,696 | `e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7` |
 
 SQLite is public domain; its blessing/license text is preserved in

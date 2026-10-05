@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: importing a schema that has triggers (`allowTriggersAndViews: true`), with the
   workstation's append-only pair as the example.
 
+### Changed
+
+- **The SQLite runtime is now built with Emscripten 6.0.11** (was 4.0.15). Same SQLite 3.53.4
+  and sqlite-vector 1.1.2; `sqlite3.wasm` is 932,259 bytes (was 934,257). Vector and FTS5
+  query speed is unchanged in Chromium and WebKit. WASM SIMD was measured and left off:
+  sqlite-vector has no wasm SIMD kernels, and autovectorised scalar code was 5-20% slower.
+
 ## [0.2.2] - 2026-10-04
 
 Integrity hotfix. Upgrade if you use `@gainratio/browser/sql` or `@gainratio/browser/vector/sqlite`
