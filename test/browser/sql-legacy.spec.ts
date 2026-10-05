@@ -22,12 +22,14 @@ test("legacy opfs-sahpool: held pool is in-use, hot journal recovered, row-ident
 		expect(proof).toEqual({ refused: "opfs-unavailable" });
 		return;
 	}
-	// The sahpool VFS never treats its journal as hot: reading through it
-	// sees the torn write. This is why the migration does not do that.
+	// CONTRACT REVERSED in 0.3.0. This used to assert the defect: 3.53.4's
+	// sahpool never treated its journal as hot, so reading through it saw the
+	// torn write. With the backported xCheckReservedLock (patch 0002) this
+	// build's sahpool rolls the hot journal back itself.
 	expect(proof.direct).toMatchObject({
 		files: expect.arrayContaining(["/kyc.sqlite3", "/kyc.sqlite3-journal"]),
 	});
-	expect((proof.direct as { first: string }).first).not.toBe("kept-");
+	expect((proof.direct as { first: string }).first).toBe("kept-");
 
 	expect(proof.whileHeld).toEqual({ status: "in-use" });
 	expect(proof.migrated).toMatchObject({

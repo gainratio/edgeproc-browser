@@ -7,6 +7,7 @@ import {
 	type LegacySahPoolMigration,
 	migrateLegacySahPool,
 	openSqlDatabase,
+	removeOpfsPool,
 	removeSqlDatabase,
 	SqlStorageUnavailableError,
 } from "@gainratio/browser/sql";
@@ -87,25 +88,33 @@ window.runLegacyProof = async (name, rows): Promise<LegacyProof> => {
 		throw error;
 	}
 
-	// The old build commits, then crashes mid-transaction.
-	const writer = legacyWorker();
-	await send(writer, { op: "seed", pool: fromPool, rows });
-	await send(writer, { op: "tear" });
-	writer.terminate();
+	// A build crashes mid-transaction: a torn file plus a hot journal.
+	const tear = async (pool: string): Promise<void> => {
+		const writer = legacyWorker();
+		await send(writer, { op: "seed", pool, rows });
+		await send(writer, { op: "tear" });
+		writer.terminate();
+	};
 
-	// What reading through the sahpool VFS itself would migrate.
+	// On a pool of its own (reading rolls the journal back and deletes it):
+	// what reading through this build's sahpool VFS sees after the crash.
+	const directPool = `${fromPool}-direct`;
+	await tear(directPool);
 	const direct = (
 		await untilFree(async () => {
 			try {
 				return {
 					status: "read",
-					value: await step({ op: "direct", pool: fromPool }),
+					value: await step({ op: "direct", pool: directPool }),
 				};
 			} catch (error) {
 				return { status: "in-use", value: String(error) };
 			}
 		})
 	).value.value;
+	await untilFree(async () => ({ status: await removeOpfsPool(directPool) }));
+
+	await tear(fromPool);
 
 	// An old tab that still has the pool open: in-use, nothing touched.
 	const holder = legacyWorker();
