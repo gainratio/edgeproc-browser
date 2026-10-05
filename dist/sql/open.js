@@ -29,7 +29,7 @@ const OWNER_LOCK_WAIT_MS = Object.freeze({
  * owner-lock budgets for it (60 s on "full"), then fails `pool-in-use`
  * rather than hanging behind an operation that never ends.
  */
-const OPERATION_WAIT_BUDGETS = 15;
+export const OPERATION_WAIT_BUDGETS = 15;
 export const SQL_POOL_PREFIX = "edgeproc-sql-";
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export async function sqlDatabasePoolName(name) {

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeLocks } from "./__fixtures__/fakeLocks";
-import { openSqlStorage, sqlDatabasePoolName } from "./open";
+import {
+	OPERATION_WAIT_BUDGETS,
+	openSqlStorage,
+	sqlDatabasePoolName,
+} from "./open";
 import { SqlStorageUnavailableError } from "./types";
 
 class Raw {
@@ -227,7 +231,8 @@ describe("openSqlStorage", () => {
 	it("waits for a by-name operation at most 15x lockWaitMs, then fails pool-in-use", async () => {
 		// An import that never finishes (a hung Worker) must not hang every
 		// writer forever: the wait is bounded and ends in the typed error.
-		const d = deps({ lockWaitMs: 20 });
+		expect(OPERATION_WAIT_BUDGETS).toBe(15);
+		const d = deps({ lockWaitMs: 50 });
 		const stuck = await openSqlStorage(
 			d,
 			{ name: "stuck-import" },
@@ -237,8 +242,12 @@ describe("openSqlStorage", () => {
 		await expect(
 			openSqlStorage(d, { name: "stuck-import" }),
 		).rejects.toMatchObject({ reason: "pool-in-use" });
-		// lockWaitMs (20) + 15 x 20 for the operation; timers never fire early.
-		expect(performance.now() - started).toBeGreaterThanOrEqual(300);
+		const waited = performance.now() - started;
+		// lockWaitMs (50) + 15 x 50 for the operation = 800 ms. Timers never
+		// fire early, so 14 budgets (750 ms) fails the floor; the ceiling leaves
+		// 750 ms of slack for a loaded machine and still fails 30 budgets.
+		expect(waited).toBeGreaterThanOrEqual(795);
+		expect(waited).toBeLessThan(1_550);
 		await stuck.release();
 	});
 

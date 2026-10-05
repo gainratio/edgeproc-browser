@@ -23,6 +23,12 @@ export interface SqlLocks {
  * tier waits less than 4 s and slower tiers wait longer.
  */
 export declare function ownerLockWaitMs(tier: MemoryTier): number;
+/**
+ * A writer queued behind a by-name import or export waits up to this many
+ * owner-lock budgets for it (60 s on "full"), then fails `pool-in-use`
+ * rather than hanging behind an operation that never ends.
+ */
+export declare const OPERATION_WAIT_BUDGETS = 15;
 export interface SqlStorageDeps<R> {
     readonly openMemory: () => R;
     readonly installPool: (poolName: string) => Promise<{
