@@ -305,6 +305,24 @@ describe("SqlEngine on the pinned SQLite build", () => {
 		db.close();
 	});
 
+	it("runs read-check-write logic inside one BEGIN IMMEDIATE and rolls it back on throw", () => {
+		const db = open();
+		db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL)");
+		const written = db.immediate(() => {
+			db.exec("INSERT INTO t(v) VALUES ('a')");
+			return db.query("SELECT count(*) AS n FROM t")[0]?.n;
+		});
+		expect(written).toBe(1);
+		expect(() =>
+			db.immediate(() => {
+				db.exec("INSERT INTO t(v) VALUES ('b')");
+				throw new Error("refused after a write");
+			}),
+		).toThrow("refused after a write");
+		expect(db.query("SELECT v FROM t")).toEqual([{ v: "a" }]);
+		db.close();
+	});
+
 	it("bulk-loads with executeMany atomically", () => {
 		const db = open();
 		db.exec("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL)");

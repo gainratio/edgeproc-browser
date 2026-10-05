@@ -42,21 +42,9 @@ export default defineConfig({
 				"src/sql/index.ts",
 				"src/**/*.d.ts",
 				"src/**/*.d.mts",
-				// ── A NAMED GAP, NOT A CLEAN EXCLUSION ────────────────────────
-				// opfsStore.ts is 300 lines and this suite reaches 57% of them.
-				// The rest is the OPFS sync-access-handle path, which jsdom has
-				// no implementation of at all — there is nothing to fake that
-				// would prove anything about the real API's locking semantics.
-				// It is excluded so the number for everything else is honest,
-				// NOT because it is covered. It is not.
-				// What this means concretely: `createSyncAccessHandle` contention,
-				// the nav-release race, and partial-write recovery are unproven
-				// by this package. They are exercised downstream in edge-reco's
-				// Playwright c1/offline tiers against a real browser.
-				// FOLLOW-UP: this package needs its own real-browser tier
-				// (vitest browser mode or Playwright) before opfsStore can carry
-				// a coverage claim. Tracked in README "Known gaps".
-				"src/engine/opfsStore.ts",
+				// Worker-only SQLite loader (Worker globals, OPFS); proven by the
+				// Playwright specs in Chromium, Firefox and WebKit.
+				"src/sql/workerRuntime.ts",
 			],
 			// Floors, not aspirations: these are the MEASURED numbers rounded
 			// down, so the gate fails the moment coverage slips. They are a

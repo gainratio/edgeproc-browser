@@ -113,11 +113,9 @@ window.runEngineKeyringProof = async (namespace) => {
 				keys: [OTHER, bundleKey],
 				revoked: [bundleKey.key_id],
 			}),
-			// IndexedDB-only so the namespace isolates it: the OPFS content root
-			// is origin-wide by design and already holds the releases above.
+			// Its own namespace = its own SQLite database, empty of the releases above.
 			{
 				cacheNamespace: `${namespace}-revoked`,
-				storageBackend: "indexeddb",
 				wantedPaths: [],
 			},
 		);

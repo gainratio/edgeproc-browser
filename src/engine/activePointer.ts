@@ -1,3 +1,4 @@
+import { IntegrityError } from "./integrity.js";
 import type { VersionPointer } from "./types.js";
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -80,4 +81,56 @@ function optionalBoundedString(value: unknown, maximum: number): boolean {
 		value === null ||
 		(typeof value === "string" && value.length <= maximum)
 	);
+}
+
+/** Select the newest structurally valid durable pointer after a torn write. */
+export function selectHighestPointer(
+	candidates: ReadonlyArray<VersionPointer | null>,
+): VersionPointer | null {
+	let highest: VersionPointer | null = null;
+	for (const candidate of candidates) {
+		if (candidate === null) continue;
+		const candidateHasSequence =
+			Number.isSafeInteger(candidate.sequence) && candidate.sequence >= 0;
+		const highestHasSequence =
+			highest !== null &&
+			Number.isSafeInteger(highest.sequence) &&
+			highest.sequence >= 0;
+		if (highest === null || (candidateHasSequence && !highestHasSequence)) {
+			highest = candidate;
+			continue;
+		}
+		if (!candidateHasSequence) {
+			if (!highestHasSequence && !samePointer(candidate, highest)) {
+				throw new IntegrityError("legacy durable active pointers disagree");
+			}
+			continue;
+		}
+		if (
+			highestHasSequence &&
+			candidate.sequence === highest.sequence &&
+			!samePointer(candidate, highest)
+		) {
+			throw new IntegrityError(
+				"durable active pointers disagree at the same sequence",
+			);
+		}
+		if (highest === null || candidate.sequence > highest.sequence) {
+			highest = candidate;
+		}
+	}
+	return highest;
+}
+
+/** A promotion may only advance the durable identity, never fork it. */
+export function canPromotePointer(
+	current: VersionPointer | null,
+	incoming: VersionPointer,
+): boolean {
+	if (current === null) return true;
+	if (!Number.isSafeInteger(current.sequence) || current.sequence < 0)
+		return true;
+	if (incoming.sequence > current.sequence) return true;
+	if (incoming.sequence < current.sequence) return false;
+	return samePointer(current, incoming);
 }

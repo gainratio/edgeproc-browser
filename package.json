@@ -1,6 +1,6 @@
 {
 	"name": "@gainratio/browser",
-	"version": "0.2.2",
+	"version": "0.3.0",
 	"type": "module",
 	"description": "For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.",
 	"keywords": [
@@ -101,8 +101,7 @@
 	},
 	"dependencies": {
 		"@hpcc-js/wasm-zstd": "^1.16.1",
-		"@noble/ed25519": "^3.2.0",
-		"idb-keyval": "^6.3.0"
+		"@noble/ed25519": "^3.2.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.14",

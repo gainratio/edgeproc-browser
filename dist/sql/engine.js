@@ -43,6 +43,14 @@ export class SqlEngine {
         const { value, result } = this.#counting(() => this.#raw.transaction("IMMEDIATE", () => statements.map((statement) => this.#runInTransaction(statement))));
         return { changes: result.changes, results: value };
     }
+    /**
+     * In-Worker only (not on the message protocol): run `work` inside one
+     * BEGIN IMMEDIATE … COMMIT, so a read, a JS check and a write commit
+     * together; a throw rolls all of it back. `work` may call exec/query.
+     */
+    immediate(work) {
+        return this.#raw.transaction("IMMEDIATE", work);
+    }
     executeMany(sql, rows) {
         return this.#counting(() => this.#raw.transaction("IMMEDIATE", () => this.#runInTransaction({ sql, rows }))).result;
     }

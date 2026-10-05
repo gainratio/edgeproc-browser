@@ -4,8 +4,6 @@
 // apply the device memory profile, and answer the client's requests.
 
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
-import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
-import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { createSqlConnectionControl } from "./control.js";
 import { SqlEngine, type SqlRawDatabase } from "./engine.js";
 import { createSqlWorkerHandler, type OpenedSqlEngine } from "./handler.js";
@@ -19,6 +17,11 @@ import { openSqlStorage, ownerLockWaitMs, type SqlLocks } from "./open.js";
 import type { SqlWorkerRequest } from "./protocol.js";
 import { createSqlSerializer } from "./serializer.js";
 import type { SqlDatabaseOptions, SqlStorage } from "./types.js";
+import {
+	type LoadedSqlite,
+	loadSqlite,
+	workerStorageDeps,
+} from "./workerRuntime.js";
 
 const handle = createSqlWorkerHandler(openEngine);
 
@@ -30,29 +33,12 @@ async function openEngine(
 	options: SqlDatabaseOptions,
 	context: { readonly transient: boolean },
 ): Promise<OpenedSqlEngine> {
-	configureInlineOpfsProxy();
-	const sqlite = await sqlite3InitModule({
-		print: () => undefined,
-		printErr: (...args) => console.error(...args),
-	});
+	const sqlite = await loadSqlite();
 	const lockWaitMs = ownerLockWaitMs(
 		resolveMemoryProfile(options.memoryProfile ?? "auto").tier,
 	);
 	const opened = await openSqlStorage<SqlRawDatabase>(
-		{
-			openMemory: () =>
-				new sqlite.oo1.DB(":memory:") as unknown as SqlRawDatabase,
-			installPool: async (name) =>
-				(await sqlite.installOpfsSAHPoolVfs({
-					name,
-					forceReinitIfPreviouslyFailed: true,
-				})) as unknown as {
-					OpfsSAHPoolDb: new (file: string) => SqlRawDatabase;
-				},
-			locks: navigatorLocks(),
-			warn: (message) => console.warn(message),
-			lockWaitMs,
-		},
+		workerStorageDeps(sqlite, lockWaitMs),
 		options,
 		context,
 	);
@@ -82,11 +68,9 @@ function navigatorLocks(): SqlLocks | undefined {
 	return (navigator as { locks?: SqlLocks }).locks;
 }
 
-type SqliteModule = Awaited<ReturnType<typeof sqlite3InitModule>>;
-
 /** Legacy opfs-sahpool migration on this Worker's module and connection. */
 function legacyMigrator(
-	sqlite: SqliteModule,
+	sqlite: LoadedSqlite,
 	storage: SqlStorage,
 	engine: SqlEngine,
 	lockWaitMs: number,

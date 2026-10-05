@@ -1,0 +1,41 @@
+// Worker-only: load the pinned SQLite build and describe how to open a named
+// database on it (opfs-sahpool, owner-locked; memory as the reported
+// fallback). Shared by the SQL Worker and the engine Worker's chunk store, so
+// both open SQLite exactly the same way. Proven in a real browser by the
+// Playwright specs; it touches Worker globals, so it is not unit-tested.
+import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
+import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
+let loading;
+/** The pinned SQLite module, loaded once per Worker. */
+export function loadSqlite() {
+    loading ??= (async () => {
+        configureInlineOpfsProxy();
+        return sqlite3InitModule({
+            print: () => undefined,
+            printErr: (...args) => console.error(...args),
+        });
+    })();
+    return loading;
+}
+/**
+ * openSqlStorage deps for this Worker. The pool is installed once; a pool a
+ * previous operation paused (released its handles) is resumed before use.
+ */
+export function workerStorageDeps(sqlite, lockWaitMs) {
+    return {
+        openMemory: () => new sqlite.oo1.DB(":memory:"),
+        installPool: async (name) => {
+            const pool = await sqlite.installOpfsSAHPoolVfs({
+                name,
+                forceReinitIfPreviouslyFailed: true,
+            });
+            if (pool.isPaused())
+                await pool.unpauseVfs();
+            return pool;
+        },
+        locks: navigator.locks,
+        warn: (message) => console.warn(message),
+        lockWaitMs,
+    };
+}
+//# sourceMappingURL=workerRuntime.js.map

@@ -40,6 +40,12 @@ export declare class SqlEngine {
     exec(sql: string, bind?: SqlBind): SqlExecResult;
     query(sql: string, bind?: SqlBind): SqlRow[];
     transaction(statements: ReadonlyArray<SqlStatement>): SqlTransactionResult;
+    /**
+     * In-Worker only (not on the message protocol): run `work` inside one
+     * BEGIN IMMEDIATE … COMMIT, so a read, a JS check and a write commit
+     * together; a throw rolls all of it back. `work` may call exec/query.
+     */
+    immediate<T>(work: () => T): T;
     executeMany(sql: string, rows: ReadonlyArray<SqlBind>): SqlExecResult;
     prepare(sql: string): number;
     runPrepared(id: number, bind?: SqlBind): SqlExecResult;

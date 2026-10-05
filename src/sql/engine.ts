@@ -108,6 +108,15 @@ export class SqlEngine {
 		return { changes: result.changes, results: value };
 	}
 
+	/**
+	 * In-Worker only (not on the message protocol): run `work` inside one
+	 * BEGIN IMMEDIATE … COMMIT, so a read, a JS check and a write commit
+	 * together; a throw rolls all of it back. `work` may call exec/query.
+	 */
+	public immediate<T>(work: () => T): T {
+		return this.#raw.transaction("IMMEDIATE", work);
+	}
+
 	public executeMany(sql: string, rows: ReadonlyArray<SqlBind>): SqlExecResult {
 		return this.#counting(() =>
 			this.#raw.transaction("IMMEDIATE", () =>

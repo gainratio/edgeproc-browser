@@ -547,7 +547,7 @@ async function fetchMissing(baseUrl, missing, fetchBytes, store, maxTotalBytes, 
     return total;
 }
 /** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
- * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * is dominated by per-chunk storage round trips (one SQLite row read per
  * chunk), not by hashing; awaiting them one at a time serialised that latency. */
 export const MAX_CONCURRENT_CHUNK_READS = 8;
 /** Order-preserving map with at most `limit` calls in flight. After the first
@@ -580,7 +580,7 @@ async function mapBounded(items, limit, operation) {
 }
 /** Verified chunk reads shared by one reassembly pass: at most
  * MAX_CONCURRENT_CHUNK_READS in flight in total, never two reads of the same
- * chunk at once (OPFS sync access handles are exclusive per file), and once
+ * chunk at once (a duplicate read would re-verify for nothing), and once
  * any read fails every queued read rejects with that same error unread. */
 function chunkReader(store) {
     let active = 0;
@@ -753,7 +753,7 @@ export async function syncIndex(args) {
         const { missing, reused } = await missingChunks(files, store);
         const bytesFetched = await fetchMissing(baseUrl, missing, fetchBytes, store, totalFetchLimit(args), new ChunkProgress(missing, (progress) => report(args, progress)), args.sleep ?? realSleep);
         await verifyReassembly(files, store, args);
-        await store.promote(pointer);
+        await store.promote(pointer, files.flatMap((entry) => entry.chunks.map((ref) => ref.hash)));
         const result = {
             version: pointer.version,
             manifestHash: pointer.manifest_hash,

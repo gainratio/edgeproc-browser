@@ -21,7 +21,7 @@
     {"id": "client", "type": "frontend", "label": "EngineClient", "sublabel": "typed RPC + deadlines", "pos": [250, 155], "size": [170, 72], "sources": [{"path": "src/engine/client.ts", "line": 45, "end_line": 108, "label": "client boundary"}, {"path": "src/engine/client.ts", "line": 148, "end_line": 183, "label": "fault handling"}]},
     {"id": "worker", "type": "backend", "label": "Module Worker", "sublabel": "owns browser-only handles", "pos": [480, 155], "size": [170, 72], "sources": [{"path": "src/engine/worker.ts", "line": 22, "end_line": 60, "label": "Worker engine"}, {"path": "src/engine/worker.ts", "line": 75, "end_line": 98, "label": "typed request loop"}]},
     {"id": "sync", "type": "security", "label": "Sync Verifier", "sublabel": "caps + signatures + hashes", "pos": [710, 155], "size": [170, 72], "sources": [{"path": "src/engine/sync.ts", "line": 588, "end_line": 624, "label": "sync state machine"}, {"path": "src/engine/crypto.ts", "line": 76, "end_line": 100, "label": "Ed25519 verification"}]},
-    {"id": "opfs", "type": "database", "label": "OPFS Snapshot", "sublabel": "content-addressed + durable", "pos": [940, 155], "size": [170, 72], "sources": [{"path": "src/engine/opfsStore.ts", "line": 84, "end_line": 107, "label": "browser store"}, {"path": "src/engine/opfsStore.ts", "line": 189, "end_line": 218, "label": "atomic promotion"}]},
+    {"id": "opfs", "type": "database", "label": "SQLite on OPFS", "sublabel": "one DB per cache + floor", "pos": [940, 155], "size": [170, 72], "sources": [{"path": "src/engine/chunkDatabase.ts", "line": 72, "end_line": 206, "label": "chunk database"}, {"path": "src/engine/sqliteStore.ts", "line": 247, "end_line": 267, "label": "one-transaction promotion"}]},
     {"id": "bytes", "type": "external", "label": "Verified File Bytes", "sublabel": "reassembled on demand", "pos": [1170, 155], "size": [170, 72], "sources": [{"path": "src/engine/sync.ts", "line": 632, "end_line": 638, "label": "materialize boundary"}, {"path": "src/engine/worker.ts", "line": 57, "end_line": 60, "label": "read response"}]},
     {"id": "sentinel", "type": "backend", "label": "Network Sentinel", "sublabel": "Worker resource timeline", "pos": [480, 500], "size": [170, 72], "sources": [{"path": "src/engine/networkSentinel.ts", "line": 101, "end_line": 134, "label": "cross-context reports"}]}
   ],
@@ -35,7 +35,7 @@
   ],
   "cards": [
     {"dot": "rose", "title": "Fail closed", "items": ["Unverifiable bytes are rejected, never degraded", "Rollback and resource limits are enforced before promotion"]},
-    {"dot": "cyan", "title": "Worker boundary", "items": ["OPFS sync handles stay off the main thread", "Typed replies turn crashes and silence into explicit failures"]},
+    {"dot": "cyan", "title": "Worker boundary", "items": ["SQLite and OPFS handles stay off the main thread, one tab at a time", "Typed replies turn crashes and silence into explicit failures"]},
     {"dot": "emerald", "title": "Measured privacy", "items": ["Each Worker observes its own network timeline", "Epoch timestamps make reports comparable across contexts"]}
   ]
 }

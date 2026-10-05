@@ -3,35 +3,21 @@
 // (OPFS via opfs-sahpool, owner-locked; memory only as a reported fallback),
 // apply the device memory profile, and answer the client's requests.
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
-import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
-import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import { createSqlConnectionControl } from "./control.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
 import { asLegacySahPool, createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs } from "./open.js";
 import { createSqlSerializer } from "./serializer.js";
+import { loadSqlite, workerStorageDeps, } from "./workerRuntime.js";
 const handle = createSqlWorkerHandler(openEngine);
 self.onmessage = (event) => {
     void handle(event.data).then((response) => self.postMessage(response));
 };
 async function openEngine(options, context) {
-    configureInlineOpfsProxy();
-    const sqlite = await sqlite3InitModule({
-        print: () => undefined,
-        printErr: (...args) => console.error(...args),
-    });
+    const sqlite = await loadSqlite();
     const lockWaitMs = ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier);
-    const opened = await openSqlStorage({
-        openMemory: () => new sqlite.oo1.DB(":memory:"),
-        installPool: async (name) => (await sqlite.installOpfsSAHPoolVfs({
-            name,
-            forceReinitIfPreviouslyFailed: true,
-        })),
-        locks: navigatorLocks(),
-        warn: (message) => console.warn(message),
-        lockWaitMs,
-    }, options, context);
+    const opened = await openSqlStorage(workerStorageDeps(sqlite, lockWaitMs), options, context);
     try {
         const engine = new SqlEngine(opened.raw, {
             storage: opened.storage,

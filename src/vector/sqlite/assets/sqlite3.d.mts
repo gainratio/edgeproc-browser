@@ -11,6 +11,10 @@ interface SqliteSahPool {
 	readonly OpfsSAHPoolDb: new (filename: string) => SqliteOo1Database;
 	/** Close every sync access handle the pool holds (no data loss). */
 	pauseVfs(): SqliteSahPool;
+	/** True while paused (no handles held). */
+	isPaused(): boolean;
+	/** Re-acquire the handles of a paused pool. */
+	unpauseVfs(): Promise<SqliteSahPool>;
 }
 
 interface SqliteModule {

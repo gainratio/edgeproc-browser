@@ -40,10 +40,19 @@ Important integration rules:
   field exactly.
 - Treat the configured public-key URL as a trust root. Serve it over HTTPS and
   control it separately from mutable bundle content.
-- Cache names and legacy IndexedDB layouts are local identifiers, not secrets.
-  Layout input is bounded and cannot select arbitrary code or callbacks.
-- OPFS content and the IndexedDB rollback pointer are untrusted durable state.
-  They are revalidated before use; equal-sequence disagreement fails closed.
+- Cache names and legacy (0.2.x) IndexedDB layouts are local identifiers, not
+  secrets. Layout input is bounded and cannot select arbitrary code or callbacks.
+  The layout is only read once, to migrate a 0.2.x cache; the library never
+  writes to IndexedDB.
+- The SQLite chunk database on OPFS (chunks, manifests, the active pointer and
+  the rollback floor) is untrusted durable state. Every chunk is re-hashed on
+  read and a bad row is deleted; equal-sequence disagreement fails closed. A
+  trigger refuses any update that lowers the floor.
+- Migrated 0.2.x content is checked by content address before it is copied, and
+  the migrated floor is the highest legacy sequence, never lower.
+- When OPFS is refused, the cache is an in-memory SQLite database and the
+  rollback floor lasts only for that Worker's life. Sync results report this as
+  `cacheBackend: "sqlite-memory"`.
 - The stored active pointer is the anti-rollback floor even when the currently
   pinned key cannot verify it (after a key rotation, or a swapped key), so a key
   change never resets the floor: an older release re-signed by a new key is
@@ -104,6 +113,6 @@ Important integration rules:
   mechanism. Same-origin channel messages are shape-checked but are not treated
   as authenticated actors.
 
-Runtime dependencies are `@noble/ed25519`, `@hpcc-js/wasm-zstd`, and
-`idb-keyval`. The optional SQLite vector subpath ships pinned local WASM assets
-and does not load code from a CDN.
+Runtime dependencies are `@noble/ed25519` and `@hpcc-js/wasm-zstd`. The chunk
+store and the optional SQLite subpaths share pinned local WASM assets and do not
+load code from a CDN.
