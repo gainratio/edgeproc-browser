@@ -26,7 +26,7 @@ export { ChunkDatabase, chunkDatabaseName, } from "./engine/chunkDatabase.js";
 export { EngineClient, } from "./engine/client.js";
 // --- ed25519 + sha256: the primitives the whole chain rests on ---
 export { SignatureError, sha256Hex, verifyEd25519 } from "./engine/crypto.js";
-export { classifyEngineError, EngineOperationError, } from "./engine/engineError.js";
+export { classifyEngineError, EngineOperationError, EngineStorageUnavailableError, } from "./engine/engineError.js";
 // --- the network edge: size-capped, stall-bounded byte fetch ---
 export { DEFAULT_MAX_FETCH_BYTES, FETCH_STALL_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
 // --- integrity: bounded decompression + content-address verification ---

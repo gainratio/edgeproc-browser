@@ -1,3 +1,4 @@
+import { SqlStorageUnavailableError, } from "../sql/types.js";
 import { SignatureError } from "./crypto.js";
 import { NetworkError } from "./fetchBytes.js";
 import { IntegrityError } from "./integrity.js";
@@ -12,6 +13,25 @@ export class EngineOperationError extends Error {
         this.code = detail.code;
     }
 }
+/**
+ * The persistent OPFS cache could not be opened and no in-memory fallback was
+ * allowed (`cacheFallback: "none"`), or using one would be unsafe. Nothing was
+ * downloaded. Still an {@link EngineOperationError} with code "storage".
+ */
+export class EngineStorageUnavailableError extends EngineOperationError {
+    reason;
+    constructor(detail) {
+        super(detail);
+        this.name = "EngineStorageUnavailableError";
+        this.reason = detail.reason;
+    }
+}
+/** The main-thread error for a Worker failure detail. */
+export function engineErrorOf(detail) {
+    return detail.code === "storage" && detail.reason !== undefined
+        ? new EngineStorageUnavailableError({ ...detail, reason: detail.reason })
+        : new EngineOperationError(detail);
+}
 export function classifyEngineError(error) {
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof RollbackError)
@@ -21,6 +41,9 @@ export function classifyEngineError(error) {
     }
     if (error instanceof NetworkError)
         return { code: "network", message };
+    if (error instanceof SqlStorageUnavailableError) {
+        return { code: "storage", message, reason: error.reason };
+    }
     if (/timed out acquiring (?:an? )?opfs mutation lock/iu.test(message)) {
         return { code: "lock", message };
     }

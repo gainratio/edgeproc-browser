@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { SqlStorageUnavailableError } from "../sql/types.js";
 import { SignatureError } from "./crypto.js";
-import { classifyEngineError, EngineOperationError } from "./engineError.js";
+import {
+	classifyEngineError,
+	EngineOperationError,
+	EngineStorageUnavailableError,
+	engineErrorOf,
+} from "./engineError.js";
 import { NetworkError } from "./fetchBytes.js";
 import { IntegrityError } from "./integrity.js";
 import { StorageQuotaError } from "./storageError.js";
@@ -32,6 +38,45 @@ describe("typed Worker error contract", () => {
 			name: "EngineOperationError",
 			code: "network",
 			message: "offline",
+		});
+	});
+});
+
+describe("storage-unavailable error contract", () => {
+	it("classifies a refused SQL store as storage with its reason", () => {
+		expect(
+			classifyEngineError(
+				new SqlStorageUnavailableError("pool-in-use", "held elsewhere"),
+			),
+		).toEqual({
+			code: "storage",
+			message: "held elsewhere",
+			reason: "pool-in-use",
+		});
+	});
+
+	it("rebuilds a typed EngineStorageUnavailableError on the main thread", () => {
+		const error = engineErrorOf({
+			code: "storage",
+			message: "no OPFS",
+			reason: "opfs-unavailable",
+		});
+		expect(error).toBeInstanceOf(EngineStorageUnavailableError);
+		expect(error).toBeInstanceOf(EngineOperationError);
+		expect(error).toMatchObject({
+			name: "EngineStorageUnavailableError",
+			code: "storage",
+			reason: "opfs-unavailable",
+			message: "no OPFS",
+		});
+	});
+
+	it("keeps a storage error without a reason a plain EngineOperationError", () => {
+		const error = engineErrorOf({ code: "storage", message: "quota" });
+		expect(error).not.toBeInstanceOf(EngineStorageUnavailableError);
+		expect(error).toMatchObject({
+			name: "EngineOperationError",
+			code: "storage",
 		});
 	});
 });

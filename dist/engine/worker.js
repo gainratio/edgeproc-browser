@@ -25,15 +25,17 @@ let storeState = null;
 function chunks(configuration) {
     const namespace = configuration?.namespace ?? "edgeproc-browser";
     const indexedDbLayout = resolveIndexedDbLayout(configuration?.indexedDbLayout, cacheDatabaseName(namespace));
+    const cacheFallback = configuration?.cacheFallback ?? "memory";
     if (storeState === null) {
         storeState = {
             namespace,
             indexedDbLayout,
+            cacheFallback,
             database: new ChunkDatabase({
                 namespace,
                 open: async (name) => openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
                     name,
-                    fallback: "memory",
+                    fallback: cacheFallback,
                 }),
                 memoryProfile: resolveMemoryProfile("auto"),
                 legacySources: () => [
@@ -47,6 +49,7 @@ function chunks(configuration) {
         };
     }
     else if (storeState.namespace !== namespace ||
+        storeState.cacheFallback !== cacheFallback ||
         storeState.indexedDbLayout.database !== indexedDbLayout.database ||
         storeState.indexedDbLayout.store !== indexedDbLayout.store ||
         storeState.indexedDbLayout.separator !== indexedDbLayout.separator) {
@@ -68,6 +71,7 @@ async function handleSync(req) {
         ...(req.indexedDbLayout === undefined
             ? {}
             : { indexedDbLayout: req.indexedDbLayout }),
+        cacheFallback: req.cacheFallback,
     });
     return withChunkStore(configuration, async (cacheStore, storage) => {
         // The trust root: a legacy raw 32-byte key (a keyring of one) or an
@@ -120,6 +124,7 @@ async function handleClear(req) {
     const configuration = chunks({
         namespace: req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser",
         ...(indexedDbLayout === undefined ? {} : { indexedDbLayout }),
+        cacheFallback: req.cacheFallback ?? storeState?.cacheFallback,
     });
     return configuration.database.run(async (cacheStore) => {
         await cacheStore.clear();

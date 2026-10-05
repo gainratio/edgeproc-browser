@@ -1,5 +1,5 @@
 import type { IndexedDbLayoutOptions } from "./legacyStores.js";
-import type { EngineRequest, EngineResponse } from "./protocol.js";
+import type { EngineCacheFallback, EngineRequest, EngineResponse } from "./protocol.js";
 import type { SyncProgress } from "./sync.js";
 import type { EngineSyncResult } from "./types.js";
 /** The minimal Worker surface this client needs — small so tests can fake it. */
@@ -31,9 +31,13 @@ export interface EngineSyncOptions {
     /** Where a 0.2.x cache kept its IndexedDB rollback floor. Read once to
      * migrate into SQLite (the floor is never lowered), then deleted. */
     readonly indexedDbLayout?: IndexedDbLayoutOptions;
+    /** When OPFS cannot be opened. "memory" (default): cache in RAM for this
+     * Worker's life and re-download each session. "none": download nothing and
+     * reject with EngineStorageUnavailableError. Fixed by the Worker's first use. */
+    readonly cacheFallback?: EngineCacheFallback;
     readonly onProgress?: (progress: SyncProgress) => void;
 }
-export type EngineStorageOptions = Pick<EngineSyncOptions, "cacheNamespace" | "indexedDbLayout">;
+export type EngineStorageOptions = Pick<EngineSyncOptions, "cacheNamespace" | "indexedDbLayout" | "cacheFallback">;
 export declare class EngineClient {
     #private;
     constructor(worker: EngineWorkerLike, options?: EngineClientOptions);

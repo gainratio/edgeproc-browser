@@ -27,6 +27,7 @@ import {
 import { installNetworkSentinel } from "./networkSentinel.js";
 import type {
 	ClearRequest,
+	EngineCacheFallback,
 	EngineRequest,
 	EngineResponse,
 	ReadFileRequest,
@@ -48,6 +49,7 @@ installNetworkSentinel("engine-worker");
 interface StoreConfiguration {
 	readonly namespace: string;
 	readonly indexedDbLayout: IndexedDbLayout;
+	readonly cacheFallback: EngineCacheFallback;
 }
 
 let storeState:
@@ -58,22 +60,25 @@ let storeState:
 function chunks(configuration?: {
 	readonly namespace?: string;
 	readonly indexedDbLayout?: IndexedDbLayoutOptions;
+	readonly cacheFallback?: EngineCacheFallback | undefined;
 }): StoreConfiguration & { readonly database: ChunkDatabase } {
 	const namespace = configuration?.namespace ?? "edgeproc-browser";
 	const indexedDbLayout = resolveIndexedDbLayout(
 		configuration?.indexedDbLayout,
 		cacheDatabaseName(namespace),
 	);
+	const cacheFallback = configuration?.cacheFallback ?? "memory";
 	if (storeState === null) {
 		storeState = {
 			namespace,
 			indexedDbLayout,
+			cacheFallback,
 			database: new ChunkDatabase({
 				namespace,
 				open: async (name) =>
 					openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
 						name,
-						fallback: "memory",
+						fallback: cacheFallback,
 					}),
 				memoryProfile: resolveMemoryProfile("auto"),
 				legacySources: () => [
@@ -89,6 +94,7 @@ function chunks(configuration?: {
 		};
 	} else if (
 		storeState.namespace !== namespace ||
+		storeState.cacheFallback !== cacheFallback ||
 		storeState.indexedDbLayout.database !== indexedDbLayout.database ||
 		storeState.indexedDbLayout.store !== indexedDbLayout.store ||
 		storeState.indexedDbLayout.separator !== indexedDbLayout.separator
@@ -120,6 +126,7 @@ async function handleSync(req: SyncRequest): Promise<EngineResponse> {
 		...(req.indexedDbLayout === undefined
 			? {}
 			: { indexedDbLayout: req.indexedDbLayout }),
+		cacheFallback: req.cacheFallback,
 	});
 	return withChunkStore(configuration, async (cacheStore, storage) => {
 		// The trust root: a legacy raw 32-byte key (a keyring of one) or an
@@ -179,6 +186,7 @@ async function handleClear(req: ClearRequest): Promise<EngineResponse> {
 		namespace:
 			req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser",
 		...(indexedDbLayout === undefined ? {} : { indexedDbLayout }),
+		cacheFallback: req.cacheFallback ?? storeState?.cacheFallback,
 	});
 	return configuration.database.run(
 		async (cacheStore) => {

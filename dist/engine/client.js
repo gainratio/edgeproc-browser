@@ -15,7 +15,7 @@
 // so the next EngineClient cannot open the store — while no caller will ever
 // read from it again. Settling the promises without releasing the thread just
 // trades a hung caller for a leaked one.
-import { EngineOperationError } from "./engineError.js";
+import { engineErrorOf } from "./engineError.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, WorkerCrashError, WorkerTimeoutError, } from "./workerFault.js";
 export class EngineClient {
     #worker;
@@ -74,6 +74,9 @@ export class EngineClient {
             ...(options.indexedDbLayout !== undefined
                 ? { indexedDbLayout: options.indexedDbLayout }
                 : {}),
+            ...(options.cacheFallback !== undefined
+                ? { cacheFallback: options.cacheFallback }
+                : {}),
         }, options.onProgress);
         if (response.ok && response.kind === "sync") {
             return response.result;
@@ -103,6 +106,9 @@ export class EngineClient {
             ...(options.indexedDbLayout === undefined
                 ? {}
                 : { indexedDbLayout: options.indexedDbLayout }),
+            ...(options.cacheFallback === undefined
+                ? {}
+                : { cacheFallback: options.cacheFallback }),
         });
         if (response.ok && response.kind === "clear")
             return;
@@ -127,7 +133,7 @@ export class EngineClient {
     #errorOf(response) {
         return response.ok
             ? new Error("unexpected response kind")
-            : new EngineOperationError(response.error);
+            : engineErrorOf(response.error);
     }
     #send(request, onProgress) {
         if (this.#crash !== undefined) {

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-05
+
+Apps that require persistent storage can now refuse the engine's in-memory fallback.
+Nothing changes unless you pass the new option.
+
+### Added
+
+- **`cacheFallback: "memory" | "none"`** on `EngineClient.sync` and `clear` (and on the
+  `SyncRequest` / `ClearRequest` protocol). The default `"memory"` keeps today's behavior.
+  With `"none"`, when OPFS cannot be opened the engine Worker opens no in-memory cache,
+  fetches nothing (not even the trust root), and rejects at once with the new
+  `EngineStorageUnavailableError`. A Worker's first call fixes the value.
+- **`EngineStorageUnavailableError`**, a subclass of `EngineOperationError` with
+  `code: "storage"` and a `reason`: `"opfs-unavailable"` or `"pool-in-use"`
+  (`EngineStorageUnavailableReason`). `EngineErrorDetail` gains the optional `reason`.
+- `EngineCacheFallback` type export.
+
+### Changed
+
+- Refusals the engine already made in default mode (the pool held by another context, or a
+  persisted cache that cannot be reopened) now also arrive as `EngineStorageUnavailableError`.
+  They are still `EngineOperationError` with `code: "storage"`, so existing checks keep working.
+
 ## [0.3.0] - 2026-10-04
 
 The chunk cache moves to one SQLite database per cache, on OPFS. This is a storage format
