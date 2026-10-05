@@ -1,16 +1,18 @@
-import type { SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlImportOptions, SqlImportRejection, SqlStatement } from "./types.js";
+import type { MigrateLegacySahPoolOptions, SqlBind, SqlDatabaseOptions, SqlFallbackReason, SqlImportOptions, SqlImportRejection, SqlStatement } from "./types.js";
 type WithId<T> = T & {
     readonly id: number;
 };
 export type SqlWorkerRequest = WithId<{
     readonly operation: "open";
     readonly options: SqlDatabaseOptions;
+    /** A bounded by-name operation, not a connection. */
+    readonly transient?: true;
 } | {
     readonly operation: "exec";
     readonly sql: string;
     readonly bind?: SqlBind;
 } | {
-    readonly operation: "query";
+    readonly operation: "query" | "tx-exec" | "tx-query";
     readonly sql: string;
     readonly bind?: SqlBind;
 } | {
@@ -20,6 +22,8 @@ export type SqlWorkerRequest = WithId<{
     readonly operation: "execute-many";
     readonly sql: string;
     readonly rows: ReadonlyArray<SqlBind>;
+} | {
+    readonly operation: "begin" | "commit" | "rollback";
 } | {
     readonly operation: "prepare";
     readonly sql: string;
@@ -36,6 +40,9 @@ export type SqlWorkerRequest = WithId<{
     readonly operation: "import";
     readonly bytes: Uint8Array;
     readonly options?: SqlImportOptions;
+} | {
+    readonly operation: "migrate-legacy";
+    readonly options: MigrateLegacySahPoolOptions;
 } | {
     readonly operation: "runtime-info";
 } | {

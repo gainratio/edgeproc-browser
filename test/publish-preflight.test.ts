@@ -125,7 +125,11 @@ function runPreflight(dir: string): { status: number | null; output: string } {
 	return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
-describe("publish preflight", () => {
+// Each test spawns several real git processes; under machine load one takes
+// longer than vitest's 5 s default (seen locally at load 18-57).
+const GIT_SUBPROCESS_TIMEOUT_MS = 30_000;
+
+describe("publish preflight", { timeout: GIT_SUBPROCESS_TIMEOUT_MS }, () => {
 	it("refuses when there is no git work tree to name a commit", () => {
 		const { status, output } = runPreflight(scratchDir());
 		expect(status).toBe(1);
@@ -324,7 +328,9 @@ function typecheckPaths(): Record<string, string[]> {
 	return JSON.parse(raw).compilerOptions?.paths ?? {};
 }
 
-describe("the publish gate survives the dist that preflight deletes", () => {
+describe("the publish gate survives the dist that preflight deletes", {
+	timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+}, () => {
 	it("finds public entry points to check (guards against a vacuous pass)", () => {
 		expect(publicSpecifiers().length).toBeGreaterThan(1);
 		expect(publicSpecifiers()).toContain("@gainratio/browser");

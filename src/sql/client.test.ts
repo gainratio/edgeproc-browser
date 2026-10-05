@@ -7,7 +7,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
-import { exportDatabase, openSqlDatabase, type SqlWorkerLike } from "./client";
+import {
+	exportDatabase,
+	migrateLegacySahPool,
+	openSqlDatabase,
+	type SqlWorkerLike,
+} from "./client";
 import { SqlEngine } from "./engine";
 import { createSqlWorkerHandler } from "./handler";
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol";
@@ -227,6 +232,105 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		await expect(waiting).rejects.toThrow(/unreadable message/);
 	});
 
+	it("reports both errors when an interactive transaction cannot roll back", async () => {
+		const worker = scriptedWorker(async (request) =>
+			request.operation === "rollback"
+				? {
+						id: request.id,
+						ok: false,
+						error: { name: "Error", message: "disk I/O error" },
+					}
+				: { id: request.id, ok: true, value: undefined },
+		);
+		const db = await openSqlDatabase(
+			{ name: "stuck", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const boom = new Error("boom");
+		const failure = await db
+			.transaction(async () => {
+				throw boom;
+			})
+			.catch((error: unknown) => error);
+		expect(failure).toBeInstanceOf(AggregateError);
+		expect((failure as AggregateError).errors[0]).toBe(boom);
+		expect((failure as AggregateError).errors[1]).toMatchObject({
+			message: "disk I/O error",
+		});
+		expect(worker.requests.map((r) => r.operation)).toEqual([
+			"open",
+			"begin",
+			"rollback",
+		]);
+	});
+
+	it("close() posts ROLLBACK then close for an open transaction, never COMMIT", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: undefined,
+		}));
+		const db = await openSqlDatabase(
+			{ name: "closing-tx", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((done) => {
+			release = done;
+		});
+		const tx = db.transaction(async (t) => {
+			await t.exec("UPDATE x SET y = 1");
+			await gate;
+		});
+		const queued = db.transaction([{ sql: "SELECT 1" }]);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await db.close();
+		release();
+		await expect(tx).rejects.toThrow(/closed/);
+		await expect(queued).rejects.toThrow(/closed/);
+		expect(worker.requests.map((r) => r.operation)).toEqual([
+			"open",
+			"begin",
+			"tx-exec",
+			"rollback",
+			"close",
+		]);
+		expect(worker.terminated).toBe(true);
+	});
+
+	it("a transaction queued behind one that close() cancels never begins", async () => {
+		const worker = scriptedWorker(async (request) => ({
+			id: request.id,
+			ok: true,
+			value: undefined,
+		}));
+		const db = await openSqlDatabase(
+			{ name: "queued-tx", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const first = db.transaction(() => new Promise<void>(() => undefined));
+		const second = db.transaction(async () => "ran");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await db.close();
+		await expect(first).rejects.toThrow(/closed/);
+		await expect(second).rejects.toThrow(/closed/);
+		expect(worker.requests.filter((r) => r.operation === "begin")).toHaveLength(
+			1,
+		);
+	});
+
+	it("refuses an interactive transaction on a closed handle without posting", async () => {
+		const worker = realWorker();
+		const db = await openSqlDatabase(
+			{ name: "closed-tx", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		await db.close();
+		const posted = worker.requests.length;
+		await expect(db.transaction(async () => 1)).rejects.toThrow(/closed/);
+		expect(worker.requests.length).toBe(posted);
+	});
+
 	it("serializes a non-Error throw from the Worker side", async () => {
 		const handle = createSqlWorkerHandler(async () => {
 			throw "plain string";
@@ -251,6 +355,85 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		).not.toThrow();
 		expect(await db.query("SELECT 1 AS one")).toEqual([{ one: 1 }]);
 		await db.close();
+	});
+
+	it("routes legacy migration to the Worker's migrator, by handle or by name", async () => {
+		const seen: unknown[] = [];
+		const opened: unknown[] = [];
+		const factory = () =>
+			new InProcessWorker(
+				createSqlWorkerHandler(async (options) => {
+					opened.push(options);
+					return {
+						engine: new SqlEngine(sqlite.openMemory(), {
+							storage: { persistence: "memory", reason: "requested" },
+							memoryProfile: MEMORY_PROFILES.lite,
+						}),
+						release: async () => undefined,
+						migrateLegacy: async (request) => {
+							seen.push(request);
+							return { status: "absent" } as const;
+						},
+					};
+				}),
+			);
+		const request = {
+			fromPool: "amlfilter-workstation",
+			fromFile: "/kyc.sqlite3",
+			removeLegacy: true,
+			importOptions: { allowTriggersAndViews: true },
+		};
+		const db = await openSqlDatabase(
+			{ name: "handle", persistence: "memory" },
+			{ workerFactory: factory },
+		);
+		expect(await migrateLegacySahPool({ ...request, to: db })).toEqual({
+			status: "absent",
+		});
+		await db.close();
+		expect(
+			await migrateLegacySahPool(
+				{ ...request, to: "workstation" },
+				{ workerFactory: factory },
+			),
+		).toEqual({ status: "absent" });
+		expect(seen).toEqual([request, request]);
+		expect(opened[1]).toEqual({
+			name: "workstation",
+			persistence: "opfs",
+			fallback: "none",
+		});
+	});
+
+	it("marks by-name operations transient, and connections not", async () => {
+		const workers: InProcessWorker[] = [];
+		const contexts: unknown[] = [];
+		const factory = () => {
+			const worker = new InProcessWorker(
+				createSqlWorkerHandler(async (_options, context) => {
+					contexts.push(context);
+					return {
+						engine: new SqlEngine(sqlite.openMemory(), {
+							storage: { persistence: "memory", reason: "requested" },
+							memoryProfile: MEMORY_PROFILES.lite,
+							serializer: sqlite.serializer,
+						}),
+						release: async () => undefined,
+					};
+				}),
+			);
+			workers.push(worker);
+			return worker;
+		};
+		const db = await openSqlDatabase(
+			{ name: "conn" },
+			{ workerFactory: factory },
+		);
+		await db.close();
+		await exportDatabase("by-name", { workerFactory: factory });
+		expect(workers[0]?.requests[0]).not.toHaveProperty("transient");
+		expect(workers[1]?.requests[0]).toMatchObject({ transient: true });
+		expect(contexts).toEqual([{ transient: false }, { transient: true }]);
 	});
 
 	it("posts only the fields a call was given", async () => {

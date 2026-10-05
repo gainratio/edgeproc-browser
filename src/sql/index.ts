@@ -10,10 +10,12 @@ export type {
 export {
 	exportDatabase,
 	importDatabase,
+	migrateLegacySahPool,
 	type OpenSqlDatabaseOptions,
 	openSqlDatabase,
 	type SqlDatabase,
 	type SqlPreparedStatement,
+	type SqlTransaction,
 	type SqlWorkerFactory,
 	type SqlWorkerLike,
 } from "./client.js";
@@ -30,6 +32,8 @@ export {
 } from "./opfsPool.js";
 export type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
 export {
+	type LegacySahPoolMigration,
+	type MigrateLegacySahPoolOptions,
 	type SqlBind,
 	type SqlBindValue,
 	type SqlDatabaseOptions,
@@ -45,6 +49,7 @@ export {
 	type SqlStatement,
 	type SqlStorage,
 	SqlStorageUnavailableError,
+	SqlTransactionEndedError,
 	type SqlTransactionResult,
 	type SqlValue,
 } from "./types.js";

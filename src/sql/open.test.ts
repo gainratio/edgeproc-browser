@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { FakeLocks } from "./__fixtures__/fakeLocks";
-import { openSqlStorage, sqlDatabasePoolName } from "./open";
+import {
+	OPERATION_WAIT_BUDGETS,
+	openSqlStorage,
+	sqlDatabasePoolName,
+} from "./open";
 import { SqlStorageUnavailableError } from "./types";
 
 class Raw {
@@ -202,6 +206,79 @@ describe("openSqlStorage", () => {
 		expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
 		expect(seen[0]?.signal?.aborted).toBe(false);
 		opened.release();
+	});
+
+	it("waits out a by-name operation (an import) that holds the pool past the wait budget", async () => {
+		// CI run 37230731318: a writer opened while importDatabase(name) held
+		// the owner lock for longer than lockWaitMs, and failed pool-in-use.
+		const d = deps({ lockWaitMs: 20 });
+		const importing = await openSqlStorage(
+			d,
+			{ name: "busy-import" },
+			{ transient: true },
+		);
+		const pool = await sqlDatabasePoolName("busy-import");
+		expect((d.locks as FakeLocks).isHeld(`${pool}-operation`)).toBe(true);
+		const writer = openSqlStorage(d, { name: "busy-import" });
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		await importing.release();
+		expect((d.locks as FakeLocks).isHeld(`${pool}-operation`)).toBe(false);
+		const opened = await writer;
+		expect(opened.storage).toMatchObject({ persistence: "opfs" });
+		await opened.release();
+	});
+
+	it("waits for a by-name operation at most 15x lockWaitMs, then fails pool-in-use", async () => {
+		// An import that never finishes (a hung Worker) must not hang every
+		// writer forever: the wait is bounded and ends in the typed error.
+		expect(OPERATION_WAIT_BUDGETS).toBe(15);
+		const d = deps({ lockWaitMs: 50 });
+		const stuck = await openSqlStorage(
+			d,
+			{ name: "stuck-import" },
+			{ transient: true },
+		);
+		const started = performance.now();
+		await expect(
+			openSqlStorage(d, { name: "stuck-import" }),
+		).rejects.toMatchObject({ reason: "pool-in-use" });
+		const waited = performance.now() - started;
+		// lockWaitMs (50) + 15 x 50 for the operation = 800 ms. Timers never
+		// fire early, so 14 budgets (750 ms) fails the floor; the ceiling leaves
+		// 750 ms of slack for a loaded machine and still fails 30 budgets.
+		expect(waited).toBeGreaterThanOrEqual(795);
+		expect(waited).toBeLessThan(1_550);
+		await stuck.release();
+	});
+
+	it("still fails closed after the wait when a connection (not an operation) owns the pool", async () => {
+		const d = deps({ lockWaitMs: 20 });
+		const owner = await openSqlStorage(d, { name: "long-lived" });
+		await expect(
+			openSqlStorage(d, { name: "long-lived" }),
+		).rejects.toMatchObject({ reason: "pool-in-use" });
+		await owner.release();
+	});
+
+	it("takes the lock again when its owner let go between the timeout and the check", async () => {
+		const inner = new FakeLocks();
+		let calls = 0;
+		const d = deps({
+			locks: {
+				request: (name, options, callback) => {
+					calls += 1;
+					if (calls === 1) {
+						return Promise.reject(new DOMException("t", "TimeoutError"));
+					}
+					return inner.request(name, options, callback);
+				},
+				query: async () => ({ held: [] }),
+			},
+		});
+		const opened = await openSqlStorage(d, { name: "freed" });
+		expect(opened.storage).toMatchObject({ persistence: "opfs" });
+		expect(calls).toBe(2);
+		await opened.release();
 	});
 
 	it("treats the browser's TimeoutError from AbortSignal.timeout as pool-in-use", async () => {

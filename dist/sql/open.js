@@ -12,23 +12,30 @@ import { SqlStorageUnavailableError, } from "./types.js";
  * How long to wait for a pool's previous owner to let go. close() now hands
  * the lock back within milliseconds, so what the wait really covers is a page
  * reload overlapping its predecessor while the browser tears that page's
- * Worker down — slowest on the weakest devices, so the budget scales with the
- * memory tier rather than being one fixed number.
+ * Worker down, or a writer queued behind an import. Both are slowest on the
+ * weakest devices (a 2-core CI runner already needed more than 1 s), so no
+ * tier waits less than 4 s and slower tiers wait longer.
  */
 export function ownerLockWaitMs(tier) {
     return OWNER_LOCK_WAIT_MS[tier];
 }
 const OWNER_LOCK_WAIT_MS = Object.freeze({
-    full: 1_000,
-    lite: 2_000,
-    minimal: 4_000,
+    full: 4_000,
+    lite: 8_000,
+    minimal: 16_000,
 });
+/**
+ * A writer queued behind a by-name import or export waits up to this many
+ * owner-lock budgets for it (60 s on "full"), then fails `pool-in-use`
+ * rather than hanging behind an operation that never ends.
+ */
+export const OPERATION_WAIT_BUDGETS = 15;
 export const SQL_POOL_PREFIX = "edgeproc-sql-";
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export async function sqlDatabasePoolName(name) {
     return `${SQL_POOL_PREFIX}${await stableIdentity(name)}`;
 }
-export async function openSqlStorage(deps, options) {
+export async function openSqlStorage(deps, options, { transient = false } = {}) {
     const persistence = options.persistence ?? "opfs";
     if (persistence === "memory") {
         return {
@@ -41,10 +48,11 @@ export async function openSqlStorage(deps, options) {
         throw new TypeError(`unsupported SQL persistence: ${String(persistence)}`);
     }
     const pool = await sqlDatabasePoolName(options.name);
-    const release = await acquirePoolLease(deps.locks, poolOwnerLock(pool), deps.lockWaitMs);
-    if (release === undefined) {
+    const owner = await acquireOwnerLease(deps, pool);
+    if (owner === undefined) {
         return fallBack(deps, options, "pool-in-use", "another context owns it");
     }
+    const release = transient ? await markOperation(deps, pool, owner) : owner;
     try {
         const vfs = await deps.installPool(pool);
         const file = `/${pool}.sqlite3`;
@@ -83,13 +91,51 @@ function fallBack(deps, options, reason, detail) {
         release: async () => undefined,
     };
 }
+/**
+ * The owner lock, waiting `lockWaitMs` for a previous connection (a reload).
+ * If that wait runs out while a by-name operation holds the pool, wait for the
+ * operation to finish (bounded by OPERATION_WAIT_BUDGETS), so "a writer waits
+ * for an import by name" holds on slow devices. If the owner let go between the timeout and the check,
+ * take the lock again within the same budget. A live connection: undefined.
+ */
+async function acquireOwnerLease(deps, pool) {
+    const owner = poolOwnerLock(pool);
+    const lease = await acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+    if (lease !== undefined || deps.locks?.query === undefined)
+        return lease;
+    const held = new Set(((await deps.locks.query()).held ?? []).map((lock) => lock.name));
+    if (held.has(poolOperationLock(pool))) {
+        return acquirePoolLease(deps.locks, owner, deps.lockWaitMs * OPERATION_WAIT_BUDGETS);
+    }
+    if (!held.has(owner)) {
+        return acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+    }
+    return undefined;
+}
+/** Hold `${pool}-operation` too; free it only after the owner lock. */
+async function markOperation(deps, pool, owner) {
+    // Free whenever the owner lock is ours: nobody else takes it without it.
+    const marker = await acquirePoolLease(deps.locks, poolOperationLock(pool), deps.lockWaitMs);
+    return async () => {
+        try {
+            await owner();
+        }
+        finally {
+            await marker?.();
+        }
+    };
+}
+/** Held, alongside the owner lock, by a bounded operation on `pool`. */
+export function poolOperationLock(pool) {
+    return `${pool}-operation`;
+}
 /** The Web Lock every owner of the opfs-sahpool `pool` holds while open. */
 export function poolOwnerLock(pool) {
     return `${pool}-owner`;
 }
 /**
  * Hold an exclusive lock until the returned release() is called; undefined if
- * it stayed taken for `waitMs`. release() resolves once the lock manager has
+ * it stayed taken for `waitMs` (Infinity: wait as long as it takes). release() resolves once the lock manager has
  * actually let go (the request's promise settles after the release), which is
  * what lets close() promise "the next owner can have it now".
  */
@@ -101,7 +147,9 @@ export function acquirePoolLease(locks, name, waitMs) {
         unhold = resolve;
     });
     return new Promise((resolve, reject) => {
-        const settled = locks.request(name, { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }, async () => {
+        const settled = locks.request(name, Number.isFinite(waitMs)
+            ? { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }
+            : { mode: "exclusive" }, async () => {
             resolve(async () => {
                 unhold();
                 await settled;
@@ -121,7 +169,7 @@ export function isLockTimeout(error) {
     const name = error?.name;
     return name === "AbortError" || name === "TimeoutError";
 }
-function isPoolContentionError(error) {
+export function isPoolContentionError(error) {
     return (error instanceof Error &&
         (error.name === "NoModificationAllowedError" ||
             /access handles? cannot be created|NoModificationAllowedError/i.test(error.message)));

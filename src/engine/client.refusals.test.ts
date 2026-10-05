@@ -309,7 +309,6 @@ describe("sync identity and storage options", () => {
 				expectedBundleId: "my-bundle",
 				expectedChannel: "beta",
 				wantedPaths: ["catalog/"],
-				storageBackend: "indexeddb",
 				cacheNamespace: "my-consumer",
 				indexedDbLayout: {
 					database: "legacy-cache-v1",
@@ -323,7 +322,6 @@ describe("sync identity and storage options", () => {
 			expectedBundleId: "my-bundle",
 			expectedChannel: "beta",
 			wantedPaths: ["catalog/"],
-			storageBackend: "indexeddb",
 			cacheNamespace: "my-consumer",
 			indexedDbLayout: {
 				database: "legacy-cache-v1",
@@ -331,6 +329,9 @@ describe("sync identity and storage options", () => {
 				separator: "/",
 			},
 		});
+		// 0.3.0 REVERSES the 0.2.x contract: there is no IndexedDB backend to
+		// choose any more, so no storage-backend preference is ever sent.
+		expect(fake.sent[0]).not.toHaveProperty("storageBackend");
 		client.dispose();
 	});
 
@@ -397,10 +398,13 @@ describe("sync progress is an idle-timeout heartbeat", () => {
 				chunksFetched: 1,
 				chunksReused: 0,
 				bytesFetched: 5,
-				cacheBackend: "indexeddb",
+				cacheBackend: "sqlite-opfs",
+				cacheStorage: { persistence: "opfs", pool: "p", file: "/p.sqlite3" },
 			},
 		});
-		await expect(pending).resolves.toMatchObject({ cacheBackend: "indexeddb" });
+		await expect(pending).resolves.toMatchObject({
+			cacheBackend: "sqlite-opfs",
+		});
 	});
 
 	it("isolates a throwing progress observer from the sync result", async () => {
@@ -428,7 +432,8 @@ describe("sync progress is an idle-timeout heartbeat", () => {
 				chunksFetched: 0,
 				chunksReused: 0,
 				bytesFetched: 0,
-				cacheBackend: "indexeddb",
+				cacheBackend: "sqlite-memory",
+				cacheStorage: { persistence: "memory", reason: "opfs-unavailable" },
 			},
 		});
 
@@ -467,17 +472,16 @@ describe("explicit cache clear", () => {
 		const client = new EngineClient(fake.worker);
 		const pending = client.clear({
 			cacheNamespace: "my-consumer",
-			storageBackend: "indexeddb",
 			indexedDbLayout: {
 				database: "legacy-cache-v1",
 				store: "entries",
 				separator: "/",
 			},
 		});
+		expect(fake.sent[0]).not.toHaveProperty("storageBackend");
 		expect(fake.sent[0]).toMatchObject({
 			kind: "clear",
 			cacheNamespace: "my-consumer",
-			storageBackend: "indexeddb",
 			indexedDbLayout: {
 				database: "legacy-cache-v1",
 				store: "entries",
@@ -491,4 +495,41 @@ describe("explicit cache clear", () => {
 		});
 		await expect(pending).resolves.toBeUndefined();
 	});
+});
+
+describe("refusals the happy paths never reach", () => {
+	it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+		"refuses an idle timeout of %s",
+		(idleTimeoutMs) => {
+			expect(
+				() => new EngineClient(fakeWorker().worker, { idleTimeoutMs }),
+			).toThrow(new TypeError("idle timeout must be a positive safe integer"));
+		},
+	);
+
+	it.each([
+		[
+			"readFile",
+			(client: EngineClient) => client.readFile("catalog_meta.json"),
+		],
+		["clear", (client: EngineClient) => client.clear()],
+	] as const)(
+		"%s rejects with the Worker's typed error envelope",
+		async (kind, call) => {
+			const fake = fakeWorker();
+			const pending = call(new EngineClient(fake.worker));
+			fake.reply({
+				ok: false,
+				kind,
+				id: fake.sent[0]?.id ?? 0,
+				error: { code: "integrity", message: `${kind} refused` },
+			} as EngineResponse);
+			const error = await pending.catch((reason: unknown) => reason);
+			expect(error).toBeInstanceOf(EngineOperationError);
+			expect(error).toMatchObject({
+				code: "integrity",
+				message: `${kind} refused`,
+			});
+		},
+	);
 });

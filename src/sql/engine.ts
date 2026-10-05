@@ -9,6 +9,7 @@ import {
 	type MemoryProfile,
 	readMemoryProfile,
 } from "../sqlite/memoryProfile.js";
+import type { SqlConnectionControl } from "./control.js";
 import { exportDatabase, importDatabase } from "./portable.js";
 import type { SqlSerializer } from "./serializer.js";
 import type {
@@ -23,6 +24,7 @@ import type {
 	SqlStorage,
 	SqlTransactionResult,
 } from "./types.js";
+import { SqlTransactionEndedError } from "./types.js";
 
 export const PINNED_SQLITE_VERSION = "3.53.4";
 export const PINNED_VECTOR_VERSION = "1.1.2";
@@ -54,12 +56,17 @@ export interface SqlEngineOptions {
 	readonly memoryProfile: MemoryProfile;
 	/** SQLite's own (de)serialization; required for export and import. */
 	readonly serializer?: SqlSerializer;
+	/** Transaction state + control refusal; required for begin(). */
+	readonly control?: SqlConnectionControl;
 }
 
 export class SqlEngine {
 	readonly #raw: SqlRawDatabase;
 	readonly #storage: SqlStorage;
 	readonly #serializer: SqlSerializer | undefined;
+	readonly #control: SqlConnectionControl | undefined;
+	/** An interactive transaction began and has not ended. */
+	#interactive = false;
 	readonly #statements = new Map<number, SqlRawStatement>();
 	#nextStatement = 1;
 
@@ -67,6 +74,7 @@ export class SqlEngine {
 		this.#raw = raw;
 		this.#storage = options.storage;
 		this.#serializer = options.serializer;
+		this.#control = options.control;
 		assertPinnedRuntime(raw);
 		applyMemoryProfile(profileHandle(raw), options.memoryProfile);
 		if (options.storage.persistence === "opfs") applyPrivacyPragmas(raw);
@@ -100,6 +108,15 @@ export class SqlEngine {
 		return { changes: result.changes, results: value };
 	}
 
+	/**
+	 * In-Worker only (not on the message protocol): run `work` inside one
+	 * BEGIN IMMEDIATE … COMMIT, so a read, a JS check and a write commit
+	 * together; a throw rolls all of it back. `work` may call exec/query.
+	 */
+	public immediate<T>(work: () => T): T {
+		return this.#raw.transaction("IMMEDIATE", work);
+	}
+
 	public executeMany(sql: string, rows: ReadonlyArray<SqlBind>): SqlExecResult {
 		return this.#counting(() =>
 			this.#raw.transaction("IMMEDIATE", () =>
@@ -126,6 +143,42 @@ export class SqlEngine {
 	public finalize(id: number): void {
 		this.#prepared(id).finalize();
 		this.#statements.delete(id);
+	}
+
+	/** Start an interactive transaction; the client holds its lock until it ends. */
+	public begin(): void {
+		this.#requireControl();
+		this.#raw.exec({ sql: "BEGIN IMMEDIATE" });
+		this.#interactive = true;
+	}
+
+	/** exec inside the interactive transaction; refused once it has ended. */
+	public txExec(sql: string, bind?: SqlBind): SqlExecResult {
+		return this.#inTransaction(() => this.exec(sql, bind));
+	}
+
+	/** query inside the interactive transaction; refused once it has ended. */
+	public txQuery(sql: string, bind?: SqlBind): SqlRow[] {
+		return this.#inTransaction(() => this.query(sql, bind));
+	}
+
+	/** COMMIT, unless SQLite already ended the transaction (then refuse). */
+	public commit(): void {
+		const control = this.#requireOpenTransaction();
+		try {
+			this.#raw.exec({ sql: "COMMIT" });
+		} finally {
+			// A failed COMMIT (a deferred foreign key) leaves it open for rollback().
+			this.#interactive = control.inTransaction(this.#raw);
+		}
+	}
+
+	/** ROLLBACK if a transaction is open; nothing (and no error) otherwise. */
+	public rollback(): void {
+		this.#interactive = false;
+		if (this.#control?.inTransaction(this.#raw) === true) {
+			this.#raw.exec({ sql: "ROLLBACK" });
+		}
 	}
 
 	/** The whole database as a SQLite file (sqlite3_serialize). */
@@ -170,6 +223,31 @@ export class SqlEngine {
 			return collect(prepared, statement.bind);
 		} finally {
 			prepared.finalize();
+		}
+	}
+
+	#requireControl(): SqlConnectionControl {
+		if (this.#control === undefined) {
+			throw new Error("this SQL engine was opened without connection control");
+		}
+		return this.#control;
+	}
+
+	#requireOpenTransaction(): SqlConnectionControl {
+		const control = this.#requireControl();
+		if (!this.#interactive || !control.inTransaction(this.#raw)) {
+			this.#interactive = false;
+			throw new SqlTransactionEndedError();
+		}
+		return control;
+	}
+
+	#inTransaction<T>(statement: () => T): T {
+		const control = this.#requireOpenTransaction();
+		try {
+			return control.withoutTransactionControl(this.#raw, statement);
+		} finally {
+			if (!control.inTransaction(this.#raw)) this.#interactive = false;
 		}
 	}
 

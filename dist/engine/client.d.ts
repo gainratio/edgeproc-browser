@@ -1,7 +1,7 @@
-import type { IndexedDbLayoutOptions } from "./indexedDbStore.js";
+import type { IndexedDbLayoutOptions } from "./legacyStores.js";
 import type { EngineRequest, EngineResponse } from "./protocol.js";
 import type { SyncProgress } from "./sync.js";
-import type { EngineSyncResult, StoragePreference } from "./types.js";
+import type { EngineSyncResult } from "./types.js";
 /** The minimal Worker surface this client needs — small so tests can fake it. */
 export interface EngineWorkerLike {
     postMessage(message: EngineRequest): void;
@@ -26,13 +26,14 @@ export interface EngineSyncOptions {
     readonly expectedChannel?: string | null;
     /** undefined fetches all files; [] authenticates/promotes only the catalog. */
     readonly wantedPaths?: ReadonlyArray<string>;
-    readonly storageBackend?: StoragePreference;
+    /** Names this cache: its SQLite database and its cross-tab lock. */
     readonly cacheNamespace?: string;
-    /** Existing consumers can declaratively retain their database/store/key layout. */
+    /** Where a 0.2.x cache kept its IndexedDB rollback floor. Read once to
+     * migrate into SQLite (the floor is never lowered), then deleted. */
     readonly indexedDbLayout?: IndexedDbLayoutOptions;
     readonly onProgress?: (progress: SyncProgress) => void;
 }
-export type EngineStorageOptions = Pick<EngineSyncOptions, "storageBackend" | "cacheNamespace" | "indexedDbLayout">;
+export type EngineStorageOptions = Pick<EngineSyncOptions, "cacheNamespace" | "indexedDbLayout">;
 export declare class EngineClient {
     #private;
     constructor(worker: EngineWorkerLike, options?: EngineClientOptions);

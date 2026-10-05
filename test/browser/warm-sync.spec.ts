@@ -1,11 +1,9 @@
-// Warm-boot proofs against real OPFS and the BUILT Worker:
-//   1. tamper-at-rest: same-origin code rewrites a cached chunk with a VALID
-//      zstd frame of different bytes; the engine must refuse it (never hand it
-//      to the app) and the next sync must re-fetch the genuine chunk.
-//   2. network stall mid-sync: chunk requests are held for longer than the
+// Warm-boot proofs against real OPFS and the BUILT Worker (tamper-at-rest
+// lives in sqlite-store.spec.ts, against the SQLite chunk table):
+//   1. network stall mid-sync: chunk requests are held for longer than the
 //      client's default idle deadline; the sync must survive it, announce the
 //      stall, and re-fetch only the chunks that were in flight.
-//   3. benchmark (opt-in): cold and warm sync + read times for a real bundle.
+//   2. benchmark (opt-in): cold and warm sync + read times for a real bundle.
 //
 // Bundle: the committed fixture by default. Set EDGEPROC_BENCH_BUNDLE to a
 // directory holding `latest`, `manifest/`, `chunk/` and `public.key` (e.g. a
@@ -13,7 +11,6 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
-import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { expect, type Page, type Route, test } from "@playwright/test";
 
 const FIXTURE = join(
@@ -25,8 +22,6 @@ const FIXTURE = join(
 	"bundle",
 );
 const BENCH = process.env.EDGEPROC_BENCH_BUNDLE;
-const BACKEND: "auto" | "indexeddb" =
-	process.env.EDGEPROC_BENCH_BACKEND === "indexeddb" ? "indexeddb" : "auto";
 const BUNDLE = BENCH ?? join(FIXTURE, "catalog");
 const PUBLIC_KEY = BENCH
 	? join(BENCH, "public.key")
@@ -109,49 +104,6 @@ function stallGate(serveBefore: number, holdMs: number) {
 	};
 }
 
-/** A valid single-frame zstd chunk of the right size but one flipped byte:
- * it decompresses cleanly, so only the content-address check can catch it. */
-function forgeChunk(chunkHash: string): string {
-	const plain = Buffer.from(
-		zstdDecompressSync(readFileSync(join(BUNDLE, "chunk", chunkHash))),
-	);
-	plain[0] = (plain[0] ?? 0) ^ 0xff;
-	return zstdCompressSync(plain).toString("hex");
-}
-
-test("a chunk tampered at rest is refused, never served, and re-fetched", async ({
-	page,
-}) => {
-	const errors: string[] = [];
-	page.on("pageerror", (error) => errors.push(error.message));
-	await openHarness(page);
-	const target = manifestFiles().find((file) => file.chunks.length > 0);
-	if (target === undefined) throw new Error("bundle has no chunked file");
-	const chunkHash = target.chunks[0]?.hash as string;
-
-	const outcome = await page.evaluate(
-		(args) =>
-			window.warmSync.tamper(
-				args.namespace,
-				args.path,
-				args.chunkHash,
-				args.forged,
-			),
-		{
-			namespace: `tamper-${crypto.randomUUID()}`,
-			path: target.path,
-			chunkHash,
-			forged: forgeChunk(chunkHash),
-		},
-	);
-
-	expect(outcome.tamperedReadCode).toBe("integrity");
-	expect(outcome.tamperedSyncCode).toBe("integrity");
-	expect(outcome.healedChunksFetched).toBe(1);
-	expect(outcome.healedBytesMatch).toBe(true);
-	expect(errors).toEqual([]);
-});
-
 // The production outage this guards: on slow 4G the sync Worker's progress
 // (reported per completed chunk) went quiet for longer than the client's 60 s
 // idle deadline, the Worker was killed mid-sync, and the app never started.
@@ -216,17 +168,16 @@ test("benchmark: cold vs warm sync on a real bundle", async ({ page }) => {
 	const paths = manifestFiles().map((file) => file.path);
 	const namespace = `bench-${crypto.randomUUID()}`;
 	const boot = () =>
-		page.evaluate(
-			(args) => window.warmSync.boot(args.namespace, args.paths, args.backend),
-			{ namespace, paths, backend: BACKEND },
-		);
+		page.evaluate((args) => window.warmSync.boot(args.namespace, args.paths), {
+			namespace,
+			paths,
+		});
 	const cold = await boot();
 	const warm = [await boot(), await boot(), await boot(), await boot()];
 	expect(cold.chunksFetched).toBeGreaterThan(0);
 	for (const run of warm) expect(run.chunksFetched).toBe(0);
 	const report = {
 		bundle: BENCH,
-		backend: BACKEND,
 		files: paths.length,
 		cold,
 		warm,

@@ -100,7 +100,7 @@ export declare class PointerExpiredError extends IntegrityError {
  * pointer that predates an optional field keeps its original preimage. */
 export declare function pointerSigningBytes(pointer: VersionPointer): Uint8Array;
 /** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
- * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * is dominated by per-chunk storage round trips (one SQLite row read per
  * chunk), not by hashing; awaiting them one at a time serialised that latency. */
 export declare const MAX_CONCURRENT_CHUNK_READS = 8;
 /**

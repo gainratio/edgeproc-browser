@@ -131,4 +131,45 @@ export declare class SqlImportRejectedError extends Error {
     readonly reason: SqlImportRejection;
     constructor(reason: SqlImportRejection, message: string);
 }
+/** A database another build kept in an opfs-sahpool, and how to move it. */
+export interface MigrateLegacySahPoolOptions {
+    /** The legacy pool's VFS name (its OPFS directory is `.${fromPool}`). */
+    readonly fromPool: string;
+    /** The database's name inside that pool, e.g. "/kyc.sqlite3". */
+    readonly fromFile: string;
+    /** Delete the legacy pool once the import has committed. Default false. */
+    readonly removeLegacy?: boolean;
+    /** Web Lock held while the pool is read. Default `${fromPool}-owner`. */
+    readonly lockName?: string;
+    /** Validation for the incoming file (schema checks, triggers, size). */
+    readonly importOptions?: SqlImportOptions;
+}
+export type LegacySahPoolMigration = {
+    readonly status: "migrated";
+    readonly result: SqlImportResult;
+    /** A rollback journal was present and SQLite played it back. */
+    readonly recoveredJournal: boolean;
+    /**
+     * "removed": you asked, and the pool is gone. "shared": you asked, but
+     * the pool holds other files too, so nothing was deleted. "kept":
+     * you did not ask (or removal left the directory behind).
+     */
+    readonly legacy: "removed" | "kept" | "shared";
+}
+/** No such pool, or no such file in it. Nothing was created. */
+ | {
+    readonly status: "absent";
+}
+/** Another context holds the pool or the lock. Nothing changed; retry later. */
+ | {
+    readonly status: "in-use";
+};
+/**
+ * SQLite ended the interactive transaction itself (a RAISE(ROLLBACK), or an
+ * error such as SQLITE_FULL, IOERR or BUSY that rolls the whole transaction
+ * back). Its writes are gone, and nothing more runs in it.
+ */
+export declare class SqlTransactionEndedError extends Error {
+    constructor(message?: string);
+}
 //# sourceMappingURL=types.d.ts.map

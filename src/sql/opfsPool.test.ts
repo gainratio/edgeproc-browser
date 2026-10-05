@@ -194,12 +194,15 @@ describe("removeOpfsPool", () => {
 	});
 
 	it.each([
-		["full", 1_000],
-		["lite", 2_000],
-		["minimal", 4_000],
-	] as const)("waits longer on slower devices: %s -> %i ms", (tier, ms) => {
-		expect(ownerLockWaitMs(tier)).toBe(ms);
-	});
+		["full", 4_000],
+		["lite", 8_000],
+		["minimal", 16_000],
+	] as const)(
+		"waits at least 4 s, longer on slower devices: %s -> %i ms",
+		(tier, ms) => {
+			expect(ownerLockWaitMs(tier)).toBe(ms);
+		},
+	);
 
 	it("rethrows a null rejection unchanged", async () => {
 		const root: OpfsRoot = {

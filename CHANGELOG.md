@@ -7,8 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
+The chunk cache moves to one SQLite database per cache, on OPFS. This is a storage format
+change. On the first session after upgrading, a 0.2.x cache is checked and migrated once;
+anything that cannot be migrated is simply downloaded again. IndexedDB is no longer used.
+
+This release also carries the 0.2.2 integrity hotfix, which was never published on its own.
+Upgrade if you use `@gainratio/browser/sql` or `@gainratio/browser/vector/sqlite` with OPFS
+storage.
+
+### Breaking
+
+- **New storage format.** The OPFS one-file-per-chunk store (origin-root `chunk/`,
+  `manifest/`, `active`, `active.a`, `active.b`, `mutation.lock`) and the IndexedDB store and
+  floor are gone. Chunks, manifests, the active pointer and the rollback floor now live in one
+  SQLite database named `${cacheNamespace}-chunks`, opened through the library's SQL seam
+  (`opfs-sahpool`, pool owner Web Lock, `MemoryProfile` limits, `secure_delete=ON`).
+- **Removed exports:** `OpfsCacheStore`, `IndexedDbCacheStore`, `openPersistentCacheStore`,
+  `PersistentCacheStore`, `PersistentStoreOptions`, `requestPersistentStorage`, and the
+  `StoragePreference` type. `canPromotePointer` and `selectHighestPointer` are still exported.
+- **Removed option:** `storageBackend` on `EngineClient.sync` and `clear`. There is no backend
+  to choose.
+- **Changed status values:** `cacheBackend` is now `"sqlite-opfs"` or `"sqlite-memory"`
+  (`"opfs+indexeddb"` and `"indexeddb"` are gone).
+- **`indexedDbLayout` changed meaning.** It now only says where a 0.2.x cache kept its
+  IndexedDB floor and chunks, so they can be migrated once.
+- **Runtime dependency removed:** `idb-keyval`.
+- **`db.close()` rolls back an open interactive transaction instead of waiting for it.** This
+  reverses a contract: `close()` used to wait for the transaction to finish, so a callback
+  that awaited `db` inside its own transaction hung `close()` forever. Now the transaction is
+  rolled back, calls queued behind it reject, and the Worker ends. Commit before closing.
+
+### Added
+
+- `SqliteCacheStore`, `ChunkSqlConnection`, `pointerIdentity`, `ChunkDatabase`,
+  `ChunkDatabaseOptions`, `chunkDatabaseName`, `migrateLegacyStores`, `LegacySource`,
+  `LegacySnapshot` and `MigrationReport`. `resolveIndexedDbLayout`, `IndexedDbLayout` and
+  `IndexedDbLayoutOptions` stay, now from the migration reader.
+- **`result.cacheStorage`** on every sync: `{ persistence: "opfs", pool, file }`, or
+  `{ persistence: "memory", reason: "opfs-unavailable" | "pool-in-use", detail }`.
+- **Tabs take turns on one file.** The engine Worker holds storage only for a session (cache
+  Web Lock, then pool owner lock, run the queued work, release), opening a fresh connection
+  each time. Two tabs syncing and reading at once both persist to OPFS and share chunks.
+- **One-time migration** from the 0.2.x OPFS and IndexedDB stores. Every chunk is checked by
+  content address and copied in one transaction; the floor is never lowered. It is
+  crash-resumable and idempotent. On failure it warns, deletes nothing, and retries next
+  session. Only the library's own IndexedDB keys are deleted.
+- **In-memory fallback.** If OPFS is refused or another context holds the pool past 5 s, the
+  Worker uses one in-memory SQLite database for its life and re-downloads each session.
+- **Interactive SQL transactions.** `db.transaction(async (tx) => { … })` runs
+  `BEGIN IMMEDIATE`, your callback's `tx.query` / `tx.exec`, then `COMMIT`; a throw or a failed
+  `COMMIT` rolls back and rejects with that error. The handle holds its connection lock for the
+  callback, so other calls on it (including other transactions) wait instead of interleaving.
+  The statement-list form is unchanged. `tx` refuses BEGIN/COMMIT/ROLLBACK/SAVEPOINT (an SQLite
+  authorizer), and once SQLite itself ends the transaction (`RAISE(ROLLBACK)`, `SQLITE_FULL`,
+  `IOERR`, `BUSY`) every later `tx` call and the `COMMIT` reject with the new
+  `SqlTransactionEndedError`, so nothing is written in autocommit.
+- **`migrateLegacySahPool({ fromPool, fromFile, to })`** (and `db.migrateLegacySahPool`): move
+  a database another SQLite build kept in an opfs-sahpool into one this library owns. Holds a
+  Web Lock and the old pool's access handles (an old-build tab that has it open gives
+  `"in-use"`), lets SQLite roll back a hot journal the old build crashed with, imports through
+  the normal validated, atomic import, and removes the old pool only with `removeLegacy: true`
+  and only when it holds nothing but that database and its journal (`legacy: "shared"`
+  otherwise: removing a sahpool deletes every file in it).
+- **`@gainratio/browser/sql/node`**: `openNodeSqlDatabase({ name })` runs the same pinned SQLite
+  build, client and handler in-process, so consumers' SQL tests run against the real engine.
+- **A connection opened while an import or export by name runs now waits for it.** The by-name
+  operation holds a `${pool}-operation` Web Lock; a context whose owner-lock wait runs out while
+  it is held waits for the operation to finish, up to 15 owner-lock budgets (60 s on `full`),
+  instead of failing `pool-in-use` at once (seen in CI when a 4 MB import outlasted the 1 s
+  wait). An operation that never ends still yields the typed `pool-in-use`, not a hang.
+- Docs: importing a schema that has triggers (`allowTriggersAndViews: true`), with the
+  workstation's append-only pair as the example.
+
+### Changed
+
+- **The SQLite runtime is now built with Emscripten 6.0.11** (was 4.0.15). Same SQLite 3.53.4
+  and sqlite-vector 1.1.2; `sqlite3.wasm` is 932,259 bytes (was 934,257). Vector and FTS5
+  query speed is unchanged in Chromium and WebKit. WASM SIMD was measured and left off:
+  sqlite-vector has no wasm SIMD kernels, and autovectorised scalar code was 5-20% slower.
+- `removeOpfsPool` / `removeSqlDatabase` can return a new `"timeout"`: the wait for the owner
+  lock ended but no owner could be confirmed. `"in-use"` now means a live owner is confirmed.
+  Callers that switch exhaustively on the result need the new case.
+- **The owner-lock wait (open and removal) is longer and scales with the memory tier:** 4 s
+  `full`, 8 s `lite`, 16 s `minimal`. 0.2.1 waited a fixed 2 s; unreleased `main` briefly
+  had 1 s / 2 s / 4 s by tier. A writer that met an import on a
+  2-core CI runner gave up after 1 s; weak phones are slower still. Override per call with
+  `lockWaitMs`.
+
 ### Fixed
 
+- **A crash in the middle of a write transaction could leave a half-written database.**
+  Affected: OPFS databases opened through `/sql` (`openSqlDatabase`) and the persistent
+  `/vector/sqlite` index, both of which use SQLite's `opfs-sahpool` VFS with the rollback
+  journal (`journal_mode=DELETE`). In the pinned SQLite 3.53.4 that VFS always told the pager
+  some connection held a RESERVED lock, so the pager never treated a leftover journal as hot
+  and never rolled it back. If the Worker died mid-transaction (tab closed or crashed, the
+  Worker terminated, the device killed the page) after the pager had spilled pages to the
+  database file, the next open read a mix of old and new pages. `PRAGMA integrity_check`
+  often still said `ok`; the damage showed up as wrong data, or as `SQLITE_CORRUPT`. In
+  Chromium a Worker killed with an open transaction came back torn in 20 of 20 rounds.
+  Not affected: `@gainratio/browser/sqlite` on `opfs-wl`, and memory-only databases.
+  The fix is SQLite's own: check-in
+  [ea1d55e202e6e](https://sqlite.org/src/info/ea1d55e202e6e) (branch-3.53; trunk
+  [9168a6f1be](https://sqlite.org/src/info/9168a6f1be), forum report
+  [b2fbb61642](https://sqlite.org/forum/forumpost/b2fbb61642)), backported verbatim as local
+  patch `0002` because no 3.53.x release carries it yet. SQLite, sqlite-vector and emsdk are
+  unchanged.
+  **What upgrading does:** a hot journal left by a crash is rolled back on the next open, so
+  an interrupted transaction disappears as a whole. **What it cannot do:** a database that was
+  already torn before the upgrade has no journal left to replay, and `integrity_check` cannot
+  tell you. If a crash could have hit a write on 0.2.1 or earlier, check your own invariants
+  (counts, sums, cross-table references) or rebuild the data from its source.
 - **Removing a pool right after closing it could report `"in-use"` and leave it on disk.**
   `index.dispose()` resolved once SQLite closed the database, but the vector Worker kept the
   pool's OPFS sync access handles open until the browser tore the Worker down, so
@@ -19,14 +130,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   take that lock with a bounded wait and delete while holding it. No retries or sleeps.
 - **Opening an OPFS vector index another tab owns threw a plain `Error`.** It is now
   `SqlStorageUnavailableError("pool-in-use")`, the same type `openSqlDatabase` uses.
-
-### Changed
-
-- `removeOpfsPool` / `removeSqlDatabase` can return a new `"timeout"`: the wait for the owner
-  lock ended but no owner could be confirmed. `"in-use"` now means a live owner is confirmed.
-  Callers that switch exhaustively on the result need the new case.
-- The owner-lock wait (open and removal) scales with the memory tier: 1 s `full`, 2 s `lite`,
-  4 s `minimal`, instead of a fixed 2 s. Override per call with `lockWaitMs`.
+- **Two connections on one OPFS database in the same Worker could both write.** The pinned
+  3.53.4 `opfs-sahpool` VFS let every `xLock` succeed. Backported SQLite check-in
+  [9e2caaa382](https://sqlite.org/src/info/9e2caaa382) as local patch `0003`: a per-path lock
+  table, so the second writer gets `SQLITE_BUSY`.
+- **The `opfs-sahpool` busy handler could freeze its thread.** It inherited the default VFS's
+  `xSleep`, which cannot free a lock held in the same thread. Backported
+  [c9dd4d88e4](https://sqlite.org/src/info/c9dd4d88e4) as local patch `0004`: `xSleep` is a
+  no-op, so a `busy_timeout` fails fast instead of blocking for its full length.
 
 ### Security
 
@@ -38,6 +149,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npm-release` environment. The gate alone stops mistakes; a tag on an unreviewed commit can
   edit the workflow, so the tag ruleset and protected environment in repo settings are what
   stop that.
+- The rollback floor shares a row with the pointer, and a SQLite trigger refuses any update
+  that lowers it. `promote()` is one `BEGIN IMMEDIATE` transaction that refuses if any needed
+  chunk is missing, so no pointer can name a missing chunk.
+- Every read still re-hashes the chunk and fails closed; a bad row is deleted and re-fetched.
+  A BLOB tampered through SQL is refused (proved in a real browser).
+- `storageGuard.test.ts` fails if any shipped module except the migration reader touches
+  IndexedDB or Web Storage, or if that reader ever writes.
+- **Three more paths around the rollback floor fail closed.** A chunk database that exists on
+  disk but whose OPFS open fails for a reason other than contention no longer falls back to an
+  empty in-memory floor. A 0.2.x floor that was read but could not be written (BUSY, I/O)
+  refuses like an unreadable one instead of being skipped. An unreadable legacy `active`
+  pointer is refused even beside a valid `active.a`/`active.b`.
+
+### Known limitations
+
+- In memory mode (Safari private mode, Playwright WebKit) the rollback floor lasts only for
+  that Worker's life, and every session downloads again.
+
+### Consumer migration
+
+Remove the `storageBackend` option:
+
+```ts
+// before (0.2.x)
+await client.sync(bundleUrl, keyUrl, { storageBackend: "indexeddb" });
+// after (0.3.0)
+await client.sync(bundleUrl, keyUrl);
+```
+
+Tell users when the cache will not persist:
+
+```ts
+// before (0.2.x)
+if (result.cacheBackend === "indexeddb") { /* ... */ }
+// after (0.3.0)
+if (result.cacheStorage.persistence === "memory") {
+  console.warn("cache is in memory:", result.cacheStorage.reason);
+}
+```
+
+Swap direct store imports:
+
+```ts
+// before (0.2.x)
+import { OpfsCacheStore } from "@gainratio/browser";
+// after (0.3.0)
+import { SqliteCacheStore } from "@gainratio/browser";
+```
+
+Keep `indexedDbLayout` only if you passed it before, so your old cache is found and migrated.
+If you never set it, do nothing.
 
 ## [0.2.1] - 2026-10-04
 

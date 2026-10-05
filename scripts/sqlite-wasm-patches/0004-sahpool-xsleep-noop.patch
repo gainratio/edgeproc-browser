@@ -1,0 +1,40 @@
+Backport of SQLite check-in c9dd4d88e4 (trunk; cherry-picked to branch-3.53 as
+f774529206), "Do not inherit the OPFS SAHPool's xSleep method from the default
+VFS, as doing so can cause the thread to freeze", https://sqlite.org/src/info/c9dd4d88e4,
+forum report https://sqlite.org/forum/forumpost/3f0794c5d8. GitHub mirror
+commit cdbfe6a93884bd1dceca9d971be95dba0fbadccb. Hunks are upstream's
+ext/wasm/api/sqlite3-vfs-opfs-sahpool.c-pp.js diff verbatim, retargeted at the
+built bundle. Contention in an opfs-sahpool only ever comes from handles in the
+same thread, so sleeping in the busy handler cannot resolve it.
+Drop this patch once the pinned SQLite release contains c9dd4d88e4.
+
+diff --git a/src/vector/sqlite/assets/sqlite3.mjs b/src/vector/sqlite/assets/sqlite3.mjs
+index 4d8d92d..f8c04ce 100644
+--- a/src/vector/sqlite/assets/sqlite3.mjs
++++ b/src/vector/sqlite/assets/sqlite3.mjs
+@@ -20154,7 +20154,6 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
+       /* Inherit certain VFS members from the default VFS,
+          if available. */
+       opfsVfs.$xRandomness = dVfs.$xRandomness;
+-      opfsVfs.$xSleep = dVfs.$xSleep;
+       dVfs.dispose();
+     }
+     if(!opfsVfs.$xRandomness && !vfsMethods.xRandomness){
+@@ -20167,9 +20166,14 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
+         return i;
+       };
+     }
+-    if(!opfsVfs.$xSleep && !vfsMethods.xSleep){
+-      vfsMethods.xSleep = (pVfs,ms)=>0;
+-    }
++    /**
++       This VFS's xSleep() must be a no-op. In this environment,
++       only db handles within the same thread can ever come into
++       contention, and that contention cannot be resolved if
++       one of the handles sleeds in that same thread.
++       See also: forum:3f0794c5d8
++    */
++    vfsMethods.xSleep = (pVfs,ms)=>0;
+     sqlite3.vfs.installVfs({
+       vfs: {struct: opfsVfs, methods: vfsMethods}
+     });

@@ -18,28 +18,30 @@
 // throws (SignatureError, IntegrityError, RollbackError, SyncCapError, and
 // their keyring/expiry subclasses) rather
 // than returning something the caller might use.
+export { canPromotePointer, selectHighestPointer, } from "./engine/activePointer.js";
 // --- canonical JSON: the exact bytes a signature is taken over ---
 export { canonicalBytes } from "./engine/canonical.js";
+// --- content-addressed stores: SQLite (real) and in-memory (tests) ---
+export { ChunkDatabase, chunkDatabaseName, } from "./engine/chunkDatabase.js";
 export { EngineClient, } from "./engine/client.js";
 // --- ed25519 + sha256: the primitives the whole chain rests on ---
 export { SignatureError, sha256Hex, verifyEd25519 } from "./engine/crypto.js";
 export { classifyEngineError, EngineOperationError, } from "./engine/engineError.js";
 // --- the network edge: size-capped, stall-bounded byte fetch ---
 export { DEFAULT_MAX_FETCH_BYTES, FETCH_STALL_TIMEOUT_MS, fetchBytes, NetworkError, ResponseTooLargeError, } from "./engine/fetchBytes.js";
-export { IndexedDbCacheStore, resolveIndexedDbLayout, } from "./engine/indexedDbStore.js";
 // --- integrity: bounded decompression + content-address verification ---
 export { decompressAndVerify, IntegrityError, MAX_DECOMPRESSED_CHUNK_BYTES, verifyPlaintext, } from "./engine/integrity.js";
 // --- the trust root: a raw key or a keyring with rotation + revocation ---
 export { assertKeyring, deriveKeyId, KEYRING_SCHEMA, KeyRevokedError, KeyringError, loadTrustRoot, MAX_TRUST_ROOT_BYTES, parseTrustRoot, UnknownKeyError, verifyWithKeyring, } from "./engine/keyring.js";
-// --- content-addressed stores: in-memory (tests, ephemeral) and OPFS (real) ---
+export { resolveIndexedDbLayout, } from "./engine/legacyStores.js";
 export { MemoryCacheStore } from "./engine/memoryStore.js";
+export { migrateLegacyStores, } from "./engine/migration.js";
 // --- the network sentinel: makes a Worker's traffic visible to the tab ---
 // This is the module that lets a "no backend calls" claim be MEASURED rather
 // than asserted. A window-side PerformanceObserver cannot see a Worker's
 // fetches; without this, such a counter reads zero exactly when it matters.
 export { installNetworkSentinel, isNetworkSentinelReport, NETWORK_SENTINEL_CHANNEL, NETWORK_SENTINEL_REPORT_KIND, toSentinelEntries, } from "./engine/networkSentinel.js";
-export { canPromotePointer, OpfsCacheStore, selectHighestPointer, } from "./engine/opfsStore.js";
-export { openPersistentCacheStore, requestPersistentStorage, } from "./engine/persistentStore.js";
+export { pointerIdentity, SqliteCacheStore, } from "./engine/sqliteStore.js";
 // --- the sync state machine + file reassembly ---
 export { MAX_CHUNK_RETRY_BUDGET_MS, materializeFile, PointerExpiredError, pointerSigningBytes, RollbackError, SyncCapError, syncIndex, } from "./engine/sync.js";
 // --- typed Worker failures (a Worker that dies during init never replies) ---

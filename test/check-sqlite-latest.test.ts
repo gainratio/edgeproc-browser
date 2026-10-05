@@ -11,6 +11,7 @@ import {
 	assess,
 	compareVersions,
 	ISSUE_TITLE,
+	parseBackports,
 	parseEmsdkTags,
 	parsePinned,
 	parseSqliteDownloadPage,
@@ -253,6 +254,67 @@ it("assess is behind when the latest emsdk release has another digest", () => {
 	expect(result.behind).toBe(true);
 	expect(result.body).toContain("6.0.12");
 	expect(result.body).toContain(`emscripten/emsdk@${DIGEST_NEW}`);
+});
+
+const PATCHES_DIR = new URL("../scripts/sqlite-wasm-patches/", import.meta.url);
+const BACKPORT_PATCH = "0002-sahpool-check-reserved-lock.patch";
+const BACKPORT = { patch: BACKPORT_PATCH, checkIn: "ea1d55e202e6e" };
+
+describe("local upstream backports", () => {
+	it("reads the real backport patch's upstream check-in from its header", () => {
+		const text = readFileSync(new URL(BACKPORT_PATCH, PATCHES_DIR), "utf8");
+		expect(parseBackports([{ name: BACKPORT_PATCH, text }])).toEqual([
+			BACKPORT,
+		]);
+	});
+
+	it.each([
+		["0003-sahpool-lock-table.patch", "9e2caaa382"],
+		["0004-sahpool-xsleep-noop.patch", "c9dd4d88e4"],
+	])(
+		"reads %s's upstream check-in, so its weekly issue names it too",
+		(name, checkIn) => {
+			const text = readFileSync(new URL(name, PATCHES_DIR), "utf8");
+			expect(parseBackports([{ name, text }])).toEqual([
+				{ patch: name, checkIn },
+			]);
+		},
+	);
+
+	it("ignores a local patch that is not an upstream backport", () => {
+		const name = "0001-opfs-async-proxy-inline-and-alive.patch";
+		const text = readFileSync(new URL(name, PATCHES_DIR), "utf8");
+		expect(parseBackports([{ name, text }])).toEqual([]);
+	});
+
+	it("tells a newer SQLite's issue to drop the backport once it is included", () => {
+		const result = assess(
+			PINNED,
+			{
+				sqlite: { version: "3.53.5", url: "u", sha3: SHA3_A },
+				vector: { tag: "1.1.2", commit: COMMIT_PINNED },
+				emsdk: EMSDK_CURRENT,
+			},
+			[BACKPORT],
+		);
+		expect(result.behind).toBe(true);
+		expect(result.body).toContain(BACKPORT_PATCH);
+		expect(result.body).toContain("https://sqlite.org/src/info/ea1d55e202e6e");
+		expect(result.body).toMatch(/drop|delete/i);
+	});
+
+	it("does not open an issue for a backport alone while SQLite is current", () => {
+		const result = assess(
+			PINNED,
+			{
+				sqlite: { version: "3.53.4", url: PINNED.sqliteUrl, sha3: SHA3_A },
+				vector: { tag: "1.1.2", commit: COMMIT_PINNED },
+				emsdk: EMSDK_CURRENT,
+			},
+			[BACKPORT],
+		);
+		expect(result.behind).toBe(false);
+	});
 });
 
 interface Call {

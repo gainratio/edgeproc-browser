@@ -337,7 +337,7 @@ async function fetchPointer(
 // A validly signed but STALE `/latest` (a replayed old pointer) must not
 // downgrade a client that already promoted a newer bundle. Two comparisons can
 // supply the proof — a monotonic counter, or a comparable version — and the
-// durable active pointer they are read from is untrusted (it survives in OPFS
+// durable active pointer they are read from is untrusted (it survives in SQLite
 // across sessions and can be corrupted or tampered with). So each comparison
 // answers with what it actually PROVED, and a promote nothing proved is
 // refused. Answering "cannot compare" with "then it is not a rollback" is the
@@ -849,7 +849,7 @@ async function fetchMissing(
 }
 
 /** Ceiling on concurrent cached-chunk reads and presence probes. A warm boot
- * is dominated by per-chunk storage round trips (an OPFS file handle per
+ * is dominated by per-chunk storage round trips (one SQLite row read per
  * chunk), not by hashing; awaiting them one at a time serialised that latency. */
 export const MAX_CONCURRENT_CHUNK_READS = 8;
 
@@ -887,7 +887,7 @@ type ChunkReader = (ref: ChunkRef) => Promise<Uint8Array>;
 
 /** Verified chunk reads shared by one reassembly pass: at most
  * MAX_CONCURRENT_CHUNK_READS in flight in total, never two reads of the same
- * chunk at once (OPFS sync access handles are exclusive per file), and once
+ * chunk at once (a duplicate read would re-verify for nothing), and once
  * any read fails every queued read rejects with that same error unread. */
 function chunkReader(store: CacheStore): ChunkReader {
 	let active = 0;
@@ -1091,7 +1091,10 @@ export async function syncIndex(
 			args.sleep ?? realSleep,
 		);
 		await verifyReassembly(files, store, args);
-		await store.promote(pointer);
+		await store.promote(
+			pointer,
+			files.flatMap((entry) => entry.chunks.map((ref) => ref.hash)),
+		);
 		const result = {
 			version: pointer.version,
 			manifestHash: pointer.manifest_hash,

@@ -5,18 +5,23 @@
 // SQL: every call is a prepared statement on that connection.
 import { applyMemoryProfile, readMemoryProfile, } from "../sqlite/memoryProfile.js";
 import { exportDatabase, importDatabase } from "./portable.js";
+import { SqlTransactionEndedError } from "./types.js";
 export const PINNED_SQLITE_VERSION = "3.53.4";
 export const PINNED_VECTOR_VERSION = "1.1.2";
 export class SqlEngine {
     #raw;
     #storage;
     #serializer;
+    #control;
+    /** An interactive transaction began and has not ended. */
+    #interactive = false;
     #statements = new Map();
     #nextStatement = 1;
     constructor(raw, options) {
         this.#raw = raw;
         this.#storage = options.storage;
         this.#serializer = options.serializer;
+        this.#control = options.control;
         assertPinnedRuntime(raw);
         applyMemoryProfile(profileHandle(raw), options.memoryProfile);
         if (options.storage.persistence === "opfs")
@@ -38,6 +43,14 @@ export class SqlEngine {
         const { value, result } = this.#counting(() => this.#raw.transaction("IMMEDIATE", () => statements.map((statement) => this.#runInTransaction(statement))));
         return { changes: result.changes, results: value };
     }
+    /**
+     * In-Worker only (not on the message protocol): run `work` inside one
+     * BEGIN IMMEDIATE … COMMIT, so a read, a JS check and a write commit
+     * together; a throw rolls all of it back. `work` may call exec/query.
+     */
+    immediate(work) {
+        return this.#raw.transaction("IMMEDIATE", work);
+    }
     executeMany(sql, rows) {
         return this.#counting(() => this.#raw.transaction("IMMEDIATE", () => this.#runInTransaction({ sql, rows }))).result;
     }
@@ -56,6 +69,38 @@ export class SqlEngine {
     finalize(id) {
         this.#prepared(id).finalize();
         this.#statements.delete(id);
+    }
+    /** Start an interactive transaction; the client holds its lock until it ends. */
+    begin() {
+        this.#requireControl();
+        this.#raw.exec({ sql: "BEGIN IMMEDIATE" });
+        this.#interactive = true;
+    }
+    /** exec inside the interactive transaction; refused once it has ended. */
+    txExec(sql, bind) {
+        return this.#inTransaction(() => this.exec(sql, bind));
+    }
+    /** query inside the interactive transaction; refused once it has ended. */
+    txQuery(sql, bind) {
+        return this.#inTransaction(() => this.query(sql, bind));
+    }
+    /** COMMIT, unless SQLite already ended the transaction (then refuse). */
+    commit() {
+        const control = this.#requireOpenTransaction();
+        try {
+            this.#raw.exec({ sql: "COMMIT" });
+        }
+        finally {
+            // A failed COMMIT (a deferred foreign key) leaves it open for rollback().
+            this.#interactive = control.inTransaction(this.#raw);
+        }
+    }
+    /** ROLLBACK if a transaction is open; nothing (and no error) otherwise. */
+    rollback() {
+        this.#interactive = false;
+        if (this.#control?.inTransaction(this.#raw) === true) {
+            this.#raw.exec({ sql: "ROLLBACK" });
+        }
     }
     /** The whole database as a SQLite file (sqlite3_serialize). */
     exportDatabase() {
@@ -95,6 +140,30 @@ export class SqlEngine {
         }
         finally {
             prepared.finalize();
+        }
+    }
+    #requireControl() {
+        if (this.#control === undefined) {
+            throw new Error("this SQL engine was opened without connection control");
+        }
+        return this.#control;
+    }
+    #requireOpenTransaction() {
+        const control = this.#requireControl();
+        if (!this.#interactive || !control.inTransaction(this.#raw)) {
+            this.#interactive = false;
+            throw new SqlTransactionEndedError();
+        }
+        return control;
+    }
+    #inTransaction(statement) {
+        const control = this.#requireOpenTransaction();
+        try {
+            return control.withoutTransactionControl(this.#raw, statement);
+        }
+        finally {
+            if (!control.inTransaction(this.#raw))
+                this.#interactive = false;
         }
     }
     #requireSerializer() {

@@ -87,15 +87,15 @@ describe("published artefact contract", () => {
 		const expected = [
 			{
 				file: "sqlite3.mjs",
-				bytes: 811_287,
+				bytes: 817_412,
 				sha256:
-					"7111103823ce7e51c165724bee0bf66e8048fb7fb9bfbce69c7f2ee664e4a5fa",
+					"4ff745643ccc3c71df601742470cd96c2bef7c2f3b0959f32a49d596f8ab8392",
 			},
 			{
 				file: "sqlite3.wasm",
-				bytes: 934_257,
+				bytes: 932_259,
 				sha256:
-					"a847545f7c58e1bdf9074cda354cfbd992c7edadf67cf4011e76297317c2565a",
+					"6a6f7e4b0f4249300964bd402a084387eea5df2120d2eca61bdfbff9eb226b58",
 			},
 			{
 				file: "sqlite3-opfs-async-proxy.js",
@@ -184,6 +184,8 @@ describe("published artefact contract", () => {
 			"dist/vector/sqlite/index.js",
 			"dist/vector/sqlite/node.js",
 			"dist/sqlite/index.js",
+			"dist/sql/index.js",
+			"dist/sql/node.js",
 		]) {
 			const url = pathToFileURL(join(ROOT, target)).href;
 			const result = spawnSync(
@@ -224,15 +226,18 @@ describe("published artefact contract", () => {
 						: [];
 			});
 		};
-		const nodeOnlyEntrypoint = join(DIST, "vector", "sqlite", "node.js");
+		const nodeOnlyEntrypoints = [
+			join(DIST, "vector", "sqlite", "node.js"),
+			join(DIST, "sql", "node.js"),
+		];
 		const offenders = walk(DIST).filter(
 			(file) =>
-				file !== nodeOnlyEntrypoint &&
+				!nodeOnlyEntrypoints.includes(file) &&
 				/from\s*"node:|require\("node:/.test(readFileSync(file, "utf8")),
 		);
 		expect(offenders).toEqual([]);
-		expect(readFileSync(nodeOnlyEntrypoint, "utf8")).toContain(
-			'from "node:fs/promises"',
-		);
+		for (const entry of nodeOnlyEntrypoints) {
+			expect(readFileSync(entry, "utf8")).toContain('from "node:fs/promises"');
+		}
 	});
 });

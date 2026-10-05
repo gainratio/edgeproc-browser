@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.2.1; `@edgeproc/browser` is the old, deprecated name)
+**`npm install @gainratio/browser`** (version 0.3.0; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
@@ -159,8 +159,9 @@ signs one small pointer file that names the list of pieces. Your page gives the 
 and the public-key URL to a Web Worker. The Worker checks the pointer's signature against
 your key, refuses a pointer older than the one it already has, then downloads only the
 pieces it is missing and checks each one against its hash. Only when everything passes does
-the new version replace the old one in the browser's storage (OPFS, or IndexedDB where OPFS
-is missing). Any failure is a typed error, and the last good version stays.
+the new version replace the old one in the browser's storage: one SQLite database on OPFS,
+or an in-memory one where OPFS is refused (that copy is re-downloaded next session). Any
+failure is a typed error, and the last good version stays.
 
 The Worker also reports every network request it made back to the page, so you can count
 them. More in [Architecture](docs/ARCHITECTURE.md).

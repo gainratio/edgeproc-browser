@@ -4,49 +4,16 @@
 
 import { readFile } from "node:fs/promises";
 
-import sqlite3InitModule from "../../vector/sqlite/assets/sqlite3.mjs";
-import type { SqlRawDatabase } from "../engine.js";
-import { createSqlSerializer, type SqlSerializer } from "../serializer.js";
+import { type InProcessSqlite, initInProcessSqlite } from "../nodeRuntime";
 
-export interface NodeSqlite {
-	openMemory(): SqlRawDatabase;
-	readonly serializer: SqlSerializer;
-}
+export type NodeSqlite = InProcessSqlite;
 
-let queue: Promise<unknown> = Promise.resolve();
-
-export function loadNodeSqlite(): Promise<NodeSqlite> {
-	const load = async (): Promise<NodeSqlite> => {
-		const wasm = new Uint8Array(
+export async function loadNodeSqlite(): Promise<NodeSqlite> {
+	return initInProcessSqlite(
+		new Uint8Array(
 			await readFile(
 				new URL("../../vector/sqlite/assets/sqlite3.wasm", import.meta.url),
 			),
-		);
-		const original = Object.getOwnPropertyDescriptor(globalThis, "location");
-		Object.defineProperty(globalThis, "location", {
-			configurable: true,
-			value: { href: "https://edgeproc.invalid/?opfs-disable&opfs-wl-disable" },
-		});
-		try {
-			const sqlite = await sqlite3InitModule({
-				wasmBinary: wasm,
-				print: () => undefined,
-				printErr: () => undefined,
-			});
-			return {
-				serializer: createSqlSerializer(sqlite),
-				openMemory: () =>
-					new sqlite.oo1.DB(":memory:") as unknown as SqlRawDatabase,
-			};
-		} finally {
-			if (original === undefined) {
-				delete (globalThis as { location?: unknown }).location;
-			} else {
-				Object.defineProperty(globalThis, "location", original);
-			}
-		}
-	};
-	const next = queue.then(load, load);
-	queue = next.catch(() => undefined);
-	return next;
+		),
+	);
 }
