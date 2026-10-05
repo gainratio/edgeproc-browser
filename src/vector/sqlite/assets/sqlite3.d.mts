@@ -1,7 +1,24 @@
+type SqliteOo1Bind = ReadonlyArray<unknown> | Readonly<Record<string, unknown>>;
+
+interface SqliteOo1Statement {
+	bind(values: SqliteOo1Bind): SqliteOo1Statement;
+	step(): boolean;
+	get(target: Record<string, unknown>): Record<string, unknown>;
+	reset(clearBindings?: boolean): SqliteOo1Statement;
+	finalize(): number | undefined;
+}
+
 interface SqliteOo1Database {
 	readonly pointer: number | bigint;
-	exec(options: { sql: string; bind?: unknown[] }): unknown;
-	selectObjects(sql: string, bind?: unknown[]): Array<Record<string, unknown>>;
+	exec(options: {
+		readonly sql: string;
+		readonly bind?: SqliteOo1Bind;
+	}): unknown;
+	selectObjects(
+		sql: string,
+		bind?: SqliteOo1Bind,
+	): Array<Record<string, unknown>>;
+	prepare(sql: string): SqliteOo1Statement;
 	transaction<T>(callback: () => T): T;
 	transaction<T>(qualifier: "IMMEDIATE", callback: () => T): T;
 	close(): void;

@@ -12,17 +12,24 @@ import { SqlStorageUnavailableError, } from "./types.js";
  * How long to wait for a pool's previous owner to let go. close() now hands
  * the lock back within milliseconds, so what the wait really covers is a page
  * reload overlapping its predecessor while the browser tears that page's
- * Worker down — slowest on the weakest devices, so the budget scales with the
- * memory tier rather than being one fixed number.
+ * Worker down, or a writer queued behind an import. Both are slowest on the
+ * weakest devices (a 2-core CI runner already needed more than 1 s), so no
+ * tier waits less than 4 s and slower tiers wait longer.
  */
 export function ownerLockWaitMs(tier) {
     return OWNER_LOCK_WAIT_MS[tier];
 }
 const OWNER_LOCK_WAIT_MS = Object.freeze({
-    full: 1_000,
-    lite: 2_000,
-    minimal: 4_000,
+    full: 4_000,
+    lite: 8_000,
+    minimal: 16_000,
 });
+/**
+ * A writer queued behind a by-name import or export waits up to this many
+ * owner-lock budgets for it (60 s on "full"), then fails `pool-in-use`
+ * rather than hanging behind an operation that never ends.
+ */
+const OPERATION_WAIT_BUDGETS = 15;
 export const SQL_POOL_PREFIX = "edgeproc-sql-";
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export async function sqlDatabasePoolName(name) {
@@ -86,9 +93,9 @@ function fallBack(deps, options, reason, detail) {
 }
 /**
  * The owner lock, waiting `lockWaitMs` for a previous connection (a reload).
- * If that wait runs out while a bounded operation holds the pool, wait for the
- * operation to finish: it will, and failing would break "a writer waits for
- * an import by name". If the owner let go between the timeout and the check,
+ * If that wait runs out while a by-name operation holds the pool, wait for the
+ * operation to finish (bounded by OPERATION_WAIT_BUDGETS), so "a writer waits
+ * for an import by name" holds on slow devices. If the owner let go between the timeout and the check,
  * take the lock again within the same budget. A live connection: undefined.
  */
 async function acquireOwnerLease(deps, pool) {
@@ -98,7 +105,7 @@ async function acquireOwnerLease(deps, pool) {
         return lease;
     const held = new Set(((await deps.locks.query()).held ?? []).map((lock) => lock.name));
     if (held.has(poolOperationLock(pool))) {
-        return acquirePoolLease(deps.locks, owner, Number.POSITIVE_INFINITY);
+        return acquirePoolLease(deps.locks, owner, deps.lockWaitMs * OPERATION_WAIT_BUDGETS);
     }
     if (!held.has(owner)) {
         return acquirePoolLease(deps.locks, owner, deps.lockWaitMs);

@@ -45,7 +45,7 @@ export function initInProcessSqlite(
 				serializer: createSqlSerializer(sqlite),
 				control: createSqlConnectionControl(sqlite),
 				openMemory: () =>
-					new sqlite.oo1.DB(":memory:") as unknown as SqlRawDatabase,
+					new sqlite.oo1.DB(":memory:") satisfies SqlRawDatabase,
 			};
 		} finally {
 			// Consumed and deleted by the loader; never left behind on failure.

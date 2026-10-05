@@ -18,8 +18,9 @@ export interface SqlLocks {
  * How long to wait for a pool's previous owner to let go. close() now hands
  * the lock back within milliseconds, so what the wait really covers is a page
  * reload overlapping its predecessor while the browser tears that page's
- * Worker down — slowest on the weakest devices, so the budget scales with the
- * memory tier rather than being one fixed number.
+ * Worker down, or a writer queued behind an import. Both are slowest on the
+ * weakest devices (a 2-core CI runner already needed more than 1 s), so no
+ * tier waits less than 4 s and slower tiers wait longer.
  */
 export declare function ownerLockWaitMs(tier: MemoryTier): number;
 export interface SqlStorageDeps<R> {

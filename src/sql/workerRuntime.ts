@@ -34,18 +34,14 @@ export function workerStorageDeps(
 	lockWaitMs: number,
 ): SqlStorageDeps<SqlRawDatabase> {
 	return {
-		openMemory: () =>
-			new sqlite.oo1.DB(":memory:") as unknown as SqlRawDatabase,
+		openMemory: (): SqlRawDatabase => new sqlite.oo1.DB(":memory:"),
 		installPool: async (name) => {
 			const pool = await sqlite.installOpfsSAHPoolVfs({
 				name,
 				forceReinitIfPreviouslyFailed: true,
 			});
 			if (pool.isPaused()) await pool.unpauseVfs();
-			return pool as unknown as {
-				OpfsSAHPoolDb: new (file: string) => SqlRawDatabase;
-				pauseVfs(): unknown;
-			};
+			return pool;
 		},
 		locks: (navigator as { locks?: SqlLocks }).locks,
 		warn: (message) => console.warn(message),
