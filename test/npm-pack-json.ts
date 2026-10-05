@@ -47,3 +47,15 @@ export function packedFiles(json: unknown, name: string): PackedTarball {
 		files: result.files.map((file) => file.path),
 	};
 }
+
+// npm exports its effective config to lifecycle scripts as npm_config_*. When
+// this test runs inside `npm publish --dry-run`'s prepublishOnly, the nested
+// `npm pack` would inherit dry_run=true and write no tarball. The nested pack
+// must be governed by its own argv, not by whichever npm command wraps it.
+export function isolatedPackEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	return Object.fromEntries(
+		Object.entries(env).filter(
+			([key]) => !key.toLowerCase().startsWith("npm_config_"),
+		),
+	);
+}

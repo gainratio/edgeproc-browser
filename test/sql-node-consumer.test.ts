@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
-import { packedFiles } from "./npm-pack-json";
+import { isolatedPackEnv, packedFiles } from "./npm-pack-json";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "edgeproc-sql-node-consumer-"));
@@ -59,7 +59,7 @@ describe("@gainratio/browser/sql/node from a packed tarball", () => {
 				execFileSync(
 					"npm",
 					["pack", "--json", "--ignore-scripts", "--pack-destination", scratch],
-					{ cwd: ROOT, encoding: "utf8" },
+					{ cwd: ROOT, encoding: "utf8", env: isolatedPackEnv(process.env) },
 				),
 			),
 			"@gainratio/browser",

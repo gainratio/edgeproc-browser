@@ -7,7 +7,7 @@
 // third shape a loud refusal instead of an empty file list.
 
 import { describe, expect, it } from "vitest";
-import { packedFiles } from "./npm-pack-json";
+import { isolatedPackEnv, packedFiles } from "./npm-pack-json";
 
 const NAME = "@gainratio/browser";
 const RESULT = {
@@ -44,5 +44,24 @@ describe("packedFiles", () => {
 		expect(() => packedFiles([{ ...RESULT, name: "other" }], NAME)).toThrow(
 			/npm pack --json/,
 		);
+	});
+});
+
+describe("isolatedPackEnv", () => {
+	it("drops the outer npm lifecycle's config, e.g. publish --dry-run", () => {
+		// Under `npm publish --dry-run`, prepublishOnly inherits
+		// npm_config_dry_run=true; a nested `npm pack` then writes no tarball.
+		const env = isolatedPackEnv({
+			PATH: "/bin",
+			HOME: "/home/ci",
+			npm_config_dry_run: "true",
+			NPM_CONFIG_PACK_DESTINATION: "/elsewhere",
+			npm_lifecycle_event: "prepublishOnly",
+		});
+		expect(env).toEqual({
+			PATH: "/bin",
+			HOME: "/home/ci",
+			npm_lifecycle_event: "prepublishOnly",
+		});
 	});
 });
