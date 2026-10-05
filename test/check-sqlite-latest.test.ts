@@ -268,13 +268,18 @@ describe("local upstream backports", () => {
 		]);
 	});
 
-	it("reads the xSleep backport's upstream check-in, so its weekly issue names it too", () => {
-		const name = "0003-sahpool-xsleep-noop.patch";
-		const text = readFileSync(new URL(name, PATCHES_DIR), "utf8");
-		expect(parseBackports([{ name, text }])).toEqual([
-			{ patch: name, checkIn: "c9dd4d88e4" },
-		]);
-	});
+	it.each([
+		["0003-sahpool-lock-table.patch", "9e2caaa382"],
+		["0004-sahpool-xsleep-noop.patch", "c9dd4d88e4"],
+	])(
+		"reads %s's upstream check-in, so its weekly issue names it too",
+		(name, checkIn) => {
+			const text = readFileSync(new URL(name, PATCHES_DIR), "utf8");
+			expect(parseBackports([{ name, text }])).toEqual([
+				{ patch: name, checkIn },
+			]);
+		},
+	);
 
 	it("ignores a local patch that is not an upstream backport", () => {
 		const name = "0001-opfs-async-proxy-inline-and-alive.patch";

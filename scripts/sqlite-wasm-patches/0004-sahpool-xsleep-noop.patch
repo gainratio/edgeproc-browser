@@ -9,7 +9,7 @@ same thread, so sleeping in the busy handler cannot resolve it.
 Drop this patch once the pinned SQLite release contains c9dd4d88e4.
 
 diff --git a/src/vector/sqlite/assets/sqlite3.mjs b/src/vector/sqlite/assets/sqlite3.mjs
-index b1415ab..cdb10d4 100644
+index 4d8d92d..f8c04ce 100644
 --- a/src/vector/sqlite/assets/sqlite3.mjs
 +++ b/src/vector/sqlite/assets/sqlite3.mjs
 @@ -20154,7 +20154,6 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
