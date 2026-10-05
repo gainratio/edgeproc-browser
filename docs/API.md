@@ -74,6 +74,28 @@ if (result.cacheBackend === "sqlite-memory") {
 }
 ```
 
+If your app must not run without persistent storage, pass `cacheFallback: "none"`. When
+OPFS cannot be opened, the Worker then opens no in-memory cache and downloads nothing: the
+call rejects at once with `EngineStorageUnavailableError` (still an `EngineOperationError`
+with `code: "storage"`), whose `reason` is `"opfs-unavailable"` or `"pool-in-use"`:
+
+```ts
+import { EngineStorageUnavailableError } from "@gainratio/browser";
+
+try {
+  await client.sync("/bundle", "/public.key", { cacheFallback: "none" });
+} catch (error) {
+  if (error instanceof EngineStorageUnavailableError) {
+    showStorageBlocked(error.reason); // nothing was downloaded into RAM
+  } else throw error;
+}
+```
+
+The default, `"memory"`, keeps the in-memory fallback above. A Worker's first call fixes its
+`cacheFallback`; a later call with a different value is refused. If `readFile` can be the
+first call (a reload that reads before it syncs), pass it there too:
+`client.readFile(path, { cacheFallback: "none" })`.
+
 There is no storage backend to choose, and the cache never uses IndexedDB. The database is
 named `${cacheNamespace}-chunks` (`chunkDatabaseName(namespace)`). In memory mode the
 anti-rollback floor also lasts only for that Worker's life.
@@ -304,6 +326,7 @@ There are no environment variables or config files. Everything is an argument:
 | `fetchBytes(url, options)` | `onBytes`, `FETCH_STALL_TIMEOUT_MS` | Streaming byte progress; a request with no bytes for 30 s is a stall (`NetworkError`), a slow one is never cut off |
 | `syncIndex(...)` | `keyring` or `verify`, `now` | Trust root for direct use; `now` injects the expiry clock |
 | `client.sync` / `client.clear` options | `cacheNamespace` | Names the cache: its SQLite database (`${cacheNamespace}-chunks`) and its cross-tab lock |
+| `client.sync` / `client.clear` / `client.readFile` options | `cacheFallback` | When OPFS cannot be opened: `"memory"` (default) caches in RAM and re-downloads next session; `"none"` downloads nothing and rejects with `EngineStorageUnavailableError` (`reason`: `"opfs-unavailable"` or `"pool-in-use"`) |
 | `client.sync` / `client.clear` options | `indexedDbLayout` | Only where a 0.2.x cache kept its IndexedDB floor and chunks. Read once to migrate into SQLite, then deleted. Set it only if you set it before |
 | `createSqliteVectorIndex` / `createSqliteStateStore` | `name`, `dimension`, `initialSchemaVersion` | Which local database to open, and its shape |
 

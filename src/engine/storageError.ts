@@ -1,3 +1,8 @@
+import {
+	type SqlFallbackReason,
+	SqlStorageUnavailableError,
+} from "../sql/types.js";
+
 /** A stable storage-boundary failure suitable for Worker error classification. */
 export class StorageQuotaError extends Error {
 	public constructor(
@@ -27,4 +32,37 @@ export function translateStorageError(error: unknown): Error {
 		: error instanceof Error
 			? error
 			: new Error(String(error));
+}
+
+/** The engine's OPFS cache could not be opened and the consumer chose
+ * `cacheFallback: "none"`: nothing was opened in memory, nothing fetched. */
+export class CacheFallbackRefusedError extends Error {
+	public readonly reason: SqlFallbackReason;
+
+	public constructor(
+		reason: SqlFallbackReason,
+		message: string,
+		options?: ErrorOptions,
+	) {
+		super(message, options);
+		this.name = "CacheFallbackRefusedError";
+		this.reason = reason;
+	}
+}
+
+/** Open with `fallback: "none"`: an OPFS refusal becomes the typed
+ * {@link CacheFallbackRefusedError}; every other failure passes through. */
+export async function refuseWithoutFallback<T>(
+	open: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await open();
+	} catch (error) {
+		if (error instanceof SqlStorageUnavailableError) {
+			throw new CacheFallbackRefusedError(error.reason, error.message, {
+				cause: error,
+			});
+		}
+		throw error;
+	}
 }

@@ -45,6 +45,8 @@ export {
 	type EngineErrorCode,
 	type EngineErrorDetail,
 	EngineOperationError,
+	EngineStorageUnavailableError,
+	type EngineStorageUnavailableReason,
 } from "./engine/engineError.js";
 // --- the network edge: size-capped, stall-bounded byte fetch ---
 export {
@@ -105,6 +107,7 @@ export {
 export type {
 	ClearOk,
 	ClearRequest,
+	EngineCacheFallback,
 	EngineErr,
 	EngineRequest,
 	EngineResponse,

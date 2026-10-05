@@ -27,12 +27,14 @@ import {
 import { installNetworkSentinel } from "./networkSentinel.js";
 import type {
 	ClearRequest,
+	EngineCacheFallback,
 	EngineRequest,
 	EngineResponse,
 	ReadFileRequest,
 	SyncRequest,
 } from "./protocol.js";
 import type { SqliteCacheStore } from "./sqliteStore.js";
+import { refuseWithoutFallback } from "./storageError.js";
 import { materializeFile, syncIndex } from "./sync.js";
 import type { CacheBackend, IndexManifest, VersionPointer } from "./types.js";
 
@@ -48,6 +50,7 @@ installNetworkSentinel("engine-worker");
 interface StoreConfiguration {
 	readonly namespace: string;
 	readonly indexedDbLayout: IndexedDbLayout;
+	readonly cacheFallback: EngineCacheFallback;
 }
 
 let storeState:
@@ -58,23 +61,29 @@ let storeState:
 function chunks(configuration?: {
 	readonly namespace?: string;
 	readonly indexedDbLayout?: IndexedDbLayoutOptions;
+	readonly cacheFallback?: EngineCacheFallback | undefined;
 }): StoreConfiguration & { readonly database: ChunkDatabase } {
 	const namespace = configuration?.namespace ?? "edgeproc-browser";
 	const indexedDbLayout = resolveIndexedDbLayout(
 		configuration?.indexedDbLayout,
 		cacheDatabaseName(namespace),
 	);
+	const cacheFallback = configuration?.cacheFallback ?? "memory";
 	if (storeState === null) {
 		storeState = {
 			namespace,
 			indexedDbLayout,
+			cacheFallback,
 			database: new ChunkDatabase({
 				namespace,
-				open: async (name) =>
-					openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
-						name,
-						fallback: "memory",
-					}),
+				open: async (name) => {
+					const deps = workerStorageDeps(await loadSqlite(), POOL_WAIT_MS);
+					const open = () =>
+						openSqlStorage(deps, { name, fallback: cacheFallback });
+					return cacheFallback === "none"
+						? refuseWithoutFallback(open)
+						: open();
+				},
 				memoryProfile: resolveMemoryProfile("auto"),
 				legacySources: () => [
 					opfsLegacySource(),
@@ -89,6 +98,7 @@ function chunks(configuration?: {
 		};
 	} else if (
 		storeState.namespace !== namespace ||
+		storeState.cacheFallback !== cacheFallback ||
 		storeState.indexedDbLayout.database !== indexedDbLayout.database ||
 		storeState.indexedDbLayout.store !== indexedDbLayout.store ||
 		storeState.indexedDbLayout.separator !== indexedDbLayout.separator
@@ -120,6 +130,7 @@ async function handleSync(req: SyncRequest): Promise<EngineResponse> {
 		...(req.indexedDbLayout === undefined
 			? {}
 			: { indexedDbLayout: req.indexedDbLayout }),
+		cacheFallback: req.cacheFallback,
 	});
 	return withChunkStore(configuration, async (cacheStore, storage) => {
 		// The trust root: a legacy raw 32-byte key (a keyring of one) or an
@@ -163,7 +174,17 @@ async function handleSync(req: SyncRequest): Promise<EngineResponse> {
 
 async function handleReadFile(req: ReadFileRequest): Promise<EngineResponse> {
 	return withChunkStore(
-		storeState ?? chunks(),
+		storeState !== null && req.cacheFallback === undefined
+			? storeState
+			: chunks({
+					...(storeState === null
+						? {}
+						: {
+								namespace: storeState.namespace,
+								indexedDbLayout: storeState.indexedDbLayout,
+							}),
+					cacheFallback: req.cacheFallback,
+				}),
 		async (cacheStore) => {
 			const manifest = await loadActiveManifest(cacheStore);
 			const bytes = await materializeFile(cacheStore, manifest, req.path);
@@ -179,6 +200,7 @@ async function handleClear(req: ClearRequest): Promise<EngineResponse> {
 		namespace:
 			req.cacheNamespace ?? storeState?.namespace ?? "edgeproc-browser",
 		...(indexedDbLayout === undefined ? {} : { indexedDbLayout }),
+		cacheFallback: req.cacheFallback ?? storeState?.cacheFallback,
 	});
 	return configuration.database.run(
 		async (cacheStore) => {

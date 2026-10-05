@@ -3,7 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 // Firefox and WebKit run the cross-browser, legacy-migration, chunk-store and
 // crash-recovery proofs; Chromium runs every spec.
 const CROSS_BROWSER =
-	/(?:cross-browser|sql-legacy|sqlite-store|hot-journal)\.spec\.ts$/;
+	/(?:cross-browser|engine-storage|sql-legacy|sqlite-store|hot-journal)\.spec\.ts$/;
 
 export default defineConfig({
 	testDir: "test/browser",

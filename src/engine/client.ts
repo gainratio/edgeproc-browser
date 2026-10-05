@@ -16,9 +16,13 @@
 // read from it again. Settling the promises without releasing the thread just
 // trades a hung caller for a leaked one.
 
-import { EngineOperationError } from "./engineError.js";
+import { engineErrorOf } from "./engineError.js";
 import type { IndexedDbLayoutOptions } from "./legacyStores.js";
-import type { EngineRequest, EngineResponse } from "./protocol.js";
+import type {
+	EngineCacheFallback,
+	EngineRequest,
+	EngineResponse,
+} from "./protocol.js";
 import type { SyncProgress } from "./sync.js";
 import type { EngineSyncResult } from "./types.js";
 import {
@@ -62,12 +66,16 @@ export interface EngineSyncOptions {
 	/** Where a 0.2.x cache kept its IndexedDB rollback floor. Read once to
 	 * migrate into SQLite (the floor is never lowered), then deleted. */
 	readonly indexedDbLayout?: IndexedDbLayoutOptions;
+	/** When OPFS cannot be opened. "memory" (default): cache in RAM for this
+	 * Worker's life and re-download each session. "none": download nothing and
+	 * reject with EngineStorageUnavailableError. Fixed by the Worker's first use. */
+	readonly cacheFallback?: EngineCacheFallback;
 	readonly onProgress?: (progress: SyncProgress) => void;
 }
 
 export type EngineStorageOptions = Pick<
 	EngineSyncOptions,
-	"cacheNamespace" | "indexedDbLayout"
+	"cacheNamespace" | "indexedDbLayout" | "cacheFallback"
 >;
 
 interface Pending {
@@ -166,6 +174,9 @@ export class EngineClient {
 				...(options.indexedDbLayout !== undefined
 					? { indexedDbLayout: options.indexedDbLayout }
 					: {}),
+				...(options.cacheFallback !== undefined
+					? { cacheFallback: options.cacheFallback }
+					: {}),
 			},
 			options.onProgress,
 		);
@@ -175,12 +186,19 @@ export class EngineClient {
 		throw this.#errorOf(response);
 	}
 
-	/** Materialize a synced file's bytes from the active manifest. */
-	public async readFile(path: string): Promise<Uint8Array> {
+	/** Materialize a synced file's bytes from the active manifest. Pass the
+	 * same `cacheFallback` as sync when readFile may be the Worker's first call. */
+	public async readFile(
+		path: string,
+		options: Pick<EngineStorageOptions, "cacheFallback"> = {},
+	): Promise<Uint8Array> {
 		const response = await this.#send({
 			kind: "readFile",
 			id: this.#allocId(),
 			path,
+			...(options.cacheFallback === undefined
+				? {}
+				: { cacheFallback: options.cacheFallback }),
 		});
 		if (response.ok && response.kind === "readFile") {
 			return response.bytes;
@@ -199,6 +217,9 @@ export class EngineClient {
 			...(options.indexedDbLayout === undefined
 				? {}
 				: { indexedDbLayout: options.indexedDbLayout }),
+			...(options.cacheFallback === undefined
+				? {}
+				: { cacheFallback: options.cacheFallback }),
 		});
 		if (response.ok && response.kind === "clear") return;
 		throw this.#errorOf(response);
@@ -226,7 +247,7 @@ export class EngineClient {
 	#errorOf(response: EngineResponse): Error {
 		return response.ok
 			? new Error("unexpected response kind")
-			: new EngineOperationError(response.error);
+			: engineErrorOf(response.error);
 	}
 
 	#send(

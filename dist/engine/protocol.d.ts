@@ -2,6 +2,8 @@ import type { EngineErrorDetail } from "./engineError.js";
 import type { IndexedDbLayoutOptions } from "./legacyStores.js";
 import type { SyncProgress } from "./sync.js";
 import type { EngineSyncResult } from "./types.js";
+/** What the Worker does when its OPFS cache cannot be opened. */
+export type EngineCacheFallback = "memory" | "none";
 /** Sync the signed bundle at `baseUrl`, pinning the trust root at `pubkeyUrl`:
  * a raw 32-byte Ed25519 key, or an `edgeproc.keyring/v1` JSON keyring. */
 export interface SyncRequest {
@@ -14,12 +16,15 @@ export interface SyncRequest {
     readonly wantedPaths?: ReadonlyArray<string>;
     readonly cacheNamespace?: string;
     readonly indexedDbLayout?: IndexedDbLayoutOptions;
+    readonly cacheFallback?: EngineCacheFallback;
 }
 /** Materialize a synced file's bytes from the active manifest. */
 export interface ReadFileRequest {
     readonly kind: "readFile";
     readonly id: number;
     readonly path: string;
+    /** Fixes the Worker's fallback when readFile is its first call. */
+    readonly cacheFallback?: EngineCacheFallback;
 }
 /** Clear the configured durable cache under the same cross-tab lock as sync/read. */
 export interface ClearRequest {
@@ -27,6 +32,7 @@ export interface ClearRequest {
     readonly id: number;
     readonly cacheNamespace?: string;
     readonly indexedDbLayout?: IndexedDbLayoutOptions;
+    readonly cacheFallback?: EngineCacheFallback;
 }
 export type EngineRequest = SyncRequest | ReadFileRequest | ClearRequest;
 export interface SyncOk {

@@ -13,7 +13,8 @@ export declare function chunkDatabaseName(namespace: string): string;
 export declare function persistedSqlPoolExists(name: string, openRoot: () => Promise<OpfsDirectory>): Promise<boolean>;
 export interface ChunkDatabaseOptions {
     readonly namespace: string;
-    /** openSqlStorage with `fallback: "memory"`, bound to the Worker's SQLite. */
+    /** openSqlStorage bound to the Worker's SQLite, with the consumer's
+     * `cacheFallback` ("memory" by default; "none" throws instead). */
     readonly open: (name: string) => Promise<OpenedSqlStorage<SqlRawDatabase>>;
     readonly memoryProfile: MemoryProfile;
     /** The 0.2.x stores to migrate from; only read in persistent mode. */
