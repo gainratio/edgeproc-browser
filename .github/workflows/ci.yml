@@ -118,3 +118,39 @@ jobs:
         # OPFS open, the typed memory fallback, the SQL round trip,
         # export/import and MemoryProfile detection without deviceMemory.
         run: pnpm test:browser
+
+  # PUBLISH PATH — the exact command chain publish.yml runs, minus the upload.
+  # 0.3.0's tag failed here and nowhere else: ts-publish.yml installs
+  # npm@latest (12.x) just before `npm publish`, while `gate` above runs the
+  # npm bundled with Node 24 (11.x). npm 12 changed `npm pack --json` from an
+  # array to an object keyed by name, the packed-tarball test read `[]`, and
+  # the publish died on a tarball that was fine. So this job mirrors that
+  # environment (registry .npmrc, npm@latest) and runs `npm publish --dry-run`,
+  # which fires prepublishOnly = `preflight && gate` under the same npm, from
+  # inside an npm lifecycle, exactly as the real publish does.
+  publish-path:
+    name: Publish path (npm@latest, prepublishOnly, dry run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node (registry .npmrc, as ts-publish.yml writes it)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
+
+      - name: Use the publish job's npm (npm@latest, as ts-publish.yml does)
+        run: npm install --global npm@latest && npm --version
+
+      - name: npm publish --dry-run (runs prepublishOnly = preflight && gate)
+        run: npm publish --dry-run --access public
