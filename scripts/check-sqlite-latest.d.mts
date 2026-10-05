@@ -53,6 +53,16 @@ export declare function parseEmsdkTags(
 	page: unknown,
 	pinnedDigest: string,
 ): EmsdkRelease;
+/** A local patch that backports an upstream SQLite check-in. */
+export interface Backport {
+	readonly patch: string;
+	readonly checkIn: string;
+}
+
+/** The local patches whose header names the upstream check-in they backport. */
+export declare function parseBackports(
+	patches: ReadonlyArray<{ readonly name: string; readonly text: string }>,
+): Backport[];
 export declare function assess(
 	pinned: Pinned,
 	latest: {
@@ -60,6 +70,7 @@ export declare function assess(
 		readonly vector: VectorRelease;
 		readonly emsdk: EmsdkRelease;
 	},
+	backports?: ReadonlyArray<Backport>,
 ): Assessment;
 /** Open the update issue, or update the one already open. Never duplicates. */
 export declare function upsertIssue(options: {
