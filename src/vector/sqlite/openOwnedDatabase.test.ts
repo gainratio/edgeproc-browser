@@ -43,4 +43,30 @@ describe("openOwnedDatabase (vector index pool)", () => {
 			await opened.release();
 		}
 	});
+
+	it("frees the pool and rethrows when the database file cannot be opened", async () => {
+		let paused = 0;
+		const pool = {
+			OpfsSAHPoolDb: class {
+				public constructor() {
+					throw new Error("SQLITE_CANTOPEN");
+				}
+			},
+			pauseVfs: () => {
+				paused += 1;
+			},
+			getFileNames: () => [],
+			reserveMinimumCapacity: async (min: number) => min,
+		};
+		await expect(
+			openOwnedDatabase(
+				undefined,
+				"unopenable",
+				1_000,
+				"memory",
+				async () => pool,
+			),
+		).rejects.toThrow("SQLITE_CANTOPEN");
+		expect(paused).toBe(1);
+	});
 });
