@@ -80,6 +80,11 @@ export class MemoryFileHandle extends MemoryFileSystemHandle {
 		super(name, "file");
 	}
 
+	/** Whether a sync access handle currently holds this file open. */
+	public get locked(): boolean {
+		return this.#data.locked;
+	}
+
 	public async createSyncAccessHandle(): Promise<MemorySyncAccessHandle> {
 		if (this.#data.locked) {
 			throw new DOMException(this.name, "NoModificationAllowedError");
@@ -127,10 +132,40 @@ export class MemoryDirectoryHandle extends MemoryFileSystemHandle {
 		return created;
 	}
 
-	public async removeEntry(name: string): Promise<void> {
-		if (!this.#entries.delete(name)) {
-			throw new DOMException(name, "NotFoundError");
+	/**
+	 * Like OPFS: a file another handle holds open cannot be removed, and a
+	 * recursive removal deletes what it can before failing on such a file
+	 * (which is how a failed opfs-sahpool setup used to strip a pool's free
+	 * slots while a dying Worker still held the rest).
+	 */
+	public async removeEntry(
+		name: string,
+		options: { readonly recursive?: boolean } = {},
+	): Promise<void> {
+		const found = this.#entries.get(name);
+		if (found === undefined) throw new DOMException(name, "NotFoundError");
+		if (found instanceof MemoryFileHandle) {
+			if (found.locked) {
+				throw new DOMException(name, "NoModificationAllowedError");
+			}
+		} else {
+			await found.removeChildren(options.recursive === true);
 		}
+		this.#entries.delete(name);
+	}
+
+	private async removeChildren(recursive: boolean): Promise<void> {
+		if (this.#entries.size === 0) return;
+		if (!recursive) {
+			throw new DOMException(this.name, "InvalidModificationError");
+		}
+		let failure: unknown;
+		for (const name of [...this.#entries.keys()]) {
+			await this.removeEntry(name, { recursive }).catch((error: unknown) => {
+				failure ??= error;
+			});
+		}
+		if (failure !== undefined) throw failure;
 	}
 
 	public async *entries(): AsyncIterableIterator<

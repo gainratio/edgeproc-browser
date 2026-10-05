@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-05
+
+A fix for OPFS databases that stopped writing after a reload with "SAH pool is full". No API
+change; nothing to do but upgrade.
+
+### Fixed
+
+- **A pool no longer loses its file slots when setup races a reload.** opfs-sahpool keeps a
+  fixed set of OPFS files ("slots"), one per file SQLite opens. When a reload's new Worker set
+  the pool up while the old Worker's handles were still closing, the failed setup deleted
+  every free slot; the next setup kept the one that was left and never added any back, so the
+  next write failed with `SAH pool is full. Cannot create file …sqlite3-journal` (seen in
+  almamesh CI on the engine's chunk cache). Fixed in three places:
+  - **The failed setup keeps its slots.** The pinned SQLite build backports upstream check-in
+    ad1bbfc2bd (`preserveOnInitFailure`, local patch 0005), and every pool the library owns
+    passes it: the `/sql` seam, the engine's chunk cache and the `/vector/sqlite` index.
+  - **A contended setup is retried** with backoff for up to the owner-lock wait (4 s / 8 s /
+    16 s by memory tier) before it reports `pool-in-use`, since the old Worker's handles close
+    on their own.
+  - **Every open tops the pool up to what its database needs**: the files already in use,
+    the database and its rollback journal, plus 4 temp-file slots when `temp_store` is FILE
+    (the "minimal" memory tier). That is at most sqlite-wasm's own default of 6 slots, so a
+    healthy pool is unchanged; a pool that lost slots on an older version heals on its next
+    open.
+
 ## [0.3.1] - 2026-10-05
 
 Apps that require persistent storage can now refuse the engine's in-memory fallback.

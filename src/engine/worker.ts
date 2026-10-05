@@ -77,7 +77,11 @@ function chunks(configuration?: {
 			database: new ChunkDatabase({
 				namespace,
 				open: async (name) => {
-					const deps = workerStorageDeps(await loadSqlite(), POOL_WAIT_MS);
+					const deps = workerStorageDeps(
+						await loadSqlite(),
+						POOL_WAIT_MS,
+						resolveMemoryProfile("auto").tempStore,
+					);
 					const open = () =>
 						openSqlStorage(deps, { name, fallback: cacheFallback });
 					return cacheFallback === "none"

@@ -1,4 +1,5 @@
-import type { MemoryTier } from "../sqlite/memoryProfile.js";
+import type { MemoryTier, TempStore } from "../sqlite/memoryProfile.js";
+import { type SahPoolSlots } from "./sahPool.js";
 import { type SqlDatabaseOptions, type SqlStorage } from "./types.js";
 /** The slice of the Web Locks API this module uses. */
 export interface SqlLocks {
@@ -35,11 +36,13 @@ export interface SqlStorageDeps<R> {
         readonly OpfsSAHPoolDb: new (file: string) => R;
         /** opfs-sahpool: close the pool's sync access handles (no data loss). */
         pauseVfs?(): unknown;
-    }>;
+    } & Partial<SahPoolSlots>>;
     readonly locks: SqlLocks | undefined;
     readonly warn: (message: string) => void;
     /** How long to wait for a previous owner before giving up. */
     readonly lockWaitMs: number;
+    /** The connection's PRAGMA temp_store: temp files need pool slots. */
+    readonly tempStore: TempStore;
 }
 export interface OpenedSqlStorage<R> {
     readonly raw: R;

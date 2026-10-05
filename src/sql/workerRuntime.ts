@@ -4,10 +4,12 @@
 // both open SQLite exactly the same way. Proven in a real browser by the
 // Playwright specs; it touches Worker globals, so it is not unit-tested.
 
+import type { TempStore } from "../sqlite/memoryProfile.js";
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
 import type { SqlRawDatabase } from "./engine.js";
 import type { SqlLocks, SqlStorageDeps } from "./open.js";
+import { installSahPool } from "./sahPool.js";
 
 export type LoadedSqlite = Awaited<ReturnType<typeof sqlite3InitModule>>;
 
@@ -26,25 +28,22 @@ export function loadSqlite(): Promise<LoadedSqlite> {
 }
 
 /**
- * openSqlStorage deps for this Worker. The pool is installed once; a pool a
- * previous operation paused (released its handles) is resumed before use.
+ * openSqlStorage deps for this Worker. The pool is installed once (see
+ * sahPool.ts); a pool a previous operation paused (released its handles) is
+ * resumed before use. `tempStore` is the connection's PRAGMA temp_store,
+ * which decides how many pool slots its temp files need.
  */
 export function workerStorageDeps(
 	sqlite: LoadedSqlite,
 	lockWaitMs: number,
+	tempStore: TempStore,
 ): SqlStorageDeps<SqlRawDatabase> {
 	return {
 		openMemory: (): SqlRawDatabase => new sqlite.oo1.DB(":memory:"),
-		installPool: async (name) => {
-			const pool = await sqlite.installOpfsSAHPoolVfs({
-				name,
-				forceReinitIfPreviouslyFailed: true,
-			});
-			if (pool.isPaused()) await pool.unpauseVfs();
-			return pool;
-		},
+		installPool: (name) => installSahPool(sqlite, name),
 		locks: (navigator as { locks?: SqlLocks }).locks,
 		warn: (message) => console.warn(message),
 		lockWaitMs,
+		tempStore,
 	};
 }

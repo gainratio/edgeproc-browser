@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.3.1; `@edgeproc/browser` is the old, deprecated name)
+**`npm install @gainratio/browser`** (version 0.3.2; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)

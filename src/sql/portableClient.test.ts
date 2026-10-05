@@ -99,6 +99,7 @@ function origin(lockWaitMs = 5_000) {
 						locks,
 						warn: () => undefined,
 						lockWaitMs,
+						tempStore: "memory",
 					},
 					options,
 				);

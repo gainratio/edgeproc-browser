@@ -31,6 +31,8 @@ async function installPool(
 			return (await sqlite.installOpfsSAHPoolVfs({
 				name,
 				forceReinitIfPreviouslyFailed: true,
+				// A failed attempt keeps the pool's slots (local patch 0005).
+				preserveOnInitFailure: true,
 			})) as Pool;
 		} catch (error) {
 			// The previous owner's access handles are released asynchronously.

@@ -1,7 +1,8 @@
 /// <reference lib="webworker" />
 import { ownerLockWaitMs } from "../../sql/open.js";
+import { installSahPool, reserveSahPoolSlots } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
-import { resolveMemoryProfile } from "../../sqlite/memoryProfile.js";
+import { resolveMemoryProfile, } from "../../sqlite/memoryProfile.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import { SqliteDatabaseVectorIndex, wrapSqliteDatabase, } from "./database.js";
 import { createVectorWorkerHandler, } from "./handler.js";
@@ -28,7 +29,8 @@ async function openIndex(options) {
     }
     else if (persistence === "opfs") {
         const identity = await stableIdentity(options.name);
-        const opened = await openPersistent(sqlite, `edgeproc-vector-${identity}`, ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier));
+        const profile = resolveMemoryProfile(options.memoryProfile ?? "auto");
+        const opened = await openPersistent(sqlite, `edgeproc-vector-${identity}`, ownerLockWaitMs(profile.tier), profile.tempStore);
         raw = opened.raw;
         release = opened.release;
     }
@@ -60,11 +62,13 @@ async function openIndex(options) {
     }
 }
 /** Own the pool (see poolOwner.ts) and open the index's file in it. */
-async function openPersistent(sqlite, poolName, waitMs) {
+async function openPersistent(sqlite, poolName, waitMs, tempStore) {
     const owned = await ownPool(navigator.locks, poolName, waitMs, () => acquirePersistentPool(sqlite, poolName));
     try {
+        const file = `/${poolName}.sqlite3`;
+        await reserveSahPoolSlots(owned.pool, file, tempStore);
         return {
-            raw: new owned.pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`),
+            raw: new owned.pool.OpfsSAHPoolDb(file),
             release: owned.release,
         };
     }
@@ -77,10 +81,7 @@ async function acquirePersistentPool(sqlite, name) {
     let delayMs = POOL_ACQUIRE_INITIAL_DELAY_MS;
     for (let attempt = 1;; attempt += 1) {
         try {
-            return await sqlite.installOpfsSAHPoolVfs({
-                name,
-                forceReinitIfPreviouslyFailed: true,
-            });
+            return await installSahPool(sqlite, name);
         }
         catch (error) {
             const detail = error instanceof Error ? error.message : String(error);

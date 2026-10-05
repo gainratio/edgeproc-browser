@@ -284,6 +284,7 @@ describe("removeSqlDatabase", () => {
 				locks,
 				warn: () => undefined,
 				lockWaitMs: 10,
+				tempStore: "memory",
 			},
 			{ name: "held" },
 		);
@@ -346,6 +347,7 @@ describe("removeSqlDatabase", () => {
 				locks,
 				warn: () => undefined,
 				lockWaitMs: 10,
+				tempStore: "memory",
 			},
 			{ name: "live" },
 		);
