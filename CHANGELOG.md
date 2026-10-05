@@ -34,6 +34,10 @@ storage.
 - **`indexedDbLayout` changed meaning.** It now only says where a 0.2.x cache kept its
   IndexedDB floor and chunks, so they can be migrated once.
 - **Runtime dependency removed:** `idb-keyval`.
+- **`db.close()` rolls back an open interactive transaction instead of waiting for it.** This
+  reverses a contract: `close()` used to wait for the transaction to finish, so a callback
+  that awaited `db` inside its own transaction hung `close()` forever. Now the transaction is
+  rolled back, calls queued behind it reject, and the Worker ends. Commit before closing.
 
 ### Added
 
@@ -69,8 +73,6 @@ storage.
   otherwise: removing a sahpool deletes every file in it).
 - **`@gainratio/browser/sql/node`**: `openNodeSqlDatabase({ name })` runs the same pinned SQLite
   build, client and handler in-process, so consumers' SQL tests run against the real engine.
-- **`db.close()` rolls back an open interactive transaction instead of waiting for it.** A
-  callback that awaited `db` inside its own transaction used to hang `close()` forever.
 - **A connection opened while an import or export by name runs now waits for it.** The by-name
   operation holds a `${pool}-operation` Web Lock; a context whose owner-lock wait runs out while
   it is held waits for the operation to finish, up to 15 owner-lock budgets (60 s on `full`),
@@ -89,7 +91,8 @@ storage.
   lock ended but no owner could be confirmed. `"in-use"` now means a live owner is confirmed.
   Callers that switch exhaustively on the result need the new case.
 - **The owner-lock wait (open and removal) is longer and scales with the memory tier:** 4 s
-  `full`, 8 s `lite`, 16 s `minimal`, instead of a fixed 2 s. A writer that met an import on a
+  `full`, 8 s `lite`, 16 s `minimal`. 0.2.1 waited a fixed 2 s; unreleased `main` briefly
+  had 1 s / 2 s / 4 s by tier. A writer that met an import on a
   2-core CI runner gave up after 1 s; weak phones are slower still. Override per call with
   `lockWaitMs`.
 

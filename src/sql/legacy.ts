@@ -6,11 +6,14 @@
 //    every one of its OPFS sync access handles. An old-build tab that still
 //    has the pool open makes that fail (reported "in-use"); once we hold the
 //    handles, an old-build tab cannot open them, so nothing writes mid-read.
-// 2. Recovery: opfs-sahpool's xCheckReservedLock always answers "locked", so
-//    SQLite never treats a journal inside a sahpool as hot and would read a
-//    torn file as-is. The database and its rollback journal are therefore
-//    opened together through SQLite's "unix" VFS (in-memory files), where
-//    SQLite's own hot-journal rollback runs, and the result is serialized.
+// 2. Recovery: the pools this migrates were written by OLD builds, whose
+//    opfs-sahpool xCheckReservedLock always answered "locked", so SQLite never
+//    treated a journal inside them as hot. This library's build has the fix
+//    (local patch 0002), but the input is an old build's pool, possibly torn
+//    by a crash, and the migration must not depend on which build reads it.
+//    The database and its rollback journal are therefore opened together
+//    through SQLite's "unix" VFS (in-memory files), where SQLite's own
+//    hot-journal rollback runs, and the result is serialized.
 // 3. Atomic: the recovered file goes through the normal import (validation,
 //    then one transaction). The legacy pool is removed only on request, and
 //    only after that import committed.
