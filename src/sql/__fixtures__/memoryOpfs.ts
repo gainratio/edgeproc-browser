@@ -133,10 +133,12 @@ export class MemoryDirectoryHandle extends MemoryFileSystemHandle {
 	}
 
 	/**
-	 * Like OPFS: a file another handle holds open cannot be removed, and a
-	 * recursive removal deletes what it can before failing on such a file
-	 * (which is how a failed opfs-sahpool setup used to strip a pool's free
-	 * slots while a dying Worker still held the rest).
+	 * A file a handle holds open cannot be removed. A recursive removal here
+	 * deletes what it can before failing on such a file: the worst case, a
+	 * removal racing a handle that opens mid-delete. (Chromium and Firefox
+	 * refuse the whole removal up front when a handle is already open.) It is
+	 * how a failed opfs-sahpool setup, which used to remove its pool, could
+	 * strip the free slots and leave the held ones.
 	 */
 	public async removeEntry(
 		name: string,
