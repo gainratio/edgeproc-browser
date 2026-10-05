@@ -1,13 +1,13 @@
 /// <reference lib="webworker" />
 import { ownerLockWaitMs } from "../../sql/open.js";
-import { installSahPool, reserveSahPoolSlots } from "../../sql/sahPool.js";
+import { installSahPool } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
 import { resolveMemoryProfile, } from "../../sqlite/memoryProfile.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import { SqliteDatabaseVectorIndex, wrapSqliteDatabase, } from "./database.js";
 import { createVectorWorkerHandler, } from "./handler.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
-import { ownPool } from "./poolOwner.js";
+import { openOwnedDatabase } from "./poolOwner.js";
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
 const POOL_ACQUIRE_MAX_DELAY_MS = 800;
@@ -63,19 +63,7 @@ async function openIndex(options) {
 }
 /** Own the pool (see poolOwner.ts) and open the index's file in it. */
 async function openPersistent(sqlite, poolName, waitMs, tempStore) {
-    const owned = await ownPool(navigator.locks, poolName, waitMs, () => acquirePersistentPool(sqlite, poolName));
-    try {
-        const file = `/${poolName}.sqlite3`;
-        await reserveSahPoolSlots(owned.pool, file, tempStore);
-        return {
-            raw: new owned.pool.OpfsSAHPoolDb(file),
-            release: owned.release,
-        };
-    }
-    catch (error) {
-        await owned.release();
-        throw error;
-    }
+    return openOwnedDatabase(navigator.locks, poolName, waitMs, tempStore, () => acquirePersistentPool(sqlite, poolName));
 }
 async function acquirePersistentPool(sqlite, name) {
     let delayMs = POOL_ACQUIRE_INITIAL_DELAY_MS;

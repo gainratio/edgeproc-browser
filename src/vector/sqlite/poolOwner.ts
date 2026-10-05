@@ -7,7 +7,9 @@ import {
 	poolOwnerLock,
 	type SqlLocks,
 } from "../../sql/open.js";
+import { reserveSahPoolSlots, type SahPoolSlots } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
+import type { TempStore } from "../../sqlite/memoryProfile.js";
 
 /** The slice of an installed opfs-sahpool the lifecycle needs. */
 export interface PausablePool {
@@ -59,6 +61,40 @@ export async function ownPool<P extends PausablePool>(
 			}
 		},
 	};
+}
+
+/** A pool that can open its database file and count its slots. */
+export interface DatabasePool<R> extends PausablePool, SahPoolSlots {
+	readonly OpfsSAHPoolDb: new (file: string) => R;
+}
+
+/**
+ * Own `poolName` (ownPool), top its slots up to what its database file
+ * `/${poolName}.sqlite3` needs for `tempStore`, then open that file.
+ */
+export async function openOwnedDatabase<P extends DatabasePool<unknown>>(
+	locks: SqlLocks | undefined,
+	poolName: string,
+	waitMs: number,
+	tempStore: TempStore,
+	install: () => Promise<P>,
+): Promise<{
+	readonly raw: InstanceType<P["OpfsSAHPoolDb"]>;
+	readonly release: () => Promise<void>;
+}> {
+	const owned = await ownPool(locks, poolName, waitMs, install);
+	try {
+		const file = `/${poolName}.sqlite3`;
+		await reserveSahPoolSlots(owned.pool, file, tempStore);
+		const raw = new owned.pool.OpfsSAHPoolDb(file);
+		return {
+			raw: raw as InstanceType<P["OpfsSAHPoolDb"]>,
+			release: owned.release,
+		};
+	} catch (error) {
+		await owned.release();
+		throw error;
+	}
 }
 
 /**

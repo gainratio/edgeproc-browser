@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import { ownerLockWaitMs, type SqlLocks } from "../../sql/open.js";
-import { installSahPool, reserveSahPoolSlots } from "../../sql/sahPool.js";
+import { installSahPool } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
 import {
 	resolveMemoryProfile,
@@ -19,7 +19,7 @@ import {
 	type OpenedVectorIndex,
 } from "./handler.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
-import { ownPool } from "./poolOwner.js";
+import { openOwnedDatabase } from "./poolOwner.js";
 import type {
 	SqliteVectorWorkerOptions,
 	SqliteVectorWorkerRequest,
@@ -109,23 +109,13 @@ async function openPersistent(
 	readonly raw: RawSqliteDatabase;
 	readonly release: () => Promise<void>;
 }> {
-	const owned = await ownPool(
+	return openOwnedDatabase(
 		(navigator as { locks?: SqlLocks }).locks,
 		poolName,
 		waitMs,
+		tempStore,
 		() => acquirePersistentPool(sqlite, poolName),
 	);
-	try {
-		const file = `/${poolName}.sqlite3`;
-		await reserveSahPoolSlots(owned.pool, file, tempStore);
-		return {
-			raw: new owned.pool.OpfsSAHPoolDb(file),
-			release: owned.release,
-		};
-	} catch (error) {
-		await owned.release();
-		throw error;
-	}
 }
 
 async function acquirePersistentPool(

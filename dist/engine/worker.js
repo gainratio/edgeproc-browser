@@ -3,7 +3,7 @@
 // One concern: route a request to the engine, reply with a typed envelope.
 /// <reference lib="webworker" />
 import { openSqlStorage } from "../sql/open.js";
-import { loadSqlite, workerStorageDeps } from "../sql/workerRuntime.js";
+import { loadSqlite } from "../sql/workerRuntime.js";
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
 import { cacheDatabaseName, runWithCacheLock } from "./cacheLock.js";
 import { ChunkDatabase, persistedSqlPoolExists, } from "./chunkDatabase.js";
@@ -12,12 +12,10 @@ import { fetchBytes } from "./fetchBytes.js";
 import { loadTrustRoot } from "./keyring.js";
 import { indexedDbLegacySource, opfsLegacySource, resolveIndexedDbLayout, } from "./legacyStores.js";
 import { installNetworkSentinel } from "./networkSentinel.js";
+import { engineStorageDeps } from "./storageDeps.js";
 import { refuseWithoutFallback } from "./storageError.js";
 import { materializeFile, syncIndex } from "./sync.js";
 const DECODER = new TextDecoder();
-/** Operations are serialized by the cache lock first, so a pool owner that
- * outlasts this is a foreign context (or a page that never closed it). */
-const POOL_WAIT_MS = 5_000;
 // This Worker fetches the signed bundle, so its traffic must be visible to the
 // tab's network counter — the window cannot see a Worker's resource timeline.
 installNetworkSentinel("engine-worker");
@@ -28,6 +26,8 @@ function chunks(configuration) {
     const indexedDbLayout = resolveIndexedDbLayout(configuration?.indexedDbLayout, cacheDatabaseName(namespace));
     const cacheFallback = configuration?.cacheFallback ?? "memory";
     if (storeState === null) {
+        // One profile for the chunk database's pragmas AND its pool's slots.
+        const memoryProfile = resolveMemoryProfile("auto");
         storeState = {
             namespace,
             indexedDbLayout,
@@ -35,13 +35,13 @@ function chunks(configuration) {
             database: new ChunkDatabase({
                 namespace,
                 open: async (name) => {
-                    const deps = workerStorageDeps(await loadSqlite(), POOL_WAIT_MS, resolveMemoryProfile("auto").tempStore);
+                    const deps = engineStorageDeps(await loadSqlite(), memoryProfile);
                     const open = () => openSqlStorage(deps, { name, fallback: cacheFallback });
                     return cacheFallback === "none"
                         ? refuseWithoutFallback(open)
                         : open();
                 },
-                memoryProfile: resolveMemoryProfile("auto"),
+                memoryProfile,
                 legacySources: () => [
                     opfsLegacySource(),
                     indexedDbLegacySource(indexedDbLayout),

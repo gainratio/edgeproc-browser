@@ -4,6 +4,14 @@ import { expect, test } from "@playwright/test";
 // slot and every write finds room for its journal. Runs in Chromium and
 // Firefox; in WebKit only where OPFS is available (Playwright's WebKit
 // refuses the OPFS root).
+//
+// What this spec proves is the contended-setup retry and the end-to-end
+// journey; it goes red against 0.3.1's dist with pool-in-use. It cannot
+// isolate the preserve-on-failure guard: Chromium (and Firefox) refuse a
+// recursive removeEntry outright while any slot is held, so a failed setup
+// deletes nothing here even without the guard. That guard's proof is the
+// in-memory OPFS unit test, src/sql/sahPool.test.ts ("a failed setup leaves
+// the pool's slots intact"), whose model deletes what it can.
 const ROUNDS = 25;
 
 test("opfs-sahpool keeps its slots across 25 reloads that kill the Worker mid-close", async ({

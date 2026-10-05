@@ -25,12 +25,15 @@ change; nothing to do but upgrade.
     passes it: the `/sql` seam, the engine's chunk cache and the `/vector/sqlite` index.
   - **A contended setup is retried** with backoff for up to the owner-lock wait (4 s / 8 s /
     16 s by memory tier) before it reports `pool-in-use`, since the old Worker's handles close
-    on their own.
+    on their own. The retry comes after the owner-lock wait, so in the worst case an open now
+    takes up to about twice that wait before it reports `pool-in-use`.
   - **Every open tops the pool up to what its database needs**: the files already in use,
     the database and its rollback journal, plus 4 temp-file slots when `temp_store` is FILE
-    (the "minimal" memory tier). That is at most sqlite-wasm's own default of 6 slots, so a
-    healthy pool is unchanged; a pool that lost slots on an older version heals on its next
-    open.
+    (the "minimal" memory tier). 4 covers the typical worst case for one statement (a statement
+    journal, the temp database, a spilled sorter and a transient index); it is not a ceiling,
+    and a query that needs more temp files than that can still fail to open one. For one
+    database the need is at most sqlite-wasm's own default of 6 slots, so a healthy pool is
+    unchanged; a pool that lost slots on an older version heals on its next open.
 
 ## [0.3.1] - 2026-10-05
 
