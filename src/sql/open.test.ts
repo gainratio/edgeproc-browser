@@ -224,6 +224,24 @@ describe("openSqlStorage", () => {
 		await opened.release();
 	});
 
+	it("waits for a by-name operation at most 15x lockWaitMs, then fails pool-in-use", async () => {
+		// An import that never finishes (a hung Worker) must not hang every
+		// writer forever: the wait is bounded and ends in the typed error.
+		const d = deps({ lockWaitMs: 20 });
+		const stuck = await openSqlStorage(
+			d,
+			{ name: "stuck-import" },
+			{ transient: true },
+		);
+		const started = performance.now();
+		await expect(
+			openSqlStorage(d, { name: "stuck-import" }),
+		).rejects.toMatchObject({ reason: "pool-in-use" });
+		// lockWaitMs (20) + 15 x 20 for the operation; timers never fire early.
+		expect(performance.now() - started).toBeGreaterThanOrEqual(300);
+		await stuck.release();
+	});
+
 	it("still fails closed after the wait when a connection (not an operation) owns the pool", async () => {
 		const d = deps({ lockWaitMs: 20 });
 		const owner = await openSqlStorage(d, { name: "long-lived" });

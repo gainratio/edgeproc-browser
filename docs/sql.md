@@ -152,9 +152,10 @@ Two rules:
 
 The database lives in its own `opfs-sahpool` VFS. That VFS holds exclusive OPFS handles, so
 only one tab can own it. The Worker takes an exclusive Web Lock for the life of the
-connection and waits for a previous owner (a reload) before giving up: 1 s on a `full`
-memory tier, 2 s on `lite`, 4 s on `minimal`, because weak devices tear the old page down
-slowest. `createSqliteVectorIndex({ persistence: "opfs" })` takes the same lock; a second tab
+connection and waits for a previous owner (a reload) before giving up: 4 s on a `full`
+memory tier, 8 s on `lite`, 16 s on `minimal`, because weak devices tear the old page down
+slowest. A connection opened while an import or export by name runs waits for it, up to 15
+times that budget (60 s on `full`), then fails `pool-in-use` instead of hanging. `createSqliteVectorIndex({ persistence: "opfs" })` takes the same lock; a second tab
 gets `SqlStorageUnavailableError("pool-in-use")`.
 
 | `db.storage` | Meaning |
@@ -209,7 +210,7 @@ await removeOpfsPool("edgereco-catalogue");
 
 Both take the pool's owner Web Lock, the one `openSqlDatabase` and an OPFS
 `createSqliteVectorIndex` hold while open, and delete while holding it, so nothing can reopen
-the pool mid-delete. They wait up to `lockWaitMs` (default: the same 1/2/4 s by memory tier)
+the pool mid-delete. They wait up to `lockWaitMs` (default: the same 4/8/16 s by memory tier)
 for an owner that is closing. `removeOpfsPool` removes the pool's OPFS directory (`.<pool>`).
 If the browser refuses the OPFS root (Safari private browsing, Playwright's WebKit), both throw
 `SqlStorageUnavailableError("opfs-unavailable")`, the same typed reason `openSqlDatabase` reports.
