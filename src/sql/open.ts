@@ -81,9 +81,19 @@ export async function sqlDatabasePoolName(name: string): Promise<string> {
 	return `${SQL_POOL_PREFIX}${await stableIdentity(name)}`;
 }
 
+export interface OpenSqlStorageContext {
+	/**
+	 * A bounded operation (an import, export or migration by name), not a
+	 * connection: it also holds `${pool}-operation`, so a context that times
+	 * out waiting for the owner lock knows to wait for it to finish.
+	 */
+	readonly transient?: boolean;
+}
+
 export async function openSqlStorage<R>(
 	deps: SqlStorageDeps<R>,
 	options: SqlDatabaseOptions,
+	{ transient = false }: OpenSqlStorageContext = {},
 ): Promise<OpenedSqlStorage<R>> {
 	const persistence = options.persistence ?? "opfs";
 	if (persistence === "memory") {
@@ -97,14 +107,11 @@ export async function openSqlStorage<R>(
 		throw new TypeError(`unsupported SQL persistence: ${String(persistence)}`);
 	}
 	const pool = await sqlDatabasePoolName(options.name);
-	const release = await acquirePoolLease(
-		deps.locks,
-		poolOwnerLock(pool),
-		deps.lockWaitMs,
-	);
-	if (release === undefined) {
+	const owner = await acquireOwnerLease(deps, pool);
+	if (owner === undefined) {
 		return fallBack(deps, options, "pool-in-use", "another context owns it");
 	}
+	const release = transient ? await markOperation(deps, pool, owner) : owner;
 	try {
 		const vfs = await deps.installPool(pool);
 		const file = `/${pool}.sqlite3`;
@@ -148,6 +155,60 @@ function fallBack<R>(
 	};
 }
 
+type Lease = () => Promise<void>;
+
+/**
+ * The owner lock, waiting `lockWaitMs` for a previous connection (a reload).
+ * If that wait runs out while a bounded operation holds the pool, wait for the
+ * operation to finish: it will, and failing would break "a writer waits for
+ * an import by name". If the owner let go between the timeout and the check,
+ * take the lock again within the same budget. A live connection: undefined.
+ */
+async function acquireOwnerLease<R>(
+	deps: SqlStorageDeps<R>,
+	pool: string,
+): Promise<Lease | undefined> {
+	const owner = poolOwnerLock(pool);
+	const lease = await acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+	if (lease !== undefined || deps.locks?.query === undefined) return lease;
+	const held = new Set(
+		((await deps.locks.query()).held ?? []).map((lock) => lock.name),
+	);
+	if (held.has(poolOperationLock(pool))) {
+		return acquirePoolLease(deps.locks, owner, Number.POSITIVE_INFINITY);
+	}
+	if (!held.has(owner)) {
+		return acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+	}
+	return undefined;
+}
+
+/** Hold `${pool}-operation` too; free it only after the owner lock. */
+async function markOperation<R>(
+	deps: SqlStorageDeps<R>,
+	pool: string,
+	owner: Lease,
+): Promise<Lease> {
+	// Free whenever the owner lock is ours: nobody else takes it without it.
+	const marker = await acquirePoolLease(
+		deps.locks,
+		poolOperationLock(pool),
+		deps.lockWaitMs,
+	);
+	return async () => {
+		try {
+			await owner();
+		} finally {
+			await marker?.();
+		}
+	};
+}
+
+/** Held, alongside the owner lock, by a bounded operation on `pool`. */
+export function poolOperationLock(pool: string): string {
+	return `${pool}-operation`;
+}
+
 /** The Web Lock every owner of the opfs-sahpool `pool` holds while open. */
 export function poolOwnerLock(pool: string): string {
 	return `${pool}-owner`;
@@ -155,7 +216,7 @@ export function poolOwnerLock(pool: string): string {
 
 /**
  * Hold an exclusive lock until the returned release() is called; undefined if
- * it stayed taken for `waitMs`. release() resolves once the lock manager has
+ * it stayed taken for `waitMs` (Infinity: wait as long as it takes). release() resolves once the lock manager has
  * actually let go (the request's promise settles after the release), which is
  * what lets close() promise "the next owner can have it now".
  */
@@ -172,7 +233,9 @@ export function acquirePoolLease(
 	return new Promise((resolve, reject) => {
 		const settled = locks.request(
 			name,
-			{ mode: "exclusive", signal: AbortSignal.timeout(waitMs) },
+			Number.isFinite(waitMs)
+				? { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }
+				: { mode: "exclusive" },
 			async () => {
 				resolve(async () => {
 					unhold();
@@ -194,7 +257,7 @@ export function isLockTimeout(error: unknown): boolean {
 	return name === "AbortError" || name === "TimeoutError";
 }
 
-function isPoolContentionError(error: unknown): boolean {
+export function isPoolContentionError(error: unknown): boolean {
 	return (
 		error instanceof Error &&
 		(error.name === "NoModificationAllowedError" ||

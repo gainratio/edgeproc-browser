@@ -184,6 +184,8 @@ describe("published artefact contract", () => {
 			"dist/vector/sqlite/index.js",
 			"dist/vector/sqlite/node.js",
 			"dist/sqlite/index.js",
+			"dist/sql/index.js",
+			"dist/sql/node.js",
 		]) {
 			const url = pathToFileURL(join(ROOT, target)).href;
 			const result = spawnSync(
@@ -224,15 +226,18 @@ describe("published artefact contract", () => {
 						: [];
 			});
 		};
-		const nodeOnlyEntrypoint = join(DIST, "vector", "sqlite", "node.js");
+		const nodeOnlyEntrypoints = [
+			join(DIST, "vector", "sqlite", "node.js"),
+			join(DIST, "sql", "node.js"),
+		];
 		const offenders = walk(DIST).filter(
 			(file) =>
-				file !== nodeOnlyEntrypoint &&
+				!nodeOnlyEntrypoints.includes(file) &&
 				/from\s*"node:|require\("node:/.test(readFileSync(file, "utf8")),
 		);
 		expect(offenders).toEqual([]);
-		expect(readFileSync(nodeOnlyEntrypoint, "utf8")).toContain(
-			'from "node:fs/promises"',
-		);
+		for (const entry of nodeOnlyEntrypoints) {
+			expect(readFileSync(entry, "utf8")).toContain('from "node:fs/promises"');
+		}
 	});
 });

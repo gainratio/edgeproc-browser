@@ -47,17 +47,28 @@ export interface OpenedSqlStorage<R> {
 export declare const SQL_POOL_PREFIX = "edgeproc-sql-";
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export declare function sqlDatabasePoolName(name: string): Promise<string>;
-export declare function openSqlStorage<R>(deps: SqlStorageDeps<R>, options: SqlDatabaseOptions): Promise<OpenedSqlStorage<R>>;
+export interface OpenSqlStorageContext {
+    /**
+     * A bounded operation (an import, export or migration by name), not a
+     * connection: it also holds `${pool}-operation`, so a context that times
+     * out waiting for the owner lock knows to wait for it to finish.
+     */
+    readonly transient?: boolean;
+}
+export declare function openSqlStorage<R>(deps: SqlStorageDeps<R>, options: SqlDatabaseOptions, { transient }?: OpenSqlStorageContext): Promise<OpenedSqlStorage<R>>;
+/** Held, alongside the owner lock, by a bounded operation on `pool`. */
+export declare function poolOperationLock(pool: string): string;
 /** The Web Lock every owner of the opfs-sahpool `pool` holds while open. */
 export declare function poolOwnerLock(pool: string): string;
 /**
  * Hold an exclusive lock until the returned release() is called; undefined if
- * it stayed taken for `waitMs`. release() resolves once the lock manager has
+ * it stayed taken for `waitMs` (Infinity: wait as long as it takes). release() resolves once the lock manager has
  * actually let go (the request's promise settles after the release), which is
  * what lets close() promise "the next owner can have it now".
  */
 export declare function acquirePoolLease(locks: SqlLocks | undefined, name: string, waitMs: number): Promise<(() => Promise<void>) | undefined>;
 /** DOMException is not an Error subclass in every realm, so match by name. */
 export declare function isLockTimeout(error: unknown): boolean;
+export declare function isPoolContentionError(error: unknown): boolean;
 export declare function stableIdentity(name: string): Promise<string>;
 //# sourceMappingURL=open.d.ts.map

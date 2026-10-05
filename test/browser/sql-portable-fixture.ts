@@ -169,3 +169,57 @@ window.runSqlPortableProof = async (name): Promise<SqlPortableProof> => {
 		trustedSchema: trusted?.trusted_schema,
 	};
 };
+
+export interface SlowImportWait {
+	readonly importMs: number;
+	readonly writer: string;
+	readonly rows: unknown;
+}
+
+declare global {
+	interface Window {
+		runSlowImportWait(name: string, megabytes: number): Promise<SlowImportWait>;
+	}
+}
+
+/**
+ * Import `megabytes` by name, and open a writer while it runs. The import
+ * holds the owner lock for as long as it takes; the writer must wait for it
+ * rather than give up after its reload-overlap budget (1-4 s by tier).
+ */
+window.runSlowImportWait = async (name, megabytes): Promise<SlowImportWait> => {
+	const scratch = await openSqlDatabase({
+		name: `${name}-scratch`,
+		persistence: "memory",
+	});
+	await scratch.exec("CREATE TABLE big(id INTEGER PRIMARY KEY, pad BLOB)");
+	await scratch.exec(
+		`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${megabytes * 16})
+		 INSERT INTO big(pad) SELECT randomblob(65536) FROM n`,
+	);
+	const bytes = await scratch.exportDatabase();
+	await scratch.close();
+
+	const ownerLock = `${await sqlDatabasePoolName(name)}-owner`;
+	const started = performance.now();
+	let importMs = 0;
+	const importing = importDatabase(name, bytes).then(() => {
+		importMs = performance.now() - started;
+	});
+	for (let spins = 0; spins < 10_000; spins++) {
+		const state = await navigator.locks.query();
+		if (state.held?.some((lock) => lock.name === ownerLock)) break;
+	}
+	let writer = "opened";
+	let rows: unknown;
+	try {
+		const db = await openSqlDatabase({ name });
+		rows = (await db.query("SELECT count(*) AS n FROM big"))[0]?.n;
+		await db.close();
+	} catch (error) {
+		writer = reasonOf(error);
+	}
+	await importing;
+	await removeSqlDatabase(name);
+	return { importMs: Math.round(importMs), writer, rows };
+};

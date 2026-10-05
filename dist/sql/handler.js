@@ -9,7 +9,9 @@ export function createSqlWorkerHandler(open) {
             if (current !== undefined) {
                 throw new Error("SQL worker already has an open database");
             }
-            current = await open(request.options);
+            current = await open(request.options, {
+                transient: request.transient === true,
+            });
             return current.engine.runtimeInfo().storage;
         }
         if (current === undefined)
@@ -24,6 +26,16 @@ export function createSqlWorkerHandler(open) {
                 return engine.transaction(request.statements);
             case "execute-many":
                 return engine.executeMany(request.sql, request.rows);
+            case "begin":
+                return engine.begin();
+            case "tx-exec":
+                return engine.txExec(request.sql, request.bind);
+            case "tx-query":
+                return engine.txQuery(request.sql, request.bind);
+            case "commit":
+                return engine.commit();
+            case "rollback":
+                return engine.rollback();
             case "prepare":
                 return engine.prepare(request.sql);
             case "run-prepared":
@@ -36,6 +48,11 @@ export function createSqlWorkerHandler(open) {
                 return engine.exportDatabase();
             case "import":
                 return engine.importDatabase(request.bytes, request.options);
+            case "migrate-legacy":
+                if (current.migrateLegacy === undefined) {
+                    throw new Error("legacy opfs-sahpool migration needs the browser SQL Worker (OPFS)");
+                }
+                return current.migrateLegacy(request.options);
             case "runtime-info":
                 return engine.runtimeInfo();
             case "close": {

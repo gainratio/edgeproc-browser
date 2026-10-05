@@ -204,6 +204,56 @@ describe("openSqlStorage", () => {
 		opened.release();
 	});
 
+	it("waits out a by-name operation (an import) that holds the pool past the wait budget", async () => {
+		// CI run 37230731318: a writer opened while importDatabase(name) held
+		// the owner lock for longer than lockWaitMs, and failed pool-in-use.
+		const d = deps({ lockWaitMs: 20 });
+		const importing = await openSqlStorage(
+			d,
+			{ name: "busy-import" },
+			{ transient: true },
+		);
+		const pool = await sqlDatabasePoolName("busy-import");
+		expect((d.locks as FakeLocks).isHeld(`${pool}-operation`)).toBe(true);
+		const writer = openSqlStorage(d, { name: "busy-import" });
+		await new Promise((resolve) => setTimeout(resolve, 80));
+		await importing.release();
+		expect((d.locks as FakeLocks).isHeld(`${pool}-operation`)).toBe(false);
+		const opened = await writer;
+		expect(opened.storage).toMatchObject({ persistence: "opfs" });
+		await opened.release();
+	});
+
+	it("still fails closed after the wait when a connection (not an operation) owns the pool", async () => {
+		const d = deps({ lockWaitMs: 20 });
+		const owner = await openSqlStorage(d, { name: "long-lived" });
+		await expect(
+			openSqlStorage(d, { name: "long-lived" }),
+		).rejects.toMatchObject({ reason: "pool-in-use" });
+		await owner.release();
+	});
+
+	it("takes the lock again when its owner let go between the timeout and the check", async () => {
+		const inner = new FakeLocks();
+		let calls = 0;
+		const d = deps({
+			locks: {
+				request: (name, options, callback) => {
+					calls += 1;
+					if (calls === 1) {
+						return Promise.reject(new DOMException("t", "TimeoutError"));
+					}
+					return inner.request(name, options, callback);
+				},
+				query: async () => ({ held: [] }),
+			},
+		});
+		const opened = await openSqlStorage(d, { name: "freed" });
+		expect(opened.storage).toMatchObject({ persistence: "opfs" });
+		expect(calls).toBe(2);
+		await opened.release();
+	});
+
 	it("treats the browser's TimeoutError from AbortSignal.timeout as pool-in-use", async () => {
 		const d = deps({
 			locks: {
