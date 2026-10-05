@@ -1,8 +1,12 @@
 /// <reference lib="webworker" />
 
 import { ownerLockWaitMs, type SqlLocks } from "../../sql/open.js";
+import { installSahPool } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
-import { resolveMemoryProfile } from "../../sqlite/memoryProfile.js";
+import {
+	resolveMemoryProfile,
+	type TempStore,
+} from "../../sqlite/memoryProfile.js";
 import sqlite3InitModule from "./assets/sqlite3.mjs";
 import {
 	type RawSqliteDatabase,
@@ -15,24 +19,14 @@ import {
 	type OpenedVectorIndex,
 } from "./handler.js";
 import { configureInlineOpfsProxy } from "./opfsAsyncProxy.js";
-import { ownPool } from "./poolOwner.js";
+import { openOwnedDatabase } from "./poolOwner.js";
 import type {
 	SqliteVectorWorkerOptions,
 	SqliteVectorWorkerRequest,
 } from "./protocol.js";
 
-interface SahPool {
-	readonly OpfsSAHPoolDb: new (filename: string) => RawSqliteDatabase;
-	/** Close the pool's sync access handles (no data loss). */
-	pauseVfs(): unknown;
-}
-
-interface SahPoolInstaller {
-	installOpfsSAHPoolVfs(options: {
-		name: string;
-		forceReinitIfPreviouslyFailed?: boolean;
-	}): Promise<SahPool>;
-}
+type SahPoolInstaller = Awaited<ReturnType<typeof sqlite3InitModule>>;
+type SahPool = Awaited<ReturnType<SahPoolInstaller["installOpfsSAHPoolVfs"]>>;
 
 const POOL_ACQUIRE_MAX_ATTEMPTS = 8;
 const POOL_ACQUIRE_INITIAL_DELAY_MS = 50;
@@ -59,12 +53,12 @@ async function openIndex(
 		raw = new sqlite.oo1.DB(":memory:");
 	} else if (persistence === "opfs") {
 		const identity = await stableIdentity(options.name);
+		const profile = resolveMemoryProfile(options.memoryProfile ?? "auto");
 		const opened = await openPersistent(
 			sqlite,
 			`edgeproc-vector-${identity}`,
-			ownerLockWaitMs(
-				resolveMemoryProfile(options.memoryProfile ?? "auto").tier,
-			),
+			ownerLockWaitMs(profile.tier),
+			profile.tempStore,
 		);
 		raw = opened.raw;
 		release = opened.release;
@@ -110,25 +104,18 @@ async function openPersistent(
 	sqlite: SahPoolInstaller,
 	poolName: string,
 	waitMs: number,
+	tempStore: TempStore,
 ): Promise<{
 	readonly raw: RawSqliteDatabase;
 	readonly release: () => Promise<void>;
 }> {
-	const owned = await ownPool(
+	return openOwnedDatabase(
 		(navigator as { locks?: SqlLocks }).locks,
 		poolName,
 		waitMs,
+		tempStore,
 		() => acquirePersistentPool(sqlite, poolName),
 	);
-	try {
-		return {
-			raw: new owned.pool.OpfsSAHPoolDb(`/${poolName}.sqlite3`),
-			release: owned.release,
-		};
-	} catch (error) {
-		await owned.release();
-		throw error;
-	}
 }
 
 async function acquirePersistentPool(
@@ -138,10 +125,7 @@ async function acquirePersistentPool(
 	let delayMs = POOL_ACQUIRE_INITIAL_DELAY_MS;
 	for (let attempt = 1; ; attempt += 1) {
 		try {
-			return await sqlite.installOpfsSAHPoolVfs({
-				name,
-				forceReinitIfPreviouslyFailed: true,
-			});
+			return await installSahPool(sqlite, name);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			if (!isPoolContentionError(error)) {

@@ -123,6 +123,7 @@ function host(options: {
 					locks,
 					warn,
 					lockWaitMs: 20,
+					tempStore: "memory",
 				},
 				{ name, fallback: "memory" },
 			);

@@ -2,6 +2,7 @@
 // Lock openSqlDatabase holds, for the life of the index. Kept free of Worker
 // globals so the lifecycle is unit-tested, not just driven in a browser.
 import { acquirePoolLease, poolOwnerLock, } from "../../sql/open.js";
+import { reserveSahPoolSlots } from "../../sql/sahPool.js";
 import { SqlStorageUnavailableError } from "../../sql/types.js";
 /**
  * Take `poolName`'s owner lock (waiting up to `waitMs` for a previous owner),
@@ -31,6 +32,26 @@ export async function ownPool(locks, poolName, waitMs, install) {
             }
         },
     };
+}
+/**
+ * Own `poolName` (ownPool), top its slots up to what its database file
+ * `/${poolName}.sqlite3` needs for `tempStore`, then open that file.
+ */
+export async function openOwnedDatabase(locks, poolName, waitMs, tempStore, install) {
+    const owned = await ownPool(locks, poolName, waitMs, install);
+    try {
+        const file = `/${poolName}.sqlite3`;
+        await reserveSahPoolSlots(owned.pool, file, tempStore);
+        const raw = new owned.pool.OpfsSAHPoolDb(file);
+        return {
+            raw: raw,
+            release: owned.release,
+        };
+    }
+    catch (error) {
+        await owned.release();
+        throw error;
+    }
 }
 /**
  * Close the index, then free its pool. Resolves only once the handles are

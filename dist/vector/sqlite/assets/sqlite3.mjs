@@ -19844,7 +19844,8 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
     /* Logging verbosity 3+ == everything, 2 == warnings+errors, 1 ==
        errors only. */
     verbosity: 2,
-    forceReinitIfPreviouslyFailed: false
+    forceReinitIfPreviouslyFailed: false,
+    preserveOnInitFailure: false
   });
 
   /** Logging routines, from most to least serious. */
@@ -20328,8 +20329,8 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
        throws, this.$error will contain the corresponding Error
        object.
 
-       If it throws, it releases any SAHs which it may have
-       acquired before the exception was thrown, leaving the VFS in a
+       If it throws, it waits for every pending acquisition to settle,
+       then releases all SAHs it acquired, leaving the VFS in a
        well-defined but unusable state.
 
        If clearFiles is true, the client-stored state of each file is
@@ -20343,27 +20344,31 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
           files.push([name,h]);
         }
       }
-      return Promise.all(files.map(async([name,h])=>{
-        try{
-          const ah = await h.createSyncAccessHandle()
-          this.#mapSAHToName.set(ah, name);
-          if(clearFiles){
-            ah.truncate(HEADER_OFFSET_DATA);
-            this.setAssociatedPath(ah, '', 0);
+      const results = await Promise.allSettled(files.map(async([name,h])=>{
+        const ah = await h.createSyncAccessHandle()
+        this.#mapSAHToName.set(ah, name);
+        if(clearFiles){
+          ah.truncate(HEADER_OFFSET_DATA);
+          this.setAssociatedPath(ah, '', 0);
+        }else{
+          const path = this.getAssociatedPath(ah);
+          if(path){
+            this.#mapFilenameToSAH.set(path, ah);
           }else{
-            const path = this.getAssociatedPath(ah);
-            if(path){
-              this.#mapFilenameToSAH.set(path, ah);
-            }else{
-              this.#availableSAH.add(ah);
-            }
+            this.#availableSAH.add(ah);
           }
-        }catch(e){
-          this.storeErr(e);
-          this.releaseAccessHandles();
-          throw e;
         }
       }));
+      const failure = results.find((r)=>'rejected'===r.status)
+      /* If any failures are found then clean up and re-throw the
+         first one. We "could" record them all but we can only throw
+         one of them (or an exception wrapping all of them, which
+         seems unnecessary). */;
+      if( failure ){
+        this.storeErr(failure.reason);
+        this.releaseAccessHandles();
+        throw failure.reason;
+      }
     }
 
     /**
@@ -21003,8 +21008,18 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
      option is truthy _and_ the previous attempt to initialize this
      VFS with the same `name` failed, the VFS will attempt to
      initialize a second time instead of returning the cached
-     failure. See discussion at:
+     failure. See discussion at
      <https://github.com/sqlite/sqlite-wasm/issues/79>
+
+     - `preserveOnInitFailure`: (default=`false`) If truthy,
+     initialization failure unregisters and disposes of the VFS and
+     releases acquired handles without also deleting its storage. This
+     does not undo changes already made during initialization,
+     including `clearOnInit`. Otherwise, initialization failure
+     invokes this.removeVfs(), which attempts to delete the
+     pool. Retrying a cached initialization failure requires
+     `forceReinitIfPreviouslyFailed`. See discussion at
+     <https://sqlite.org/forum/forumpost/5664cd4baee50236>.
 
 
      Peculiarities of this VFS vis a vis other SQLite VFSes:
@@ -21204,6 +21219,24 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
     }
 
     /**
+       An interal detail of OpfsSAHPool, called only by initPromises().
+
+       Unregisters and disposes of OpfsSAHPool thePool, releasing all
+       of its SAHs without deleting its files. Used when
+       initialization fails and the preserveOnInitFailure option is
+       set. This is a no-op if thePool.getVfs().pointer is falsy. Returns the
+       undefined value.
+    */
+    const unregisterVfs = (thePool)=>{
+      const cVfs = thePool.getVfs();
+      if( cVfs?.pointer ){
+        capi.sqlite3_vfs_unregister(cVfs.pointer);
+        cVfs.dispose();
+        thePool.releaseAccessHandles();
+      }
+    };
+
+    /**
        Maintenance reminder: the order of ASYNC ops in this function
        is significant. We need to have them all chained at the very
        end in order to be able to catch a race condition where
@@ -21240,7 +21273,11 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
         thePool.log("VFS initialized.");
         return poolUtil;
       }).catch(async (e)=>{
-        await thePool.removeVfs().catch(()=>{});
+        if( options.preserveOnInitFailure ){
+          unregisterVfs(thePool);
+        }else{
+          await thePool.removeVfs().catch(()=>{});
+        }
         throw e;
       });
     }).catch((err)=>{

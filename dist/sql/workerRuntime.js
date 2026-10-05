@@ -5,6 +5,7 @@
 // Playwright specs; it touches Worker globals, so it is not unit-tested.
 import sqlite3InitModule from "../vector/sqlite/assets/sqlite3.mjs";
 import { configureInlineOpfsProxy } from "../vector/sqlite/opfsAsyncProxy.js";
+import { installSahPool } from "./sahPool.js";
 let loading;
 /** The pinned SQLite module, loaded once per Worker. */
 export function loadSqlite() {
@@ -18,24 +19,19 @@ export function loadSqlite() {
     return loading;
 }
 /**
- * openSqlStorage deps for this Worker. The pool is installed once; a pool a
- * previous operation paused (released its handles) is resumed before use.
+ * openSqlStorage deps for this Worker. The pool is installed once (see
+ * sahPool.ts); a pool a previous operation paused (released its handles) is
+ * resumed before use. `tempStore` is the connection's PRAGMA temp_store,
+ * which decides how many pool slots its temp files need.
  */
-export function workerStorageDeps(sqlite, lockWaitMs) {
+export function workerStorageDeps(sqlite, lockWaitMs, tempStore) {
     return {
         openMemory: () => new sqlite.oo1.DB(":memory:"),
-        installPool: async (name) => {
-            const pool = await sqlite.installOpfsSAHPoolVfs({
-                name,
-                forceReinitIfPreviouslyFailed: true,
-            });
-            if (pool.isPaused())
-                await pool.unpauseVfs();
-            return pool;
-        },
+        installPool: (name) => installSahPool(sqlite, name),
         locks: navigator.locks,
         warn: (message) => console.warn(message),
         lockWaitMs,
+        tempStore,
     };
 }
 //# sourceMappingURL=workerRuntime.js.map

@@ -7,6 +7,7 @@
 // of the connection. A second tab waits briefly (a reload overlaps the old page
 // for a moment), then either fails closed or, if the caller allowed it, opens
 // an in-memory database and SAYS SO in its storage status.
+import { reserveSahPoolSlots } from "./sahPool.js";
 import { SqlStorageUnavailableError, } from "./types.js";
 /**
  * How long to wait for a pool's previous owner to let go. close() now hands
@@ -54,8 +55,11 @@ export async function openSqlStorage(deps, options, { transient = false } = {}) 
     }
     const release = transient ? await markOperation(deps, pool, owner) : owner;
     try {
-        const vfs = await deps.installPool(pool);
+        const vfs = await installWithinLockWait(deps, pool);
         const file = `/${pool}.sqlite3`;
+        if (countsSlots(vfs)) {
+            await reserveSahPoolSlots(vfs, file, deps.tempStore);
+        }
         return {
             raw: new vfs.OpfsSAHPoolDb(file),
             storage: { persistence: "opfs", pool, file },
@@ -77,6 +81,36 @@ export async function openSqlStorage(deps, options, { transient = false } = {}) 
             ? "pool-in-use"
             : "opfs-unavailable";
         return fallBack(deps, options, reason, describe(error));
+    }
+}
+/** Real pools count their slots; test doubles may not. */
+function countsSlots(pool) {
+    return (typeof pool.getFileNames === "function" &&
+        typeof pool.reserveMinimumCapacity === "function");
+}
+const INSTALL_RETRY_INITIAL_DELAY_MS = 25;
+const INSTALL_RETRY_MAX_DELAY_MS = 400;
+/**
+ * Set the pool up, retrying while its files are still held open. A reload's
+ * new Worker can win the owner lock while the old Worker's access handles
+ * are still closing; that contention clears on its own, so it is retried
+ * with backoff for up to lockWaitMs (the same budget a previous owner gets
+ * to let go of the lock) before the caller reports pool-in-use.
+ */
+async function installWithinLockWait(deps, pool) {
+    const deadline = Date.now() + deps.lockWaitMs;
+    let delayMs = INSTALL_RETRY_INITIAL_DELAY_MS;
+    for (;;) {
+        try {
+            return await deps.installPool(pool);
+        }
+        catch (error) {
+            if (!isPoolContentionError(error) || Date.now() + delayMs > deadline) {
+                throw error;
+            }
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_DELAY_MS);
+        }
     }
 }
 function fallBack(deps, options, reason, detail) {

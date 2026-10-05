@@ -32,6 +32,10 @@ interface SqliteSahPool {
 	isPaused(): boolean;
 	/** Re-acquire the handles of a paused pool. */
 	unpauseVfs(): Promise<SqliteSahPool>;
+	/** Files currently taking a slot. */
+	getFileNames(): string[];
+	/** Add slots until there are at least `min`; resolves to the capacity. */
+	reserveMinimumCapacity(min: number): Promise<number>;
 }
 
 interface SqliteModule {
@@ -42,6 +46,8 @@ interface SqliteModule {
 	installOpfsSAHPoolVfs(options: {
 		name: string;
 		forceReinitIfPreviouslyFailed?: boolean;
+		/** Keep the pool's files when setup fails (local patch 0005). */
+		preserveOnInitFailure?: boolean;
 	}): Promise<SqliteSahPool>;
 	readonly capi: {
 		readonly SQLITE_OK: number;

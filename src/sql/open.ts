@@ -8,7 +8,8 @@
 // for a moment), then either fails closed or, if the caller allowed it, opens
 // an in-memory database and SAYS SO in its storage status.
 
-import type { MemoryTier } from "../sqlite/memoryProfile.js";
+import type { MemoryTier, TempStore } from "../sqlite/memoryProfile.js";
+import { reserveSahPoolSlots, type SahPoolSlots } from "./sahPool.js";
 import {
 	type SqlDatabaseOptions,
 	type SqlFallbackReason,
@@ -60,15 +61,19 @@ export const OPERATION_WAIT_BUDGETS = 15;
 
 export interface SqlStorageDeps<R> {
 	readonly openMemory: () => R;
-	readonly installPool: (poolName: string) => Promise<{
-		readonly OpfsSAHPoolDb: new (file: string) => R;
-		/** opfs-sahpool: close the pool's sync access handles (no data loss). */
-		pauseVfs?(): unknown;
-	}>;
+	readonly installPool: (poolName: string) => Promise<
+		{
+			readonly OpfsSAHPoolDb: new (file: string) => R;
+			/** opfs-sahpool: close the pool's sync access handles (no data loss). */
+			pauseVfs?(): unknown;
+		} & Partial<SahPoolSlots>
+	>;
 	readonly locks: SqlLocks | undefined;
 	readonly warn: (message: string) => void;
 	/** How long to wait for a previous owner before giving up. */
 	readonly lockWaitMs: number;
+	/** The connection's PRAGMA temp_store: temp files need pool slots. */
+	readonly tempStore: TempStore;
 }
 
 export interface OpenedSqlStorage<R> {
@@ -121,8 +126,11 @@ export async function openSqlStorage<R>(
 	}
 	const release = transient ? await markOperation(deps, pool, owner) : owner;
 	try {
-		const vfs = await deps.installPool(pool);
+		const vfs = await installWithinLockWait(deps, pool);
 		const file = `/${pool}.sqlite3`;
+		if (countsSlots(vfs)) {
+			await reserveSahPoolSlots(vfs, file, deps.tempStore);
+		}
 		return {
 			raw: new vfs.OpfsSAHPoolDb(file),
 			storage: { persistence: "opfs", pool, file },
@@ -142,6 +150,43 @@ export async function openSqlStorage<R>(
 			? "pool-in-use"
 			: "opfs-unavailable";
 		return fallBack(deps, options, reason, describe(error));
+	}
+}
+
+/** Real pools count their slots; test doubles may not. */
+function countsSlots(pool: Partial<SahPoolSlots>): pool is SahPoolSlots {
+	return (
+		typeof pool.getFileNames === "function" &&
+		typeof pool.reserveMinimumCapacity === "function"
+	);
+}
+
+const INSTALL_RETRY_INITIAL_DELAY_MS = 25;
+const INSTALL_RETRY_MAX_DELAY_MS = 400;
+
+/**
+ * Set the pool up, retrying while its files are still held open. A reload's
+ * new Worker can win the owner lock while the old Worker's access handles
+ * are still closing; that contention clears on its own, so it is retried
+ * with backoff for up to lockWaitMs (the same budget a previous owner gets
+ * to let go of the lock) before the caller reports pool-in-use.
+ */
+async function installWithinLockWait<R>(
+	deps: SqlStorageDeps<R>,
+	pool: string,
+): ReturnType<SqlStorageDeps<R>["installPool"]> {
+	const deadline = Date.now() + deps.lockWaitMs;
+	let delayMs = INSTALL_RETRY_INITIAL_DELAY_MS;
+	for (;;) {
+		try {
+			return await deps.installPool(pool);
+		} catch (error) {
+			if (!isPoolContentionError(error) || Date.now() + delayMs > deadline) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+			delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_DELAY_MS);
+		}
 	}
 }
 

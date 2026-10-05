@@ -51,11 +51,30 @@ Playwright Chromium, Firefox and WebKit:
 
 ## Local patches
 
-Two patches in `scripts/sqlite-wasm-patches/` sit on top of the pinned
+Five patches in `scripts/sqlite-wasm-patches/` sit on top of the pinned
 upstream files; the build script applies them in order after the Emscripten
 build, so the table below lists the patched outputs. Upstream 3.53.4 is the
 latest release (npm `@sqlite.org/sqlite-wasm@3.53.4-build1` carries the same
 code), so there is nothing newer to upgrade to.
+
+### 0005: a failed opfs-sahpool setup keeps its slots (upstream backport)
+
+`0005-sahpool-preserve-on-init-failure.patch` is SQLite check-in
+[ad1bbfc2bd](https://sqlite.org/src/info/ad1bbfc2bd) (forum report
+[5664cd4bae](https://sqlite.org/forum/forumpost/5664cd4baee50236)), the code
+hunks copied verbatim from `ext/wasm/api/sqlite3-vfs-opfs-sahpool.c-pp.js`
+into the built bundle. It adds the `preserveOnInitFailure` install option
+(every pool in this library passes it, see `src/sql/sahPool.ts`) and makes
+`acquireAccessHandles` wait for every pending handle before releasing them.
+
+Why: 3.53.4 answers a failed setup with `removeVfs()`, which deletes the
+pool's directory. In a reload the new Worker can start setup while the old
+Worker's access handles are still closing; setup fails, the free slots are
+deleted (the held ones survive), and the next setup sees a nonzero capacity
+and never adds slots back, so the next journal fails with "SAH pool is full"
+(almamesh CI run 37373800117). `src/sql/sahPool.test.ts` reproduces it on an
+in-memory OPFS: 6 slots drop to 3 without the patch. Drop the patch when the
+pinned release contains ad1bbfc2bd.
 
 ### 0004: opfs-sahpool never sleeps in its busy handler (upstream backport)
 
@@ -139,7 +158,7 @@ are in `test/browser/opfs-install.spec.ts`.
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `sqlite3.mjs` | 817,412 | `4ff745643ccc3c71df601742470cd96c2bef7c2f3b0959f32a49d596f8ab8392` |
+| `sqlite3.mjs` | 819,040 | `de242282567fefed5c16b29a1ed6fa9902ccd1671f1840cf2a6c2d6872f8a5d3` |
 | `sqlite3.wasm` | 932,259 | `6a6f7e4b0f4249300964bd402a084387eea5df2120d2eca61bdfbff9eb226b58` |
 | `sqlite3-opfs-async-proxy.js` | 42,696 | `e9a55a030682ca706c7ada8cb521718c6730a2637c6f1a8b63a677a635e035f7` |
 

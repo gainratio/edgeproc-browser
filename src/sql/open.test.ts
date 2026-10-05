@@ -25,6 +25,7 @@ function deps(
 		locks: new FakeLocks(),
 		warn: vi.fn(),
 		lockWaitMs: 20,
+		tempStore: "memory" as const,
 		...overrides,
 	};
 }
@@ -131,6 +132,70 @@ describe("openSqlStorage", () => {
 		const next = openSqlStorage(d, { name: "reload" });
 		setTimeout(() => owner.release(), 10);
 		expect((await next).storage.persistence).toBe("opfs");
+	});
+
+	it("retries a contended pool setup within lockWaitMs instead of falling back", async () => {
+		// A reload: the new Worker holds the owner lock while the killed
+		// Worker's access handles are still closing.
+		let attempts = 0;
+		const d = deps({
+			lockWaitMs: 1_000,
+			installPool: vi.fn(async () => {
+				attempts += 1;
+				if (attempts < 3) throw named("NoModificationAllowedError");
+				return { OpfsSAHPoolDb: Raw };
+			}),
+		});
+		const opened = await openSqlStorage(d, { name: "closing" });
+		expect(opened.storage.persistence).toBe("opfs");
+		expect(attempts).toBe(3);
+	});
+
+	it("stops retrying a contended setup once lockWaitMs has passed", async () => {
+		const installPool = vi.fn(async () => {
+			throw named("NoModificationAllowedError");
+		});
+		const d = deps({ lockWaitMs: 120, installPool });
+		const started = Date.now();
+		const opened = await openSqlStorage(d, {
+			name: "stuck",
+			fallback: "memory",
+		});
+		expect(opened.storage).toMatchObject({ reason: "pool-in-use" });
+		expect(Date.now() - started).toBeLessThan(1_000);
+		expect(installPool.mock.calls.length).toBeGreaterThan(1);
+	});
+
+	it("does not retry a setup failure that is not contention", async () => {
+		const d = deps({
+			lockWaitMs: 1_000,
+			installPool: vi.fn(async () => {
+				throw new Error("disk quota exceeded");
+			}),
+		});
+		await openSqlStorage(d, { name: "broken", fallback: "memory" });
+		expect(d.installPool).toHaveBeenCalledTimes(1);
+	});
+
+	it("tops the pool up to the slots its database needs before opening it", async () => {
+		const reserved: number[] = [];
+		const pool = {
+			OpfsSAHPoolDb: Raw,
+			getFileNames: () => ["/other.sqlite3"],
+			reserveMinimumCapacity: async (min: number) => {
+				reserved.push(min);
+				return min;
+			},
+		};
+		await openSqlStorage(deps({ installPool: vi.fn(async () => pool) }), {
+			name: "memory-tier",
+		});
+		await openSqlStorage(
+			deps({ installPool: vi.fn(async () => pool), tempStore: "file" }),
+			{ name: "minimal-tier" },
+		);
+		// other + database + journal; then + 4 temp-file slots.
+		expect(reserved).toEqual([3, 7]);
 	});
 
 	it("reports opfs-unavailable when OPFS itself fails, and releases the lock", async () => {

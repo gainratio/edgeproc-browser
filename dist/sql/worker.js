@@ -8,6 +8,7 @@ import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
 import { asLegacySahPool, createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
 import { openSqlStorage, ownerLockWaitMs } from "./open.js";
+import { sahPoolInstallOptions } from "./sahPool.js";
 import { createSqlSerializer } from "./serializer.js";
 import { loadSqlite, workerStorageDeps, } from "./workerRuntime.js";
 const handle = createSqlWorkerHandler(openEngine);
@@ -16,12 +17,13 @@ self.onmessage = (event) => {
 };
 async function openEngine(options, context) {
     const sqlite = await loadSqlite();
-    const lockWaitMs = ownerLockWaitMs(resolveMemoryProfile(options.memoryProfile ?? "auto").tier);
-    const opened = await openSqlStorage(workerStorageDeps(sqlite, lockWaitMs), options, context);
+    const profile = resolveMemoryProfile(options.memoryProfile ?? "auto");
+    const lockWaitMs = ownerLockWaitMs(profile.tier);
+    const opened = await openSqlStorage(workerStorageDeps(sqlite, lockWaitMs, profile.tempStore), options, context);
     try {
         const engine = new SqlEngine(opened.raw, {
             storage: opened.storage,
-            memoryProfile: resolveMemoryProfile(options.memoryProfile ?? "auto"),
+            memoryProfile: profile,
             serializer: createSqlSerializer(sqlite),
             control: createSqlConnectionControl(sqlite),
         });
@@ -52,10 +54,7 @@ function legacyMigrator(sqlite, storage, engine, lockWaitMs) {
         lockWaitMs,
         ownPool: storage.persistence === "opfs" ? storage.pool : undefined,
         poolExists: async (pool) => opfsPoolExists(pool, await navigator.storage.getDirectory()),
-        installPool: async (name) => asLegacySahPool(await sqlite.installOpfsSAHPoolVfs({
-            name,
-            forceReinitIfPreviouslyFailed: true,
-        })),
+        installPool: async (name) => asLegacySahPool(await sqlite.installOpfsSAHPoolVfs(sahPoolInstallOptions(name))),
         recover,
         importDatabase: (bytes, options) => engine.importDatabase(bytes, options),
     }, request);

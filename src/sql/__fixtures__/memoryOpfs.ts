@@ -80,6 +80,11 @@ export class MemoryFileHandle extends MemoryFileSystemHandle {
 		super(name, "file");
 	}
 
+	/** Whether a sync access handle currently holds this file open. */
+	public get locked(): boolean {
+		return this.#data.locked;
+	}
+
 	public async createSyncAccessHandle(): Promise<MemorySyncAccessHandle> {
 		if (this.#data.locked) {
 			throw new DOMException(this.name, "NoModificationAllowedError");
@@ -127,10 +132,42 @@ export class MemoryDirectoryHandle extends MemoryFileSystemHandle {
 		return created;
 	}
 
-	public async removeEntry(name: string): Promise<void> {
-		if (!this.#entries.delete(name)) {
-			throw new DOMException(name, "NotFoundError");
+	/**
+	 * A file a handle holds open cannot be removed. A recursive removal here
+	 * deletes what it can before failing on such a file: the worst case, a
+	 * removal racing a handle that opens mid-delete. (Chromium and Firefox
+	 * refuse the whole removal up front when a handle is already open.) It is
+	 * how a failed opfs-sahpool setup, which used to remove its pool, could
+	 * strip the free slots and leave the held ones.
+	 */
+	public async removeEntry(
+		name: string,
+		options: { readonly recursive?: boolean } = {},
+	): Promise<void> {
+		const found = this.#entries.get(name);
+		if (found === undefined) throw new DOMException(name, "NotFoundError");
+		if (found instanceof MemoryFileHandle) {
+			if (found.locked) {
+				throw new DOMException(name, "NoModificationAllowedError");
+			}
+		} else {
+			await found.removeChildren(options.recursive === true);
 		}
+		this.#entries.delete(name);
+	}
+
+	private async removeChildren(recursive: boolean): Promise<void> {
+		if (this.#entries.size === 0) return;
+		if (!recursive) {
+			throw new DOMException(this.name, "InvalidModificationError");
+		}
+		let failure: unknown;
+		for (const name of [...this.#entries.keys()]) {
+			await this.removeEntry(name, { recursive }).catch((error: unknown) => {
+				failure ??= error;
+			});
+		}
+		if (failure !== undefined) throw failure;
 	}
 
 	public async *entries(): AsyncIterableIterator<
