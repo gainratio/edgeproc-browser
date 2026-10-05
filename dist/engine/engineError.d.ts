@@ -1,4 +1,4 @@
-import { type SqlFallbackReason } from "../sql/types.js";
+import type { SqlFallbackReason } from "../sql/types.js";
 export type EngineErrorCode = "integrity" | "rollback" | "network" | "lock" | "storage" | "internal";
 /** Why the engine's persistent cache could not be opened. */
 export type EngineStorageUnavailableReason = SqlFallbackReason;
@@ -14,9 +14,9 @@ export declare class EngineOperationError extends Error {
     constructor(detail: EngineErrorDetail);
 }
 /**
- * The persistent OPFS cache could not be opened and no in-memory fallback was
- * allowed (`cacheFallback: "none"`), or using one would be unsafe. Nothing was
- * downloaded. Still an {@link EngineOperationError} with code "storage".
+ * The persistent OPFS cache could not be opened and the consumer chose
+ * `cacheFallback: "none"`, so no in-memory cache was opened and nothing was
+ * downloaded. An {@link EngineOperationError} with code "storage".
  */
 export declare class EngineStorageUnavailableError extends EngineOperationError {
     readonly reason: EngineStorageUnavailableReason;

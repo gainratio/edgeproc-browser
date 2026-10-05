@@ -9,7 +9,11 @@ import {
 } from "./engineError.js";
 import { NetworkError } from "./fetchBytes.js";
 import { IntegrityError } from "./integrity.js";
-import { StorageQuotaError } from "./storageError.js";
+import {
+	CacheFallbackRefusedError,
+	refuseWithoutFallback,
+	StorageQuotaError,
+} from "./storageError.js";
 import { RollbackError } from "./sync.js";
 
 describe("typed Worker error contract", () => {
@@ -43,16 +47,61 @@ describe("typed Worker error contract", () => {
 });
 
 describe("storage-unavailable error contract", () => {
-	it("classifies a refused SQL store as storage with its reason", () => {
+	// 0.3.0 contract, pinned: the default mode's own refusals (pool held by
+	// another context, persisted cache unreadable) classify as "internal" with
+	// no reason. 0.3.1 is additive, so they must not change.
+	it.each([
+		[
+			"pool-in-use",
+			"chunk database is held by another context (another context owns it); retry",
+		],
+		[
+			"opfs-unavailable",
+			"chunk database exists on disk but could not be opened (NotAllowedError: x); refusing to run without its rollback floor",
+		],
+	] as const)(
+		"keeps the 0.3.0 classification of a default-mode %s refusal",
+		(reason, message) => {
+			const detail = classifyEngineError(
+				new SqlStorageUnavailableError(reason, message),
+			);
+			expect(detail).toEqual({ code: "internal", message });
+			const error = engineErrorOf(detail);
+			expect(error.name).toBe("EngineOperationError");
+			expect(error).not.toBeInstanceOf(EngineStorageUnavailableError);
+		},
+	);
+
+	it('classifies a cacheFallback "none" refusal as storage with its reason', () => {
 		expect(
 			classifyEngineError(
-				new SqlStorageUnavailableError("pool-in-use", "held elsewhere"),
+				new CacheFallbackRefusedError("pool-in-use", "held elsewhere"),
 			),
 		).toEqual({
 			code: "storage",
 			message: "held elsewhere",
 			reason: "pool-in-use",
 		});
+	});
+
+	it("turns only an OPFS refusal into CacheFallbackRefusedError", async () => {
+		const refused = new SqlStorageUnavailableError(
+			"opfs-unavailable",
+			"no OPFS",
+		);
+		await expect(
+			refuseWithoutFallback(() => Promise.reject(refused)),
+		).rejects.toMatchObject({
+			name: "CacheFallbackRefusedError",
+			reason: "opfs-unavailable",
+			message: "no OPFS",
+			cause: refused,
+		});
+		const other = new Error("boom");
+		await expect(
+			refuseWithoutFallback(() => Promise.reject(other)),
+		).rejects.toBe(other);
+		await expect(refuseWithoutFallback(async () => 7)).resolves.toBe(7);
 	});
 
 	it("rebuilds a typed EngineStorageUnavailableError on the main thread", () => {

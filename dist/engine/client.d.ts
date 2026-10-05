@@ -46,8 +46,9 @@ export declare class EngineClient {
      * keyring (key rotation + revocation). */
     sync(baseUrl: string, pubkeyUrl: string, options?: EngineSyncOptions): Promise<EngineSyncResult>;
     sync(baseUrl: string, pubkeyUrl: string, expectedBundleId?: string | null, expectedChannel?: string | null, options?: Omit<EngineSyncOptions, "expectedBundleId" | "expectedChannel">): Promise<EngineSyncResult>;
-    /** Materialize a synced file's bytes from the active manifest. */
-    readFile(path: string): Promise<Uint8Array>;
+    /** Materialize a synced file's bytes from the active manifest. Pass the
+     * same `cacheFallback` as sync when readFile may be the Worker's first call. */
+    readFile(path: string, options?: Pick<EngineStorageOptions, "cacheFallback">): Promise<Uint8Array>;
     /** Clear this Worker's durable cache under the same lock used by sync/read. */
     clear(options?: EngineStorageOptions): Promise<void>;
     /** Reject in-flight work and release the sync worker. Safe to call twice. */

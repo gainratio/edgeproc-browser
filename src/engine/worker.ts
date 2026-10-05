@@ -34,6 +34,7 @@ import type {
 	SyncRequest,
 } from "./protocol.js";
 import type { SqliteCacheStore } from "./sqliteStore.js";
+import { refuseWithoutFallback } from "./storageError.js";
 import { materializeFile, syncIndex } from "./sync.js";
 import type { CacheBackend, IndexManifest, VersionPointer } from "./types.js";
 
@@ -75,11 +76,14 @@ function chunks(configuration?: {
 			cacheFallback,
 			database: new ChunkDatabase({
 				namespace,
-				open: async (name) =>
-					openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
-						name,
-						fallback: cacheFallback,
-					}),
+				open: async (name) => {
+					const deps = workerStorageDeps(await loadSqlite(), POOL_WAIT_MS);
+					const open = () =>
+						openSqlStorage(deps, { name, fallback: cacheFallback });
+					return cacheFallback === "none"
+						? refuseWithoutFallback(open)
+						: open();
+				},
 				memoryProfile: resolveMemoryProfile("auto"),
 				legacySources: () => [
 					opfsLegacySource(),
@@ -170,7 +174,17 @@ async function handleSync(req: SyncRequest): Promise<EngineResponse> {
 
 async function handleReadFile(req: ReadFileRequest): Promise<EngineResponse> {
 	return withChunkStore(
-		storeState ?? chunks(),
+		storeState !== null && req.cacheFallback === undefined
+			? storeState
+			: chunks({
+					...(storeState === null
+						? {}
+						: {
+								namespace: storeState.namespace,
+								indexedDbLayout: storeState.indexedDbLayout,
+							}),
+					cacheFallback: req.cacheFallback,
+				}),
 		async (cacheStore) => {
 			const manifest = await loadActiveManifest(cacheStore);
 			const bytes = await materializeFile(cacheStore, manifest, req.path);

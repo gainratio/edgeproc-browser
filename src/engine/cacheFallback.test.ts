@@ -132,6 +132,23 @@ describe('cacheFallback: "none" with OPFS refused', () => {
 		client.dispose();
 	});
 
+	it("readFile honours it on a fresh Worker, so a later sync is still typed", async () => {
+		const client = await loopbackClient();
+		const { EngineStorageUnavailableError } = await import("./engineError.js");
+
+		await expect(
+			client.readFile("catalog_meta.json", { cacheFallback: "none" }),
+		).rejects.toBeInstanceOf(EngineStorageUnavailableError);
+		await expect(
+			client.sync("https://bundle.example/", "https://bundle.example/key", {
+				cacheFallback: "none",
+			}),
+		).rejects.toBeInstanceOf(EngineStorageUnavailableError);
+		expect(counters.memoryOpens).toBe(0);
+		expect(counters.fetches).toBe(0);
+		client.dispose();
+	});
+
 	it("the default stays the in-memory fallback (backward compatible)", async () => {
 		const client = await loopbackClient();
 

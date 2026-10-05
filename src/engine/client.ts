@@ -186,12 +186,19 @@ export class EngineClient {
 		throw this.#errorOf(response);
 	}
 
-	/** Materialize a synced file's bytes from the active manifest. */
-	public async readFile(path: string): Promise<Uint8Array> {
+	/** Materialize a synced file's bytes from the active manifest. Pass the
+	 * same `cacheFallback` as sync when readFile may be the Worker's first call. */
+	public async readFile(
+		path: string,
+		options: Pick<EngineStorageOptions, "cacheFallback"> = {},
+	): Promise<Uint8Array> {
 		const response = await this.#send({
 			kind: "readFile",
 			id: this.#allocId(),
 			path,
+			...(options.cacheFallback === undefined
+				? {}
+				: { cacheFallback: options.cacheFallback }),
 		});
 		if (response.ok && response.kind === "readFile") {
 			return response.bytes;

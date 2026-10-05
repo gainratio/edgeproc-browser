@@ -12,6 +12,7 @@ import { fetchBytes } from "./fetchBytes.js";
 import { loadTrustRoot } from "./keyring.js";
 import { indexedDbLegacySource, opfsLegacySource, resolveIndexedDbLayout, } from "./legacyStores.js";
 import { installNetworkSentinel } from "./networkSentinel.js";
+import { refuseWithoutFallback } from "./storageError.js";
 import { materializeFile, syncIndex } from "./sync.js";
 const DECODER = new TextDecoder();
 /** Operations are serialized by the cache lock first, so a pool owner that
@@ -33,10 +34,13 @@ function chunks(configuration) {
             cacheFallback,
             database: new ChunkDatabase({
                 namespace,
-                open: async (name) => openSqlStorage(workerStorageDeps(await loadSqlite(), POOL_WAIT_MS), {
-                    name,
-                    fallback: cacheFallback,
-                }),
+                open: async (name) => {
+                    const deps = workerStorageDeps(await loadSqlite(), POOL_WAIT_MS);
+                    const open = () => openSqlStorage(deps, { name, fallback: cacheFallback });
+                    return cacheFallback === "none"
+                        ? refuseWithoutFallback(open)
+                        : open();
+                },
                 memoryProfile: resolveMemoryProfile("auto"),
                 legacySources: () => [
                     opfsLegacySource(),
@@ -113,7 +117,17 @@ async function handleSync(req) {
     });
 }
 async function handleReadFile(req) {
-    return withChunkStore(storeState ?? chunks(), async (cacheStore) => {
+    return withChunkStore(storeState !== null && req.cacheFallback === undefined
+        ? storeState
+        : chunks({
+            ...(storeState === null
+                ? {}
+                : {
+                    namespace: storeState.namespace,
+                    indexedDbLayout: storeState.indexedDbLayout,
+                }),
+            cacheFallback: req.cacheFallback,
+        }), async (cacheStore) => {
         const manifest = await loadActiveManifest(cacheStore);
         const bytes = await materializeFile(cacheStore, manifest, req.path);
         return { ok: true, id: req.id, kind: "readFile", bytes };

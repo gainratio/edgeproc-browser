@@ -14,21 +14,21 @@ Nothing changes unless you pass the new option.
 
 ### Added
 
-- **`cacheFallback: "memory" | "none"`** on `EngineClient.sync` and `clear` (and on the
-  `SyncRequest` / `ClearRequest` protocol). The default `"memory"` keeps today's behavior.
-  With `"none"`, when OPFS cannot be opened the engine Worker opens no in-memory cache,
-  fetches nothing (not even the trust root), and rejects at once with the new
-  `EngineStorageUnavailableError`. A Worker's first call fixes the value.
+- **`cacheFallback: "memory" | "none"`** on `EngineClient.sync`, `clear` and `readFile` (and
+  on the `SyncRequest`, `ClearRequest` and `ReadFileRequest` protocol messages). The default
+  `"memory"` keeps the 0.3.0 behavior. With `"none"`, when OPFS cannot be opened the engine
+  Worker opens no in-memory cache, fetches nothing (not even the trust root), and rejects at
+  once with the new `EngineStorageUnavailableError`. A Worker's first call fixes the value,
+  so pass it to `readFile` too when that may be the first call.
 - **`EngineStorageUnavailableError`**, a subclass of `EngineOperationError` with
   `code: "storage"` and a `reason`: `"opfs-unavailable"` or `"pool-in-use"`
-  (`EngineStorageUnavailableReason`). `EngineErrorDetail` gains the optional `reason`.
+  (`EngineStorageUnavailableReason`). Only `cacheFallback: "none"` refusals produce it.
+- `EngineErrorDetail` gains an optional `reason`, set only on those refusals.
 - `EngineCacheFallback` type export.
 
-### Changed
-
-- Refusals the engine already made in default mode (the pool held by another context, or a
-  persisted cache that cannot be reopened) now also arrive as `EngineStorageUnavailableError`.
-  They are still `EngineOperationError` with `code: "storage"`, so existing checks keep working.
+Nothing existing changes: every error the engine raised on 0.3.0, including its own
+refusals in the default mode (a pool held by another context, a persisted cache that cannot
+be reopened), keeps the same class, `code` and message.
 
 ## [0.3.0] - 2026-10-04
 

@@ -23,6 +23,8 @@ export interface ReadFileRequest {
     readonly kind: "readFile";
     readonly id: number;
     readonly path: string;
+    /** Fixes the Worker's fallback when readFile is its first call. */
+    readonly cacheFallback?: EngineCacheFallback;
 }
 /** Clear the configured durable cache under the same cross-tab lock as sync/read. */
 export interface ClearRequest {
