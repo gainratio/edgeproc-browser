@@ -15,6 +15,8 @@
 // A pool held by a foreign context fails the operation closed instead: an
 // empty in-memory floor next to a persisted one could accept a rollback.
 import { SqlEngine } from "../sql/engine.js";
+import { opfsPoolExists } from "../sql/legacy.js";
+import { sqlDatabasePoolName } from "../sql/open.js";
 import { SqlStorageUnavailableError } from "../sql/types.js";
 import { validatedNamespace } from "./cacheLock.js";
 import { importLegacyFloor, LegacyFloorUnavailableError, migrateLegacyStores, } from "./migration.js";
@@ -22,6 +24,19 @@ import { SqliteCacheStore } from "./sqliteStore.js";
 /** The SQL database a cache namespace's chunks live in. */
 export function chunkDatabaseName(namespace) {
     return `${validatedNamespace(namespace)}-chunks`;
+}
+/** Whether `name`'s opfs-sahpool directory exists. A refused OPFS root is
+ * "no" (nothing can have been persisted through it, the same rule the 0.2.x
+ * reader uses); any other error propagates, so the caller fails closed. */
+export async function persistedSqlPoolExists(name, openRoot) {
+    let root;
+    try {
+        root = await openRoot();
+    }
+    catch {
+        return false;
+    }
+    return opfsPoolExists(await sqlDatabasePoolName(name), root);
 }
 /**
  * One session = the cross-tab cache lock, then the SQLite pool, held while
@@ -109,7 +124,8 @@ export class ChunkDatabase {
     async #open() {
         if (this.#memory !== null)
             return this.#memorySession(this.#memory);
-        const opened = await this.#options.open(chunkDatabaseName(this.#options.namespace));
+        const name = chunkDatabaseName(this.#options.namespace);
+        const opened = await this.#options.open(name);
         if (opened.storage.persistence === "memory") {
             await opened.release();
             if (opened.storage.reason === "pool-in-use") {
@@ -118,6 +134,7 @@ export class ChunkDatabase {
                 opened.raw.close();
                 throw new SqlStorageUnavailableError("pool-in-use", `chunk database is held by another context (${opened.storage.detail ?? "pool-in-use"}); retry`);
             }
+            await this.#refuseBesidePersistedFloor(name, opened.raw, opened.storage.detail ?? opened.storage.reason);
             const engine = this.#engine(opened.raw, opened.storage);
             const memory = {
                 engine,
@@ -148,6 +165,22 @@ export class ChunkDatabase {
         catch (error) {
             await close();
             throw error;
+        }
+    }
+    /** OPFS failed for another reason. If this database's pool is on disk,
+     * its floor is too: an empty in-memory floor beside it could accept a
+     * rollback, so refuse (an error deciding that refuses as well). */
+    async #refuseBesidePersistedFloor(name, raw, detail) {
+        let exists = true;
+        try {
+            exists = await this.#options.persistedPoolExists(name);
+        }
+        finally {
+            if (exists)
+                raw.close();
+        }
+        if (exists) {
+            throw new SqlStorageUnavailableError("opfs-unavailable", `chunk database exists on disk but could not be opened (${detail}); refusing to run without its rollback floor`);
         }
     }
     /** Memory mode (OPFS refused): no SQLite floor can persist, so the 0.2.x

@@ -330,18 +330,24 @@ async function readPointerSlot(
 	}
 }
 
-/** 0.2.x wrote active.a / active.b alternately, so ONE torn slot beside a
- * readable one is the documented crash state (the other slot is the floor).
- * If every present slot is unreadable, there is no floor we can trust: fail
- * closed. */
+/** 0.2.x wrote active.a / active.b alternately, so ONE torn slot of that
+ * pair beside a readable one is the documented crash state (the other slot
+ * is the floor). Anything else unreadable (the unpaired `active`, both of the
+ * pair, every present slot) may have held the highest sequence: fail closed. */
 async function readOpfsPointers(
 	root: LegacyDirectory,
 ): Promise<Array<VersionPointer | null>> {
 	const slots = await Promise.all(
 		OPFS_POINTERS.map((name) => readPointerSlot(root, name)),
 	);
-	const present = slots.filter((slot) => slot !== "absent");
-	if (present.length > 0 && present.every((slot) => slot === "unreadable")) {
+	const [active, a, b] = slots;
+	const readable = (slot: PointerSlot | undefined) =>
+		slot !== undefined && slot !== "absent" && slot !== "unreadable";
+	if (
+		active === "unreadable" ||
+		(a === "unreadable" && !readable(b)) ||
+		(b === "unreadable" && !readable(a))
+	) {
 		throw unreadableFloor("OPFS");
 	}
 	return slots.map((slot) => (typeof slot === "string" ? null : slot));

@@ -1,11 +1,16 @@
 import { type SqlRawDatabase } from "../sql/engine.js";
-import type { OpenedSqlStorage } from "../sql/open.js";
+import { type OpfsDirectory } from "../sql/legacy.js";
+import { type OpenedSqlStorage } from "../sql/open.js";
 import type { SqlStorage } from "../sql/types.js";
 import type { MemoryProfile } from "../sqlite/memoryProfile.js";
 import { type LegacySource } from "./migration.js";
 import { SqliteCacheStore } from "./sqliteStore.js";
 /** The SQL database a cache namespace's chunks live in. */
 export declare function chunkDatabaseName(namespace: string): string;
+/** Whether `name`'s opfs-sahpool directory exists. A refused OPFS root is
+ * "no" (nothing can have been persisted through it, the same rule the 0.2.x
+ * reader uses); any other error propagates, so the caller fails closed. */
+export declare function persistedSqlPoolExists(name: string, openRoot: () => Promise<OpfsDirectory>): Promise<boolean>;
 export interface ChunkDatabaseOptions {
     readonly namespace: string;
     /** openSqlStorage with `fallback: "memory"`, bound to the Worker's SQLite. */
@@ -13,6 +18,10 @@ export interface ChunkDatabaseOptions {
     readonly memoryProfile: MemoryProfile;
     /** The 0.2.x stores to migrate from; only read in persistent mode. */
     readonly legacySources: () => ReadonlyArray<LegacySource>;
+    /** Whether the named database's OPFS pool exists on disk (false when the
+     * browser refuses the OPFS root). True means its persisted rollback floor
+     * is out of reach, so the memory fallback is refused. */
+    readonly persistedPoolExists: (name: string) => Promise<boolean>;
     readonly warn: (message: string) => void;
     /** The cross-tab cache lock (a Web Lock in the Worker). Default: none. */
     readonly withLock?: <T>(operation: () => Promise<T>) => Promise<T>;

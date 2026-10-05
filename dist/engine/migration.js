@@ -33,7 +33,13 @@ export async function importLegacyFloor(store, sources) {
     catch (error) {
         throw new LegacyFloorUnavailableError(error);
     }
-    store.raiseLegacyFloor(pointers);
+    try {
+        store.raiseLegacyFloor(pointers);
+    }
+    catch (error) {
+        // A floor that was read but not written is not in force either.
+        throw new LegacyFloorUnavailableError(error);
+    }
 }
 const SHA256 = /^[0-9a-f]{64}$/u;
 export async function migrateLegacyStores(store, sources) {

@@ -255,6 +255,16 @@ describe("opfsLegacySource", () => {
 		);
 	});
 
+	it("fails CLOSED when the unpaired legacy `active` slot is unreadable, even beside a valid a/b slot", async () => {
+		// Only active.a / active.b alternate; a torn `active` may have held the
+		// highest sequence, so reading past it could lower the floor.
+		const root = legacyRoot();
+		root.files.set("active", new FakeFile(ENCODER.encode("torn")));
+		await expect(
+			opfsLegacySource(async () => root).readPointers(),
+		).rejects.toThrow(/unreadable legacy rollback floor/);
+	});
+
 	it("reads nothing from an empty root", async () => {
 		expect(await opfsLegacySource(async () => new FakeDir()).read()).toEqual({
 			chunks: [],

@@ -18,7 +18,11 @@ import {
 	sqlDatabasePoolName,
 } from "../sql/open";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
-import { ChunkDatabase, chunkDatabaseName } from "./chunkDatabase";
+import {
+	ChunkDatabase,
+	chunkDatabaseName,
+	persistedSqlPoolExists,
+} from "./chunkDatabase";
 import {
 	catalogMetaChunkHash,
 	catalogMetaChunkSize,
@@ -89,6 +93,7 @@ function host(options: {
 	readonly sources?: ReadonlyArray<LegacySource>;
 	readonly locks?: FakeLocks;
 	readonly withLock?: <T>(operation: () => Promise<T>) => Promise<T>;
+	readonly persistedPoolExists?: (name: string) => Promise<boolean>;
 }) {
 	const locks = options.locks ?? new FakeLocks();
 	const file = options.file ?? persistentFile();
@@ -124,6 +129,8 @@ function host(options: {
 		},
 		memoryProfile: MEMORY_PROFILES.lite,
 		legacySources: sources,
+		persistedPoolExists:
+			options.persistedPoolExists ?? (() => Promise.resolve(false)),
 		warn,
 	});
 	return { database, locks, sources, warn, opens };
@@ -316,6 +323,36 @@ describe("ChunkDatabase anti-rollback floor (each rollback attempt)", () => {
 			Object.assign(new Error("UnknownError"), { name: "UnknownError" }),
 		);
 
+	it("fails CLOSED when OPFS errors but a persisted chunk pool exists: its floor is on disk", async () => {
+		// Was: any non-contention install error fell back to memory with floor
+		// -1, so a rollback pointer was accepted beside the real SQLite floor.
+		const asked: string[] = [];
+		const { database } = host({
+			install: refused,
+			persistedPoolExists: (name) => {
+				asked.push(name);
+				return Promise.resolve(true);
+			},
+		});
+		await expect(
+			database.run((store) => store.promote(pointer(1))),
+		).rejects.toMatchObject({
+			name: "SqlStorageUnavailableError",
+			reason: "opfs-unavailable",
+		});
+		expect(asked).toEqual(["shop-chunks"]);
+	});
+
+	it("fails CLOSED when it cannot tell whether a persisted chunk pool exists", async () => {
+		const { database } = host({
+			install: refused,
+			persistedPoolExists: () => Promise.reject(new Error("io")),
+		});
+		await expect(
+			database.run((store) => store.promote(pointer(1))),
+		).rejects.toThrow("io");
+	});
+
 	it("a migration that fails after reading the floor still imports it, and keeps the legacy store", async () => {
 		const broken = Object.assign(
 			legacy({ chunks: [], manifests: [], pointers: [pointer(5)] }),
@@ -441,5 +478,36 @@ describe("ChunkDatabase refusals", () => {
 		const { database, warn } = host({ sources: [broken] });
 		await database.run(() => Promise.resolve());
 		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/plain string/));
+	});
+});
+
+describe("persistedSqlPoolExists", () => {
+	const dir = (found: ReadonlySet<string>, error = "NotFoundError") => ({
+		getDirectoryHandle: (name: string) =>
+			found.has(name)
+				? Promise.resolve(dir(new Set()))
+				: Promise.reject(new DOMException(name, error)),
+	});
+
+	it("finds the named database's pool directory", async () => {
+		const pool = await sqlDatabasePoolName("shop-chunks");
+		const root = dir(new Set([`.${pool}`]));
+		expect(await persistedSqlPoolExists("shop-chunks", async () => root)).toBe(
+			true,
+		);
+		expect(await persistedSqlPoolExists("other", async () => root)).toBe(false);
+	});
+
+	it("reads a refused OPFS root as no pool, and rethrows any other error", async () => {
+		expect(
+			await persistedSqlPoolExists("shop-chunks", () =>
+				Promise.reject(new DOMException("refused", "UnknownError")),
+			),
+		).toBe(false);
+		await expect(
+			persistedSqlPoolExists("shop-chunks", async () =>
+				dir(new Set(), "UnknownError"),
+			),
+		).rejects.toThrow();
 	});
 });

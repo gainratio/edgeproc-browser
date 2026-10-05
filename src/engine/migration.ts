@@ -71,7 +71,12 @@ export async function importLegacyFloor(
 	} catch (error) {
 		throw new LegacyFloorUnavailableError(error);
 	}
-	store.raiseLegacyFloor(pointers);
+	try {
+		store.raiseLegacyFloor(pointers);
+	} catch (error) {
+		// A floor that was read but not written is not in force either.
+		throw new LegacyFloorUnavailableError(error);
+	}
 }
 
 export interface MigrationReport {

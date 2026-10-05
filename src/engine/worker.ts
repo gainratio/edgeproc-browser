@@ -9,7 +9,11 @@ import type { SqlStorage } from "../sql/types.js";
 import { loadSqlite, workerStorageDeps } from "../sql/workerRuntime.js";
 import { resolveMemoryProfile } from "../sqlite/memoryProfile.js";
 import { cacheDatabaseName, runWithCacheLock } from "./cacheLock.js";
-import { ChunkDatabase, type ChunkOperation } from "./chunkDatabase.js";
+import {
+	ChunkDatabase,
+	type ChunkOperation,
+	persistedSqlPoolExists,
+} from "./chunkDatabase.js";
 import { classifyEngineError } from "./engineError.js";
 import { fetchBytes } from "./fetchBytes.js";
 import { loadTrustRoot } from "./keyring.js";
@@ -76,6 +80,8 @@ function chunks(configuration?: {
 					opfsLegacySource(),
 					indexedDbLegacySource(indexedDbLayout),
 				],
+				persistedPoolExists: (name) =>
+					persistedSqlPoolExists(name, () => navigator.storage.getDirectory()),
 				warn: (message) => console.warn(message),
 				withLock: (operation) =>
 					runWithCacheLock(lockManager(), operation, namespace),

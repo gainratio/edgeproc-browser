@@ -12,6 +12,7 @@ import { SqlEngine } from "../sql/engine";
 import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { chunkBytes, signedChunkRefs } from "./fixtures";
 import {
+	importLegacyFloor,
 	LegacyFloorUnavailableError,
 	type LegacySnapshot,
 	type LegacySource,
@@ -216,6 +217,25 @@ describe("migrateLegacyStores", () => {
 			LegacyFloorUnavailableError,
 		);
 		expect(await store.readFloor()).toBe(-1);
+		expect(source.removed).toBe(false);
+	});
+});
+
+describe("a floor that cannot be WRITTEN", () => {
+	it("refuses with LegacyFloorUnavailableError when raising the floor throws (BUSY, I/O)", async () => {
+		// Was: the write error escaped as an ordinary error, the caller took it
+		// for a failed bulk copy, and the operation ran with no legacy floor.
+		const store = SqliteCacheStore.open(engine());
+		store.raiseLegacyFloor = () => {
+			throw new Error("SQLITE_BUSY");
+		};
+		const source = new FakeSource(snapshot([pointer(2)]));
+		await expect(importLegacyFloor(store, [source])).rejects.toBeInstanceOf(
+			LegacyFloorUnavailableError,
+		);
+		await expect(migrateLegacyStores(store, [source])).rejects.toBeInstanceOf(
+			LegacyFloorUnavailableError,
+		);
 		expect(source.removed).toBe(false);
 	});
 });
