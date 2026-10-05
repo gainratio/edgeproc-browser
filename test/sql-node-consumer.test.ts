@@ -7,17 +7,12 @@
 // with nothing from this repository's source tree.
 
 import { execFileSync } from "node:child_process";
-import {
-	mkdirSync,
-	mkdtempSync,
-	readdirSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { isolatedPackEnv, packedFiles } from "./npm-pack-json";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "edgeproc-sql-node-consumer-"));
@@ -59,14 +54,16 @@ await Promise.all([db.close(), copy.close()]);
 
 describe("@gainratio/browser/sql/node from a packed tarball", () => {
 	it("is packed with its wasm and runs a consumer's SQL against the real engine", () => {
-		const packed = JSON.parse(
-			execFileSync(
-				"npm",
-				["pack", "--json", "--ignore-scripts", "--pack-destination", scratch],
-				{ cwd: ROOT, encoding: "utf8" },
+		const { filename, files } = packedFiles(
+			JSON.parse(
+				execFileSync(
+					"npm",
+					["pack", "--json", "--ignore-scripts", "--pack-destination", scratch],
+					{ cwd: ROOT, encoding: "utf8", env: isolatedPackEnv(process.env) },
+				),
 			),
-		) as Array<{ filename: string; files: Array<{ path: string }> }>;
-		const files = packed[0]?.files.map((file) => file.path) ?? [];
+			"@gainratio/browser",
+		);
 		for (const required of [
 			"dist/sql/node.js",
 			"dist/sql/node.d.ts",
@@ -80,10 +77,9 @@ describe("@gainratio/browser/sql/node from a packed tarball", () => {
 		const project = join(scratch, "consumer");
 		const installed = join(project, "node_modules", "@gainratio", "browser");
 		mkdirSync(installed, { recursive: true });
-		const tarball = readdirSync(scratch).find((name) => name.endsWith(".tgz"));
 		execFileSync("tar", [
 			"-xzf",
-			join(scratch, tarball ?? "missing.tgz"),
+			join(scratch, filename),
 			"-C",
 			installed,
 			"--strip-components=1",
