@@ -5,12 +5,13 @@ import {
 	DEFAULT_MIN_PASSPHRASE_LENGTH,
 } from "./passphrase";
 
-const TWELVE = "abcdefghijkl";
+const ELEVEN = "x".repeat(11);
+const TWELVE = "x".repeat(12);
 
 describe("checkNewPassphrase", () => {
 	it("pins the default minimum at 12 characters", () => {
 		expect(DEFAULT_MIN_PASSPHRASE_LENGTH).toBe(12);
-		expect(checkNewPassphrase("abcdefghijk", "abcdefghijk")).toEqual({
+		expect(checkNewPassphrase(ELEVEN, ELEVEN)).toEqual({
 			ok: false,
 			reason: "too_short",
 		});
