@@ -12,7 +12,8 @@ export declare const MAX_SCRYPT_WORK_FACTOR = 20;
 /**
  * Highest work factor `openWithPassphrase` will compute by default: 18
  * (256 MiB) opens files made by the age CLI's default; a hostile file cannot
- * make us allocate more. Raise it per call with `maxWorkFactor` (age caps at 20).
+ * make us allocate more. Raise it per call with `maxWorkFactor`; values above
+ * 20 (age's own ceiling) are clamped to 20.
  */
 export declare const DEFAULT_MAX_OPEN_WORK_FACTOR = 18;
 export interface SealOptions {
@@ -20,7 +21,10 @@ export interface SealOptions {
     readonly workFactor?: number;
 }
 export interface OpenOptions {
-    /** Refuse files whose scrypt log2 N is above this. Defaults to 18. */
+    /**
+     * Refuse files whose scrypt log2 N is above this. Defaults to 18; clamped
+     * to 20. NaN means the default.
+     */
     readonly maxWorkFactor?: number;
 }
 /** True for a binary or ASCII-armored age v1 file. Does not authenticate. */

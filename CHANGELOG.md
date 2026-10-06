@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-06
+
+A correct passphrase is never reported as wrong. Additive: new `reason` values and one new
+field; nothing existing changes shape.
+
+### Fixed
+
+- `openWithPassphrase` reported every library error as `wrong_passphrase_or_tampered`, so a
+  low-memory phone that could not allocate scrypt's 128-256 MiB told the user their correct
+  passphrase was wrong. It now returns `out_of_memory` for an allocation failure (RangeError
+  in Chrome and Safari, InternalError in Firefox), `unavailable` when the age library fails
+  to load or fails in a way it does not document, and `malformed` for a header the library
+  cannot parse. `wrong_passphrase_or_tampered` is kept for the library's own authentication
+  failures only. After an out-of-memory, open no longer retries a second passphrase spelling.
+- `sealWithPassphrase` and armored `openWithPassphrase` could throw when the age chunk failed
+  to load or scrypt ran out of memory, contradicting "no library error escapes". Both now
+  return `{ ok: false, reason: "out_of_memory" | "unavailable" }`.
+- A failed load of the age library is no longer cached; the next call tries again.
+- `maxWorkFactor` above 20 is clamped to 20 (age's ceiling), so a file with logN 21 to 99
+  returns `too_costly` instead of a wrong passphrase. A NaN `maxWorkFactor` means the default.
+
+### Added
+
+- `too_costly` results from `openWithPassphrase` carry `workFactor` (the file's scrypt log2
+  N), so an app can offer a retry with a higher `maxWorkFactor`.
+- `SealRejection` gains `out_of_memory` and `unavailable`; `OpenFailure` gains the same two.
+
 ## [0.4.0] - 2026-10-06
 
 A new opt-in export for passphrase-encrypted files. Nothing existing changes, and apps that

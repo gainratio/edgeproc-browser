@@ -172,6 +172,7 @@ describe("openWithPassphrase", () => {
 		expect(await openWithPassphrase(costly, PASS)).toEqual({
 			ok: false,
 			reason: "too_costly",
+			workFactor: 19,
 		});
 		// logN 19 is 512 MiB of scrypt; refusing must not have computed it.
 		expect(performance.now() - started).toBeLessThan(200);
@@ -185,7 +186,26 @@ describe("openWithPassphrase", () => {
 		expect(await openWithPassphrase(file, PASS, { maxWorkFactor: 9 })).toEqual({
 			ok: false,
 			reason: "too_costly",
+			workFactor: 10,
 		});
+	});
+
+	it("clamps maxWorkFactor to 20, so a logN 21 file is too_costly, never a wrong passphrase", async () => {
+		const file = await sealed();
+		for (const logN of [21, 30, 99]) {
+			expect(
+				await openWithPassphrase(withWorkFactor(file, logN), PASS, {
+					maxWorkFactor: 99,
+				}),
+			).toEqual({ ok: false, reason: "too_costly", workFactor: logN });
+		}
+	});
+
+	it("treats a NaN maxWorkFactor as the default cap", async () => {
+		const costly = withWorkFactor(await sealed(), 19);
+		expect(
+			await openWithPassphrase(costly, PASS, { maxWorkFactor: Number.NaN }),
+		).toEqual({ ok: false, reason: "too_costly", workFactor: 19 });
 	});
 
 	it("reports a non-numeric work factor as malformed", async () => {
