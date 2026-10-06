@@ -24,6 +24,10 @@ field; nothing existing changes shape.
 - `sealWithPassphrase` and armored `openWithPassphrase` could throw when the age chunk failed
   to load or scrypt ran out of memory, contradicting "no library error escapes". Both now
   return `{ ok: false, reason: "out_of_memory" | "unavailable" }`.
+- Open reads the decrypted stream itself instead of through typage's
+  `new Response(stream)`, which in Chromium (TypeError "Failed to fetch") and Firefox
+  (AbortError) hides the payload's authentication error. Without this, a tampered file would
+  read as `unavailable` in those browsers; `test/browser/seal.spec.ts` caught it.
 - A failed load of the age library is no longer cached; the next call tries again.
 - `maxWorkFactor` above 20 is clamped to 20 (age's ceiling), so a file with logN 21 to 99
   returns `too_costly` instead of a wrong passphrase. A NaN `maxWorkFactor` means the default.

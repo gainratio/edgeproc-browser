@@ -229,6 +229,40 @@ async function decodeArmor(bytes: Uint8Array): Promise<Decoded> {
 	}
 }
 
+function streamOf(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(bytes);
+			controller.close();
+		},
+	});
+}
+
+/**
+ * Read the plaintext ourselves. Given bytes, typage collects the output with
+ * `new Response(stream).arrayBuffer()`, and browsers replace the payload's
+ * "invalid tag" with their own error (Chromium: TypeError "Failed to fetch",
+ * Firefox: AbortError), which would hide a tampered file's real reason.
+ */
+async function readAllChunks(
+	plaintext: ReadableStream<Uint8Array>,
+): Promise<Uint8Array> {
+	const chunks: Uint8Array[] = [];
+	let length = 0;
+	const reader = plaintext.getReader();
+	for (let next = await reader.read(); !next.done; next = await reader.read()) {
+		chunks.push(next.value);
+		length += next.value.length;
+	}
+	const out = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.length;
+	}
+	return out;
+}
+
 async function tryDecrypt(
 	file: Uint8Array,
 	passphrase: string,
@@ -237,7 +271,8 @@ async function tryDecrypt(
 		const { Decrypter } = await loadAge();
 		const decrypter = new Decrypter();
 		decrypter.addPassphrase(passphrase);
-		return { ok: true, bytes: await decrypter.decrypt(file) };
+		const plaintext = await decrypter.decrypt(streamOf(file));
+		return { ok: true, bytes: await readAllChunks(plaintext) };
 	} catch (error) {
 		return { ok: false, reason: openFailure(error) };
 	}
