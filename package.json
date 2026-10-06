@@ -1,6 +1,6 @@
 {
 	"name": "@gainratio/browser",
-	"version": "0.4.0",
+	"version": "0.4.1",
 	"type": "module",
 	"description": "For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.",
 	"keywords": [

@@ -20,16 +20,70 @@ export const MAX_SCRYPT_WORK_FACTOR = 20;
 /**
  * Highest work factor `openWithPassphrase` will compute by default: 18
  * (256 MiB) opens files made by the age CLI's default; a hostile file cannot
- * make us allocate more. Raise it per call with `maxWorkFactor` (age caps at 20).
+ * make us allocate more. Raise it per call with `maxWorkFactor`; values above
+ * 20 (age's own ceiling) are clamped to 20.
  */
 export const DEFAULT_MAX_OPEN_WORK_FACTOR = 18;
 const MAGIC = "age-encryption.org/v1\n";
 const ARMOR_BEGIN = "-----BEGIN AGE ENCRYPTED FILE-----";
 const HEADER_END = "\n---";
 let ageModule;
+/** Load the library once; a failed load is forgotten so the next call retries. */
 function loadAge() {
-    ageModule ??= import("age-encryption");
+    ageModule ??= import("age-encryption").catch((error) => {
+        ageModule = undefined;
+        throw error;
+    });
     return ageModule;
+}
+/**
+ * scrypt's allocation failing: RangeError in V8 ("Array buffer allocation
+ * failed") and WebKit ("Out of memory"), InternalError in Firefox.
+ */
+function isOutOfMemory(error) {
+    if (error instanceof RangeError)
+        return true;
+    return (error instanceof Error &&
+        error.name === "InternalError" &&
+        /out of memory|allocation/i.test(error.message));
+}
+function deviceFailure(error) {
+    return isOutOfMemory(error) ? "out_of_memory" : "unavailable";
+}
+// typage 0.3.x (and the @noble/@scure code it calls) throws plain `Error`s, so
+// its messages are the only signal. Collected from typage's source and from
+// flipping/truncating every region of real files (see age.failures.test.ts).
+/** Authentication failed: wrong passphrase, or the bytes were changed. */
+const AUTH_FAILURES = [
+    /^no identity matched any of the file's recipients$/,
+    /^invalid header HMAC$/,
+    /^invalid tag$/,
+    /^final chunk is empty$/,
+    /^ciphertext is too small$/,
+    /^ciphertext size is invalid$/,
+    /^"ciphertext" expected length >= tagLength=/,
+    /^stream ended before reading \d+ bytes$/,
+];
+/** The header failed to parse; nothing about the passphrase was learned. */
+const HEADER_FAILURES = [
+    /^invalid (scrypt )?stanza$/,
+    /^invalid header$/,
+    /^invalid non-ASCII byte in header$/,
+    /^invalid version /,
+    /^scrypt recipient is not the only one in the header$/,
+    /^Unknown letter /,
+    /^Non-zero padding/,
+];
+function matches(error, patterns) {
+    return (error instanceof Error && patterns.some((re) => re.test(error.message)));
+}
+/** Map a library error to a reason. Only authentication failures blame the passphrase. */
+function openFailure(error) {
+    if (matches(error, AUTH_FAILURES))
+        return "wrong_passphrase_or_tampered";
+    if (matches(error, HEADER_FAILURES))
+        return "malformed";
+    return deviceFailure(error);
 }
 function startsWithMagic(bytes) {
     if (bytes.length < MAGIC.length)
@@ -65,11 +119,22 @@ export async function sealWithPassphrase(plaintext, passphrase, options = {}) {
     if (!validWorkFactor(workFactor)) {
         return { ok: false, reason: "invalid_work_factor" };
     }
-    const { Encrypter } = await loadAge();
-    const encrypter = new Encrypter();
-    encrypter.setPassphrase(normalizePassphrase(passphrase));
-    encrypter.setScryptWorkFactor(workFactor);
-    return { ok: true, bytes: await encrypter.encrypt(plaintext) };
+    try {
+        const { Encrypter } = await loadAge();
+        const encrypter = new Encrypter();
+        encrypter.setPassphrase(normalizePassphrase(passphrase));
+        encrypter.setScryptWorkFactor(workFactor);
+        return { ok: true, bytes: await encrypter.encrypt(plaintext) };
+    }
+    catch (error) {
+        return { ok: false, reason: deviceFailure(error) };
+    }
+}
+function openCap(maxWorkFactor) {
+    const requested = maxWorkFactor ?? DEFAULT_MAX_OPEN_WORK_FACTOR;
+    if (Number.isNaN(requested))
+        return DEFAULT_MAX_OPEN_WORK_FACTOR;
+    return Math.min(requested, MAX_SCRYPT_WORK_FACTOR);
 }
 /** Read the recipient stanzas without running any crypto. */
 function checkHeader(file, maxWorkFactor) {
@@ -89,29 +154,71 @@ function checkHeader(file, maxWorkFactor) {
         const logN = args[2] ?? "";
         if (!/^[1-9][0-9]?$/.test(logN))
             return { ok: false, reason: "malformed" };
-        if (Number(logN) > maxWorkFactor)
-            return { ok: false, reason: "too_costly" };
+        const workFactor = Number(logN);
+        if (workFactor > maxWorkFactor) {
+            return { ok: false, reason: "too_costly", workFactor };
+        }
     }
     return { ok: true };
 }
 async function decodeArmor(bytes) {
-    const { armor } = await loadAge();
+    let age;
     try {
-        return armor.decode(new TextDecoder().decode(bytes));
+        age = await loadAge();
+    }
+    catch (error) {
+        return { ok: false, reason: deviceFailure(error) };
+    }
+    try {
+        return {
+            ok: true,
+            bytes: age.armor.decode(new TextDecoder().decode(bytes)),
+        };
     }
     catch {
-        return undefined;
+        return { ok: false, reason: "malformed" };
     }
 }
-async function tryDecrypt(file, passphrase) {
-    const { Decrypter } = await loadAge();
-    const decrypter = new Decrypter();
-    decrypter.addPassphrase(passphrase);
-    try {
-        return await decrypter.decrypt(file);
+function streamOf(bytes) {
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+        },
+    });
+}
+/**
+ * Read the plaintext ourselves. Given bytes, typage collects the output with
+ * `new Response(stream).arrayBuffer()`, and browsers replace the payload's
+ * "invalid tag" with their own error (Chromium: TypeError "Failed to fetch",
+ * Firefox: AbortError), which would hide a tampered file's real reason.
+ */
+async function readAllChunks(plaintext) {
+    const chunks = [];
+    let length = 0;
+    const reader = plaintext.getReader();
+    for (let next = await reader.read(); !next.done; next = await reader.read()) {
+        chunks.push(next.value);
+        length += next.value.length;
     }
-    catch {
-        return undefined;
+    const out = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return out;
+}
+async function tryDecrypt(file, passphrase) {
+    try {
+        const { Decrypter } = await loadAge();
+        const decrypter = new Decrypter();
+        decrypter.addPassphrase(passphrase);
+        const plaintext = await decrypter.decrypt(streamOf(file));
+        return { ok: true, bytes: await readAllChunks(plaintext) };
+    }
+    catch (error) {
+        return { ok: false, reason: openFailure(error) };
     }
 }
 /**
@@ -124,22 +231,30 @@ function spellings(passphrase) {
 }
 /** Open an age v1 passphrase file. Never throws on bad input. */
 export async function openWithPassphrase(sealed, passphrase, options = {}) {
-    const binary = isArmored(sealed) ? await decodeArmor(sealed) : sealed;
-    if (binary === undefined)
-        return { ok: false, reason: "malformed" };
+    const decoded = isArmored(sealed)
+        ? await decodeArmor(sealed)
+        : { ok: true, bytes: sealed };
+    if (!decoded.ok)
+        return decoded;
+    const binary = decoded.bytes;
     if (!startsWithMagic(binary))
         return { ok: false, reason: "not_sealed" };
-    const header = checkHeader(binary, options.maxWorkFactor ?? DEFAULT_MAX_OPEN_WORK_FACTOR);
+    const header = checkHeader(binary, openCap(options.maxWorkFactor));
     if (!header.ok)
         return header;
     if (passphrase === "") {
         return { ok: false, reason: "wrong_passphrase_or_tampered" };
     }
+    let result = {
+        ok: false,
+        reason: "wrong_passphrase_or_tampered",
+    };
     for (const candidate of spellings(passphrase)) {
-        const bytes = await tryDecrypt(binary, candidate);
-        if (bytes !== undefined)
-            return { ok: true, bytes };
+        result = await tryDecrypt(binary, candidate);
+        // Only a failed authentication is worth retrying with the other spelling.
+        if (result.ok || result.reason !== "wrong_passphrase_or_tampered")
+            break;
     }
-    return { ok: false, reason: "wrong_passphrase_or_tampered" };
+    return result;
 }
 //# sourceMappingURL=age.js.map

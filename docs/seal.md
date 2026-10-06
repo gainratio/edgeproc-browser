@@ -54,13 +54,20 @@ loaded on the first seal or open, and the main `@gainratio/browser` entry never 
 | Function | Returns |
 | --- | --- |
 | `checkNewPassphrase(pass, confirm, { minLength? })` | `{ ok: true }` or `{ ok: false, reason: "empty" \| "too_short" \| "mismatch" }`. Default minimum 12 |
-| `sealWithPassphrase(bytes, pass, { workFactor? })` | `{ ok: true, bytes }` (an age v1 file) or `{ ok: false, reason: "empty_passphrase" \| "invalid_work_factor" }` |
-| `openWithPassphrase(bytes, pass, { maxWorkFactor? })` | `{ ok: true, bytes }` or `{ ok: false, reason }`, where reason is `wrong_passphrase_or_tampered`, `not_sealed`, `malformed`, `unsupported` (an age file for a public key) or `too_costly` |
+| `sealWithPassphrase(bytes, pass, { workFactor? })` | `{ ok: true, bytes }` (an age v1 file) or `{ ok: false, reason: "empty_passphrase" \| "invalid_work_factor" \| "out_of_memory" \| "unavailable" }`. Never throws |
+| `openWithPassphrase(bytes, pass, { maxWorkFactor? })` | `{ ok: true, bytes }` or `{ ok: false, reason }`, where reason is `wrong_passphrase_or_tampered`, `not_sealed`, `malformed`, `unsupported` (an age file for a public key), `too_costly` (with the file's `workFactor`), `out_of_memory` or `unavailable`. Never throws |
 | `isSealed(bytes)` | `true` for a binary or ASCII-armored age file. Does not check anything else |
 | `openLegacyPbkdf2AesGcm(bytesOrText, pass)` | `{ ok: true, bytes, format }` or `{ ok: false, reason }`. Read-only; see below |
 
 A wrong passphrase and a changed file give the same reason on purpose: the crypto cannot tell
 them apart, and guessing would mislead the user.
+
+**A correct passphrase is never reported as wrong.** `wrong_passphrase_or_tampered` comes only
+from the age library's own authentication failures. When the device cannot allocate scrypt's
+memory (a low-memory phone), the result is `out_of_memory`; when the lazily loaded age library
+fails to load, or fails in a way it does not document, it is `unavailable`. Neither judges the
+passphrase, so tell the user to retry, not to retype. `too_costly` carries `workFactor`, the
+file's scrypt log2 N, so an app can offer to open it with `maxWorkFactor` up to 20.
 
 ## Choices, and why
 
@@ -71,7 +78,7 @@ them apart, and guessing would mislead the user.
 - **Opening refuses work factors above 18 by default** (`too_costly`), before any scrypt runs,
   so a hostile file cannot make a phone allocate 1 GiB. 18 opens what the Go `age` CLI writes.
   `rage` picks its work factor by timing the machine and wrote 20 on an M-series Mac; pass
-  `maxWorkFactor: 20` to open such files.
+  `maxWorkFactor: 20` to open such files. Larger values are clamped to 20, age's own ceiling.
 - **Passphrases are sealed in Unicode NFC form.** The same visible text can arrive as
   different code points: "é" is one code point from most keyboards and two from some input
   methods. Without normalizing, a backup made on one device could refuse the right passphrase
