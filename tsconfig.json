@@ -14,6 +14,7 @@
 		"moduleResolution": "Bundler",
 		"paths": {
 			"@gainratio/browser": ["./src/index.ts"],
+			"@gainratio/browser/seal": ["./src/seal/index.ts"],
 			"@gainratio/browser/spawn": ["./src/engine/spawn.ts"],
 			"@gainratio/browser/sql": ["./src/sql/index.ts"],
 			"@gainratio/browser/sql/node": ["./src/sql/node.ts"],

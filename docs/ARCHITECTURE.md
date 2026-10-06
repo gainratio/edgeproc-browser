@@ -161,8 +161,9 @@ One Chromium run: cold sync 1.72 s; warm boot sync 0.59 s plus 0.66 s to read ev
 
 ## Runtime dependencies
 
-Two small runtime dependencies, each doing work that should not be hand-rolled:
-`@noble/ed25519` (signatures) and `@hpcc-js/wasm-zstd` (decompression). The chunk store and
+Three small runtime dependencies, each doing work that should not be hand-rolled:
+`@noble/ed25519` (signatures), `@hpcc-js/wasm-zstd` (decompression) and `age-encryption`
+(passphrase files, loaded only by the opt-in `@gainratio/browser/seal` export). The chunk store and
 the opt-in `@gainratio/browser/sqlite` and `@gainratio/browser/vector/sqlite`
 exports share one self-hosted SQLite 3.53.4 WASM build with the Apache-2.0 sqlite-vector
 1.1.2 extension statically linked. See [dependencies.md](dependencies.md) and

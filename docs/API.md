@@ -14,6 +14,7 @@ How to use `@gainratio/browser` 0.1.1 in an app. For how it works inside, see
 | `@gainratio/browser/vector/sqlite` | `createSqliteVectorIndex`, a vector index kept in SQLite in OPFS |
 | `@gainratio/browser/vector/sqlite/node` | `createNodeSqliteVectorIndex`, the same SQLite runtime in Node, in memory |
 | `@gainratio/browser/sqlite` | `createSqliteStateStore`, app state in one real SQLite file |
+| `@gainratio/browser/seal` | `sealWithPassphrase`, `openWithPassphrase`, `checkNewPassphrase`, `isSealed` and the read-only `openLegacyPbkdf2AesGcm`: passphrase-encrypted files in the standard age format. See [seal.md](seal.md) |
 
 ## Publish a bundle
 

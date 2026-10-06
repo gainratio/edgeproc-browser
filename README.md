@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.3.2; `@edgeproc/browser` is the old, deprecated name)
+**`npm install @gainratio/browser`** (version 0.4.0; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
@@ -245,6 +245,8 @@ and a walkthrough of a first change.
 - [SQLite memory profile](docs/memory-profile.md): page cache and heap limits sized to the device.
 - [SQL in the browser](docs/sql.md): one OPFS SQLite database with FTS5, JSON1 and vectors,
   run in the library's Worker.
+- [Passphrase files](docs/seal.md): encrypt a backup with a passphrase as a standard age
+  file that the `age` command-line tool can also open.
 - [Dependencies](docs/dependencies.md): why each dependency is here.
 - [SECURITY.md](SECURITY.md): threat model, key rotation, and how to report a vulnerability.
 - [CONTRIBUTING.md](CONTRIBUTING.md): what a change needs and what gets pushed back on.
