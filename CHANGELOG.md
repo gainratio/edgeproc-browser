@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-06
+
+A new opt-in export for passphrase-encrypted files. Nothing existing changes, and apps that
+do not import `@gainratio/browser/seal` load none of it.
+
+### Added
+
+- **`@gainratio/browser/seal`**, passphrase files in the standard age v1 format, so a user
+  can also open them with the `age` command-line tool. See [docs/seal.md](docs/seal.md).
+  - `sealWithPassphrase(bytes, passphrase, { workFactor? })`: scrypt work factor 17
+    (128 MiB, the OWASP floor) by default, 10 to 20 allowed. The passphrase is sealed in
+    Unicode NFC form.
+  - `openWithPassphrase(bytes, passphrase, { maxWorkFactor? })`: opens binary or armored
+    age passphrase files. Refuses work factors above 18 by default (`too_costly`) before
+    running scrypt.
+  - `checkNewPassphrase(passphrase, confirmation, { minLength? })`: `empty`, `too_short`
+    (default minimum 12 code points after NFC) or `mismatch`.
+  - `isSealed(bytes)`.
+  - `openLegacyPbkdf2AesGcm(bytesOrText, passphrase)`: read-only opener for the older
+    PBKDF2 + AES-GCM files from almamesh (portable v3, backup v1 and v2) and aml-filter
+    (install-key export v1). It reads the stored iteration count, bounded to
+    100,000..10,000,000. Golden files made by those apps' current code prove it.
+  - Every result is typed (`{ ok: true, ... }` or `{ ok: false, reason }`); no library
+    error escapes.
+- **New runtime dependency `age-encryption` ^0.3.1** (the TypeScript age implementation by
+  age's co-designer). Only `src/seal/age.ts` imports it, with a dynamic import.
+- Conformance tests against the C2SP CCTV age test vectors (`cctv-age`, dev only).
+
 ## [0.3.2] - 2026-10-05
 
 A fix for OPFS databases that stopped writing after a reload with "SAH pool is full". No API

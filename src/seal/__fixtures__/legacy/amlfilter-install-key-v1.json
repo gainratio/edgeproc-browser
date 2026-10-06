@@ -1,0 +1,17 @@
+{
+  "format": "amlfilter.install-key",
+  "version": 1,
+  "public_key_hex": "755c4cb9256ca7cdc4acfdc6cfeeda849017e5b9f9514e99191bd67e0b0d4276",
+  "kdf": {
+    "name": "PBKDF2",
+    "hash": "SHA-256",
+    "iterations": 600000,
+    "salt": "IaQnqi2wM7Y5vD/CRchLzg=="
+  },
+  "cipher": {
+    "name": "AES-GCM",
+    "iv": "UdRX2l3gY+Zp7G/y"
+  },
+  "ciphertext": "il9RYAye3GivZ/huYxkaFwsYwt54wcpylFMeTAUEf0+A9EiH0afGJBgKJc1oiBCN",
+  "exported_at": "2026-10-06T00:00:00.000Z"
+}

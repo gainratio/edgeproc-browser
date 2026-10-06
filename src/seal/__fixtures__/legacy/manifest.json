@@ -1,0 +1,33 @@
+{
+	"generatedBy": "scripts/generate-legacy-seal-fixtures.mjs",
+	"fixtures": [
+		{
+			"file": "almamesh-portable-v3.bin",
+			"format": "almamesh-portable-v3",
+			"passphrase": "portable v3 passphrase",
+			"iterations": 600000,
+			"plaintextSha256": "dd863a40de17cdd8f301cdabf5c9662667bcdd7f3fecd1c2b69bf581da90b0be"
+		},
+		{
+			"file": "almamesh-backup-v2.json",
+			"format": "almamesh-backup-v2",
+			"passphrase": "v2 pass",
+			"iterations": 600000,
+			"plaintextSha256": "3facb69951c95114a3eb29877e8a46cbe753851a4a01c0e42f9973ba29822364"
+		},
+		{
+			"file": "almamesh-backup-v1.json",
+			"format": "almamesh-backup-v1",
+			"passphrase": "Ünïcödé v1 pässphrase",
+			"iterations": 210000,
+			"plaintextSha256": "dce3175ab07587a84bbc4d6d38dd48f353e96d0ffd71bb2153bd60c1f0140066"
+		},
+		{
+			"file": "amlfilter-install-key-v1.json",
+			"format": "amlfilter-install-key-v1",
+			"passphrase": "aml install key passphrase",
+			"iterations": 600000,
+			"plaintextSha256": "ab5f8b5cb9435354c7b58603592d5faf081e17ceb05f7a7c67f4b666f12ca457"
+		}
+	]
+}

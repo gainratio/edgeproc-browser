@@ -1,0 +1,17 @@
+{
+  "format": "almamesh-backup",
+  "formatVersion": 1,
+  "app": {
+    "version": "0.5.0"
+  },
+  "exportedAt": "2026-10-06T00:00:00.000Z",
+  "encryption": "aes-gcm",
+  "kdf": {
+    "name": "PBKDF2",
+    "hash": "SHA-256",
+    "iterations": 210000,
+    "salt": "zVDTVtlc32LlaOtu8XT3eg=="
+  },
+  "iv": "/YADhgmMD5IVmBue",
+  "ciphertext": "4iZlAu0A2j2HeqV2IQKGgR9PanUjfG2oZsZP7Dj5XQ6PAE3KjPPTzR4J1ttLRvWLIEzO5ej0HzTdQx5nKqrTnt7gwlkJs3yhpnemSRp40rlqPNJ00J1rzMjRFTiWBZLrlEPlig=="
+}

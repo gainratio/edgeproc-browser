@@ -113,6 +113,7 @@ Important integration rules:
   mechanism. Same-origin channel messages are shape-checked but are not treated
   as authenticated actors.
 
-Runtime dependencies are `@noble/ed25519` and `@hpcc-js/wasm-zstd`. The chunk
+Runtime dependencies are `@noble/ed25519`, `@hpcc-js/wasm-zstd` and, for the opt-in
+`/seal` export only, `age-encryption`. The chunk
 store and the optional SQLite subpaths share pinned local WASM assets and do not
 load code from a CDN.

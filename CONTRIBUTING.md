@@ -71,8 +71,9 @@ To bump:
   error classes consumers catch by identity, like `SignatureError` and
   `RollbackError` — is a public API contract. Deprecate and add; never rename in
   place.
-- **Adding a runtime dependency.** There are exactly two (`@noble/ed25519` and
-  `@hpcc-js/wasm-zstd`), doing signatures and decompression, which have no
+- **Adding a runtime dependency.** There are exactly three (`@noble/ed25519`,
+  `@hpcc-js/wasm-zstd` and `age-encryption`, the last loaded only by the `/seal`
+  subpath), doing signatures, decompression and passphrase encryption, which have no
   business being hand-rolled. Storage uses the bundled SQLite WASM. A third needs the same justification: make the
   case in the issue before writing the code.
 - **Widening the surface without a use case.** New exports need a caller.

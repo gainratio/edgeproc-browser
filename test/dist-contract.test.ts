@@ -186,6 +186,7 @@ describe("published artefact contract", () => {
 			"dist/sqlite/index.js",
 			"dist/sql/index.js",
 			"dist/sql/node.js",
+			"dist/seal/index.js",
 		]) {
 			const url = pathToFileURL(join(ROOT, target)).href;
 			const result = spawnSync(
