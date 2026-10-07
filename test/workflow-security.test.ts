@@ -110,14 +110,47 @@ describe("GitHub Actions token scope", () => {
 // red, so "the job is in the file" is the only thing a unit test can prove.
 // That the scan actually CATCHES a secret is proven separately, by planting one
 // and watching the check go red on a real PR.
+/** The central ci repository's owner, before and after the gainratio org move. */
+const CENTRAL_CI_OWNERS = ["gainratio", "hseshadr"] as const;
+
+/** A `uses:` ref to ci's reusable secret-scan brick under an allowed owner. */
+const isCentralSecretScan = (ref: string): boolean =>
+	CENTRAL_CI_OWNERS.some((owner) =>
+		ref.startsWith(`${owner}/ci/.github/workflows/secret-scan.yml@`),
+	);
+
 describe("secret scanning", () => {
-	const SECRET_SCAN = "hseshadr/ci/.github/workflows/secret-scan.yml";
+	const PINNED_SHA = "8166345c9355dde54c12fa95d0457c4ea97d3e64";
 
 	const secretScanRefs = (): readonly string[] =>
 		readWorkflows()
 			.flatMap(refsOf)
 			.map((entry) => entry.split(": ")[1] ?? "")
-			.filter((ref) => ref.startsWith(`${SECRET_SCAN}@`));
+			.filter(isCentralSecretScan);
+
+	it("accepts the brick from either central owner during the gainratio move", () => {
+		// ci moves hseshadr -> gainratio at the SAME commit. Both owners are a
+		// literal allow-list, never a pattern, so a look-alike owner is refused.
+		for (const owner of ["hseshadr", "gainratio"]) {
+			expect(
+				isCentralSecretScan(
+					`${owner}/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
+				),
+			).toBe(true);
+		}
+		for (const owner of [
+			"attacker",
+			"gainratio-evil",
+			"hseshadrx",
+			"Gainratio",
+		]) {
+			expect(
+				isCentralSecretScan(
+					`${owner}/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
+				),
+			).toBe(false);
+		}
+	});
 
 	it("calls ci's reusable secret-scan brick", () => {
 		expect(secretScanRefs()).not.toEqual([]);
@@ -134,9 +167,11 @@ describe("secret scanning", () => {
 		// ci-v3.3.0 (8166345) keeps findings in the job log: no PR comment, no
 		// summary, no SARIF artifact. ci-v3.2.1 still uploaded them. Later ci
 		// commits delete the workflow, so newer is not available, only older.
-		expect(secretScanRefs()).toEqual([
-			`${SECRET_SCAN}@8166345c9355dde54c12fa95d0457c4ea97d3e64`,
-		]);
+		const refs = secretScanRefs();
+		expect(refs).toHaveLength(1);
+		expect(
+			refs[0]?.endsWith(`/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`),
+		).toBe(true);
 	});
 
 	it("asks the brick for full history, not just the event range", () => {
@@ -241,5 +276,27 @@ describe("the token-scope rule itself", () => {
 		],
 	])("accepts %s", (_label, yaml) => {
 		expect(hasReadOnlyTopLevelScope(yaml)).toBe(true);
+	});
+});
+
+// ci-v3.3.0 is the last ci release that ships the reusable bricks; ci's default
+// branch deleted them. Dependabot must never bump these pins, under either owner,
+// or the bump lands on a commit without the files and every run vanishes.
+describe("dependabot keeps the central ci pins frozen", () => {
+	const DEPENDABOT = fileURLToPath(
+		new URL("../.github/dependabot.yml", import.meta.url),
+	);
+
+	const ignored = (): readonly string[] =>
+		[
+			...readFileSync(DEPENDABOT, "utf8").matchAll(
+				/^\s*-\s*dependency-name:\s*"([^"]+)"/gm,
+			),
+		].flatMap((m) => (m[1] === undefined ? [] : [m[1]]));
+
+	it("ignores the central ci repository under both owners", () => {
+		expect(ignored()).toEqual(
+			expect.arrayContaining(["hseshadr/ci*", "gainratio/ci*"]),
+		);
 	});
 });
