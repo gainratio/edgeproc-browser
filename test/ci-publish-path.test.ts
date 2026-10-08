@@ -10,15 +10,28 @@
 // main went red for a reason that says nothing about the publish path. The job
 // now gives its working copy a throwaway prerelease version that cannot exist
 // on npm, and never commits it.
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const ROOT = new URL("..", import.meta.url);
 const ci = readFileSync(new URL(".github/workflows/ci.yml", ROOT), "utf8");
 const pkg = JSON.parse(readFileSync(new URL("package.json", ROOT), "utf8")) as {
-	version: string;
 	scripts: Record<string, string>;
 };
+
+/**
+ * The version in the COMMITTED package.json. The working copy is the wrong
+ * witness: inside the publish-path job it carries the override on purpose.
+ */
+function committedVersion(): string {
+	const raw = execFileSync("git", ["show", "HEAD:package.json"], {
+		cwd: fileURLToPath(ROOT),
+		encoding: "utf8",
+	});
+	return (JSON.parse(raw) as { version: string }).version;
+}
 
 /** The `publish-path:` job body, up to the next job at the same indent. */
 function publishPathJob(): string {
@@ -75,6 +88,6 @@ describe("CI publish-path dry run cannot collide with a published version", () =
 	});
 
 	it("never commits the throwaway version", () => {
-		expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
+		expect(committedVersion()).toMatch(/^\d+\.\d+\.\d+$/);
 	});
 });
