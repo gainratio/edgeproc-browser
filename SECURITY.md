@@ -7,7 +7,7 @@ Please do **not** open a public issue for a security problem.
 Report it privately in one of two ways:
 
 1. GitHub's private reporting — go to the
-   [Security tab](https://github.com/hseshadr/edgeproc-browser/security/advisories/new)
+   [Security tab](https://github.com/gainratio/edgeproc-browser/security/advisories/new)
    and open a draft advisory. This is preferred; it keeps the discussion in the
    repo and lets us issue a CVE if one is warranted.
 2. Email `harish.seshadri@gmail.com` with `SECURITY` in the subject.

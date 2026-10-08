@@ -18,13 +18,13 @@
 	],
 	"license": "MIT",
 	"author": "Harish Seshadri",
-	"homepage": "https://github.com/hseshadr/edgeproc-browser#readme",
+	"homepage": "https://github.com/gainratio/edgeproc-browser#readme",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/hseshadr/edgeproc-browser.git"
+		"url": "git+https://github.com/gainratio/edgeproc-browser.git"
 	},
 	"bugs": {
-		"url": "https://github.com/hseshadr/edgeproc-browser/issues"
+		"url": "https://github.com/gainratio/edgeproc-browser/issues"
 	},
 	"publishConfig": {
 		"access": "public"

@@ -24,4 +24,23 @@ describe("npm scope", () => {
 			surfaces.filter((path) => read(path).includes("@edgeproc/")),
 		).toEqual([]);
 	});
+
+	it("points repository, homepage and bugs at gainratio/edgeproc-browser", () => {
+		// npm provenance refuses a publish whose `repository` is not the repo the
+		// workflow runs in, and the package now publishes from gainratio.
+		const pkg = JSON.parse(read("package.json")) as {
+			homepage: string;
+			repository: { url: string };
+			bugs: { url: string };
+		};
+		expect(pkg.repository.url).toBe(
+			"git+https://github.com/gainratio/edgeproc-browser.git",
+		);
+		expect(pkg.homepage).toBe(
+			"https://github.com/gainratio/edgeproc-browser#readme",
+		);
+		expect(pkg.bugs.url).toBe(
+			"https://github.com/gainratio/edgeproc-browser/issues",
+		);
+	});
 });

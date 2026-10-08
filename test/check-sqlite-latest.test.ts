@@ -343,7 +343,7 @@ function fakeGitHub(openIssues: readonly { number: number; title: string }[]) {
 }
 
 describe("upsertIssue", () => {
-	const repo = "hseshadr/edgeproc-browser";
+	const repo = "gainratio/edgeproc-browser";
 
 	it("opens a new issue when none is open", async () => {
 		const gh = fakeGitHub([{ number: 3, title: "something else" }]);

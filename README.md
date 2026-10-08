@@ -4,9 +4,9 @@ For web developers: have the browser check that downloaded data was signed by yo
 
 **`npm install @gainratio/browser`** (version 0.4.1; `@edgeproc/browser` is the old, deprecated name)
 
-[![CI](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/hseshadr/edgeproc-browser/actions/workflows/ci.yml)
+[![CI](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
-[![License](https://img.shields.io/github/license/hseshadr/edgeproc-browser)](LICENSE)
+[![License](https://img.shields.io/github/license/gainratio/edgeproc-browser)](LICENSE)
 
 Many web apps download data files and work with them inside the page: a product catalog, a
 search index, a price list, a model. The page trusts whatever the server or CDN sends back.
@@ -17,7 +17,7 @@ This package lets the page check the data itself. You sign the data once when yo
 it. The page downloads it in a background thread (a Web Worker), checks your signature and
 every piece, and refuses anything that does not match. It keeps the checked copy in the
 browser, so the next visit downloads only what changed and still works offline.
-[AlmaMesh](https://github.com/hseshadr/almamesh) uses it to download its chart engine.
+[AlmaMesh](https://github.com/gainratio/almamesh) uses it to download its chart engine.
 
 **Technical docs:** [Architecture](docs/ARCHITECTURE.md) · [API guide](docs/API.md) · [Getting started for developers](docs/GETTING_STARTED.md) · [Security](SECURITY.md)
 
@@ -35,7 +35,7 @@ that signs the data. This takes about a minute.
    ```
 
 2. Sign a folder of data with the `edgeproc` command from the Python
-   [`edge-proc`](https://github.com/hseshadr/edge-proc) package:
+   [`edge-proc`](https://github.com/gainratio/edge-proc) package:
 
    ```bash
    mkdir data
@@ -197,7 +197,7 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
 | Have a few files whose hashes you can put in the HTML at build time | Subresource Integrity (`integrity=` on a script or link tag) |
 | Want your app's own code and pages to work offline | A service-worker cache, such as Workbox |
 | Need users' edits to flow back to a shared server | A hosted database with sync |
-| Run on devices with Python, not a browser | The Python [`edge-proc`](https://github.com/hseshadr/edge-proc) library, which uses the same bundle format |
+| Run on devices with Python, not a browser | The Python [`edge-proc`](https://github.com/gainratio/edge-proc) library, which uses the same bundle format |
 | Ship data that changes without redeploying the page, and want the page to refuse anything you did not sign | This package |
 
 ## Install
@@ -208,7 +208,7 @@ npm install @gainratio/browser
 
 This README documents 0.1.1, which is the same code as `main` at
 the time of writing. pnpm and Bun work too. To pin an exact commit instead:
-`pnpm add github:hseshadr/edgeproc-browser#<commit-sha>`.
+`pnpm add github:gainratio/edgeproc-browser#<commit-sha>`.
 
 Besides the main import there are subpath imports for the Worker entry, unbundled use,
 vector search, and SQLite state. The [API guide](docs/API.md) lists them all with examples.
@@ -218,7 +218,7 @@ vector search, and SQLite state. The [API guide](docs/API.md) lists them all wit
 Use Node 24 (Node 26 breaks the corepack pnpm shim) and pnpm 11.5.0 through corepack:
 
 ```bash
-git clone https://github.com/hseshadr/edgeproc-browser
+git clone https://github.com/gainratio/edgeproc-browser
 cd edgeproc-browser
 corepack enable
 pnpm install --frozen-lockfile

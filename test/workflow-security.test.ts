@@ -110,14 +110,25 @@ describe("GitHub Actions token scope", () => {
 // red, so "the job is in the file" is the only thing a unit test can prove.
 // That the scan actually CATCHES a secret is proven separately, by planting one
 // and watching the check go red on a real PR.
-/** The central ci repository's owner, before and after the gainratio org move. */
-const CENTRAL_CI_OWNERS = ["gainratio", "hseshadr"] as const;
+/**
+ * The central ci repository's owner. ci moved hseshadr -> gainratio, and GitHub
+ * does NOT redirect `uses:` for a moved repository: an `hseshadr/ci/...` ref no
+ * longer resolves, the caller job fails before it starts, and the required
+ * `Secret scan / gitleaks` check goes red. So the old owner is refused, not
+ * merely tolerated.
+ */
+const CENTRAL_CI_OWNER = "gainratio";
 
-/** A `uses:` ref to ci's reusable secret-scan brick under an allowed owner. */
+/** A `uses:` ref to ci's reusable secret-scan brick under the central owner. */
 const isCentralSecretScan = (ref: string): boolean =>
-	CENTRAL_CI_OWNERS.some((owner) =>
-		ref.startsWith(`${owner}/ci/.github/workflows/secret-scan.yml@`),
-	);
+	ref.startsWith(`${CENTRAL_CI_OWNER}/ci/.github/workflows/secret-scan.yml@`);
+
+/** Every `uses:` ref, across all workflows, that names a ci repository. */
+const ciRefs = (): readonly string[] =>
+	readWorkflows()
+		.flatMap(refsOf)
+		.map((entry) => entry.split(": ")[1] ?? "")
+		.filter((ref) => /^[^/]+\/ci\//.test(ref));
 
 describe("secret scanning", () => {
 	const PINNED_SHA = "8166345c9355dde54c12fa95d0457c4ea97d3e64";
@@ -128,17 +139,16 @@ describe("secret scanning", () => {
 			.map((entry) => entry.split(": ")[1] ?? "")
 			.filter(isCentralSecretScan);
 
-	it("accepts the brick from either central owner during the gainratio move", () => {
-		// ci moves hseshadr -> gainratio at the SAME commit. Both owners are a
-		// literal allow-list, never a pattern, so a look-alike owner is refused.
-		for (const owner of ["hseshadr", "gainratio"]) {
-			expect(
-				isCentralSecretScan(
-					`${owner}/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
-				),
-			).toBe(true);
-		}
+	it("accepts the brick only from gainratio, the owner that resolves", () => {
+		// A literal owner, never a pattern, so a look-alike owner is refused.
+		// hseshadr is refused too: GitHub does not redirect `uses:` after a move.
+		expect(
+			isCentralSecretScan(
+				`gainratio/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
+			),
+		).toBe(true);
 		for (const owner of [
+			"hseshadr",
 			"attacker",
 			"gainratio-evil",
 			"hseshadrx",
@@ -150,6 +160,12 @@ describe("secret scanning", () => {
 				),
 			).toBe(false);
 		}
+	});
+
+	it("calls every ci brick from gainratio/ci, never the pre-move owner", () => {
+		const refs = ciRefs();
+		expect(refs).not.toEqual([]);
+		expect(refs.filter((ref) => !ref.startsWith("gainratio/ci/"))).toEqual([]);
 	});
 
 	it("calls ci's reusable secret-scan brick", () => {
@@ -169,9 +185,9 @@ describe("secret scanning", () => {
 		// commits delete the workflow, so newer is not available, only older.
 		const refs = secretScanRefs();
 		expect(refs).toHaveLength(1);
-		expect(
-			refs[0]?.endsWith(`/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`),
-		).toBe(true);
+		expect(refs[0]).toBe(
+			`gainratio/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
+		);
 	});
 
 	it("asks the brick for full history, not just the event range", () => {

@@ -29,7 +29,7 @@ You do not need Python, Docker, or an account for anything below.
 ## 2. Clone, install, and run it
 
 ```bash
-git clone https://github.com/hseshadr/edgeproc-browser
+git clone https://github.com/gainratio/edgeproc-browser
 cd edgeproc-browser
 corepack enable
 pnpm install --frozen-lockfile     # about 5 s; ends with "Done in ... using pnpm v11.5.0"
