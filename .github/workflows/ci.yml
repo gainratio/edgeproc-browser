@@ -10,34 +10,50 @@ permissions:
   contents: read
 
 jobs:
-  # gitleaks — full-history secret scan on EVERY pull request, via the shared
-  # brick in gainratio/ci. It runs at the PR because a secret is the one defect
-  # you cannot fix by reverting: once a credential lands in this public history
-  # it is burned, and a revert only hides it from HEAD.
+  # gitleaks — full-history secret scan on EVERY pull request. It runs at the PR
+  # because a secret is the one defect you cannot fix by reverting: once a
+  # credential lands in this public history it is burned, and a revert only
+  # hides it from HEAD.
+  #
+  # This job is a faithful inline copy of the job in gainratio/ci's reusable
+  # secret-scan.yml at ci-v3.3.0 (8166345), the last release that shipped it:
+  # ci retired its reusable catalog (7c75ff1). One addition: gainratio is an
+  # ORGANIZATION, and gitleaks-action refuses to scan an org repo without a
+  # license, so the action step reads the org secret GITLEAKS_LICENSE.
   #
   # gitleaks-action on its own scans only the commits the event introduced (a
-  # push already on main scans zero). `full-history: true` (ci-v3.3.0) adds an
-  # explicit pass over every commit. This repo ships no .gitleaks.toml; the
-  # default ruleset applies.
+  # push already on main scans zero). The last step adds an explicit pass over
+  # every commit. This repo ships no .gitleaks.toml; the default ruleset applies.
   gitleaks:
-    name: Secret scan
-    # The reusable workflow lists a PR's commits over the API, which needs
-    # pull-requests: read. The workflow-level `contents: read` does not grant it,
-    # and a caller job may raise a scope the read-only top level withholds.
+    name: Secret scan / gitleaks
+    # gitleaks-action lists a PR's commits over the API, which needs
+    # pull-requests: read. The workflow-level `contents: read` does not grant it.
     permissions:
       contents: read
       pull-requests: read
-    # Pinned to a 40-char commit SHA, not `@ci-v3`: a tag can be repointed at new
-    # code, and this job runs with this repo's token. The trailing comment names
-    # the EXACT release so Dependabot bumps pin and comment together — a floating
-    # `# ci-v3` would silently go wrong the moment upstream moves that tag.
-    # `ci-v3.3.0` is an ANNOTATED tag: refs/tags/ci-v3.3.0 is tag object
-    # a98fa30de2d30255a7a756d6d0c93375e58bb126, whose commit is the SHA below.
-    # Pinning is transitive and holds here: at this SHA the brick's own two
-    # `uses:` refs (actions/checkout, gitleaks/gitleaks-action) are both SHAs.
-    uses: gainratio/ci/.github/workflows/secret-scan.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
-    with:
-      full-history: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Makes BASE^ resolvable for the push/PR range and lets the full-history
+          # pass reach every commit. It does NOT by itself widen the action's range.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # Findings stay in this job's redacted logs. Never copy a detected
+          # credential into a PR comment, summary, or downloadable SARIF artifact.
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_SUMMARY: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+          GITLEAKS_VERSION: "8.30.1"
+      - name: Enforce full-history scan coverage
+        run: |
+          commits="$(git rev-list --count HEAD 2>/dev/null || echo '?')"
+          gitleaks git --redact --no-banner --log-opts="--all" .
+          echo "gitleaks swept FULL HISTORY: all ${commits} commits."
 
   gate:
     runs-on: ubuntu-latest

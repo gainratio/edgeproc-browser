@@ -105,23 +105,23 @@ describe("GitHub Actions token scope", () => {
 // pinned ci's `ts-publish.yml` and nothing else, so no `gitleaks` check ever
 // reported here and branch protection had nothing to require.
 //
-// This rule asserts the WIRING, which is the part that silently rots: a private
-// or misconfigured reusable workflow makes caller runs VANISH rather than go
-// red, so "the job is in the file" is the only thing a unit test can prove.
-// That the scan actually CATCHES a secret is proven separately, by planting one
-// and watching the check go red on a real PR.
+// CONTRACT CHANGE (2026-10-08): this block used to require ci's reusable
+// secret-scan brick pinned at ci-v3.3.0. ci retired that catalog (7c75ff1), and
+// after the move to the gainratio ORG gitleaks-action refuses to run without a
+// license. The scan is now an inline job: a faithful copy of the ci-v3.3.0
+// brick's job, plus the org's GITLEAKS_LICENSE secret on the action step.
+//
+// These rules assert the WIRING. That the scan actually CATCHES a secret is
+// proven separately, by planting one and watching the check go red on a PR.
 /**
  * The central ci repository's owner. ci moved hseshadr -> gainratio, and GitHub
  * does NOT redirect `uses:` for a moved repository: an `hseshadr/ci/...` ref no
- * longer resolves, the caller job fails before it starts, and the required
- * `Secret scan / gitleaks` check goes red. So the old owner is refused, not
- * merely tolerated.
+ * longer resolves and the caller job fails before it starts.
  */
 const CENTRAL_CI_OWNER = "gainratio";
-
-/** A `uses:` ref to ci's reusable secret-scan brick under the central owner. */
-const isCentralSecretScan = (ref: string): boolean =>
-	ref.startsWith(`${CENTRAL_CI_OWNER}/ci/.github/workflows/secret-scan.yml@`);
+const GITLEAKS_ACTION_COMMIT = "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e";
+// biome-ignore lint/suspicious/noTemplateCurlyInString: a literal GitHub Actions expression, not a template.
+const LICENSE_ENV = "GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}";
 
 /** Every `uses:` ref, across all workflows, that names a ci repository. */
 const ciRefs = (): readonly string[] =>
@@ -130,78 +130,89 @@ const ciRefs = (): readonly string[] =>
 		.map((entry) => entry.split(": ")[1] ?? "")
 		.filter((ref) => /^[^/]+\/ci\//.test(ref));
 
+/** The lines of the step that starts at `- uses: <prefix>`, or "" if absent. */
+function stepOf(yaml: string, prefix: string): string {
+	const lines = yaml.split("\n");
+	const start = lines.findIndex((line) =>
+		line.trimStart().startsWith(`- uses: ${prefix}`),
+	);
+	if (start === -1) return "";
+	const indent = (lines[start] ?? "").indexOf("-");
+	const rest = lines.slice(start + 1);
+	const end = rest.findIndex(
+		(line) => line.trim() !== "" && line.search(/\S/) <= indent,
+	);
+	return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].join("\n");
+}
+
 describe("secret scanning", () => {
-	const PINNED_SHA = "8166345c9355dde54c12fa95d0457c4ea97d3e64";
+	const ciYaml = (): string =>
+		readWorkflows().find(({ file }) => file === "ci.yml")?.yaml ?? "";
+	const gitleaksStep = (): string =>
+		stepOf(ciYaml(), "gitleaks/gitleaks-action@");
 
-	const secretScanRefs = (): readonly string[] =>
-		readWorkflows()
-			.flatMap(refsOf)
-			.map((entry) => entry.split(": ")[1] ?? "")
-			.filter(isCentralSecretScan);
-
-	it("accepts the brick only from gainratio, the owner that resolves", () => {
-		// A literal owner, never a pattern, so a look-alike owner is refused.
-		// hseshadr is refused too: GitHub does not redirect `uses:` after a move.
+	it("finds the step it checks (guards against a vacuous pass)", () => {
 		expect(
-			isCentralSecretScan(
-				`gainratio/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
-			),
-		).toBe(true);
-		for (const owner of [
-			"hseshadr",
-			"attacker",
-			"gainratio-evil",
-			"hseshadrx",
-			"Gainratio",
-		]) {
-			expect(
-				isCentralSecretScan(
-					`${owner}/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
-				),
-			).toBe(false);
-		}
+			stepOf("  - uses: a/b@c\n    env:\n      X: 1\n  - run: y", "a/b@"),
+		).toBe("  - uses: a/b@c\n    env:\n      X: 1");
+		expect(stepOf("  - run: y", "a/b@")).toBe("");
 	});
 
 	it("calls every ci brick from gainratio/ci, never the pre-move owner", () => {
 		const refs = ciRefs();
 		expect(refs).not.toEqual([]);
-		expect(refs.filter((ref) => !ref.startsWith("gainratio/ci/"))).toEqual([]);
+		expect(
+			refs.filter((ref) => !ref.startsWith(`${CENTRAL_CI_OWNER}/ci/`)),
+		).toEqual([]);
 	});
 
-	it("calls ci's reusable secret-scan brick", () => {
-		expect(secretScanRefs()).not.toEqual([]);
-	});
-
-	it("pins the secret-scan brick to a commit SHA, never a tag", () => {
-		// `@ci-v3` would resolve at run time to whatever that tag points at today.
-		// The scan holds this repo's token; a mutable ref here is a supply chain.
-		const unpinned = secretScanRefs().filter((ref) => !isImmutable(ref));
-		expect(unpinned).toEqual([]);
-	});
-
-	it("pins ci-v3.3.0, the last release that ships the brick", () => {
-		// ci-v3.3.0 (8166345) keeps findings in the job log: no PR comment, no
-		// summary, no SARIF artifact. ci-v3.2.1 still uploaded them. Later ci
-		// commits delete the workflow, so newer is not available, only older.
-		const refs = secretScanRefs();
-		expect(refs).toHaveLength(1);
-		expect(refs[0]).toBe(
-			`gainratio/ci/.github/workflows/secret-scan.yml@${PINNED_SHA}`,
+	it("reports under the exact check name branch protection requires", () => {
+		expect(ciYaml()).toMatch(
+			/^ {2}gitleaks:\n {4}name: Secret scan \/ gitleaks$/m,
 		);
 	});
 
-	it("asks the brick for full history, not just the event range", () => {
-		// Without full-history the action scans only the commits a push or PR
-		// introduced, and a push already on main scans zero commits and passes.
-		const ci = readWorkflows().find(({ file }) => file === "ci.yml");
-		expect(ci?.yaml).toMatch(
-			/secret-scan\.yml@[0-9a-f]{40}[^\n]*\n\s+with:\n\s+full-history: true\n/,
+	it("no longer calls ci's retired reusable secret-scan brick", () => {
+		expect(ciYaml()).not.toContain("secret-scan.yml@");
+	});
+
+	it("runs gitleaks-action pinned to the ci-v3.3.0 brick's commit SHA", () => {
+		expect(gitleaksStep()).toContain(
+			`- uses: gitleaks/gitleaks-action@${GITLEAKS_ACTION_COMMIT} # v3.0.0`,
+		);
+	});
+
+	it("hands the action the org license from secrets, never a literal", () => {
+		// gainratio is an organization: without this the action exits before
+		// scanning with "missing gitleaks license".
+		expect(gitleaksStep()).toContain(LICENSE_ENV);
+	});
+
+	it("keeps findings in the redacted job log only", () => {
+		const step = gitleaksStep();
+		for (const flag of ["COMMENTS", "SUMMARY", "UPLOAD_ARTIFACT"]) {
+			expect(step).toContain(`GITLEAKS_ENABLE_${flag}: "false"`);
+		}
+	});
+
+	it("checks out every commit and sweeps full history, not just the event range", () => {
+		// The action alone scans only the commits a push or PR introduced; a push
+		// already on main scans zero commits and passes.
+		const ci = ciYaml();
+		expect(stepOf(ci, "actions/checkout@")).toMatch(/^\s+fetch-depth: 0$/m);
+		expect(ci).toContain(
+			'gitleaks git --redact --no-banner --log-opts="--all" .',
+		);
+	});
+
+	it("grants the job only contents and pull-requests read", () => {
+		expect(ciYaml()).toMatch(
+			/name: Secret scan \/ gitleaks\n(?:\s*#.*\n)*\s+permissions:\n\s+contents: read\n\s+pull-requests: read\n/,
 		);
 	});
 
 	it("runs the scan on pull requests, where a merge can still be stopped", () => {
-		const ci = readWorkflows().find(({ file }) => file === "ci.yml");
-		expect(ci?.yaml).toMatch(/^on:(?:.|\n)*?^\s+pull_request:/m);
+		expect(ciYaml()).toMatch(/^on:(?:.|\n)*?^\s+pull_request:/m);
 	});
 });
 
