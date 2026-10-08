@@ -168,5 +168,20 @@ jobs:
       - name: Use the publish job's npm (npm@latest, as ts-publish.yml does)
         run: npm install --global npm@latest && npm --version
 
+      # npm's dry run still asks the registry whether the version exists, and
+      # between releases package.json names one that does ("You cannot publish
+      # over the previously published versions"). So this run's working copy
+      # gets a prerelease no registry can hold: <version>-ci.<run_id>.<attempt>.
+      # It is never committed. skip-worktree hides it from `git status`, so
+      # preflight's clean-tree refusal still runs instead of being bypassed.
+      - name: Give the dry run an unpublished version (working copy only)
+        run: |
+          base="$(node -p 'require("./package.json").version')"
+          npm pkg set "version=${base}-ci.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          git update-index --skip-worktree package.json
+          node -p 'require("./package.json").version'
+
+      # npm refuses a prerelease without an explicit dist-tag; a dry run uploads
+      # nothing, so the tag is never set on the registry.
       - name: npm publish --dry-run (runs prepublishOnly = preflight && gate)
-        run: npm publish --dry-run --access public
+        run: npm publish --dry-run --access public --tag ci-dry-run
