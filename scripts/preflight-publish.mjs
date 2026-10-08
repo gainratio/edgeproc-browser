@@ -129,7 +129,7 @@ function refuse(reason, fix) {
 if (gitOrNull("rev-parse", "--is-inside-work-tree") !== "true") {
 	refuse(
 		`${ROOT} is not a git work tree, so there is no commit the tarball could correspond to.`,
-		"Publish from a clone of hseshadr/edgeproc-browser, never from an unpacked directory.",
+		"Publish from a clone of gainratio/edgeproc-browser, never from an unpacked directory.",
 	);
 }
 

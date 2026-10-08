@@ -9,7 +9,7 @@ change ships with a test, and `pnpm gate` is green. New here? Start with
 You need Node >= 22.13 and pnpm. The exact Node version CI uses is 24.
 
 ```bash
-git clone https://github.com/hseshadr/edgeproc-browser.git
+git clone https://github.com/gainratio/edgeproc-browser.git
 cd edgeproc-browser
 pnpm install
 pnpm gate

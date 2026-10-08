@@ -9,7 +9,7 @@ from [`architecture/runtime.architecture.json`](architecture/runtime.architectur
 
 ## The short version
 
-A publisher (the Python [`edge-proc`](https://github.com/hseshadr/edge-proc) CLI,
+A publisher (the Python [`edge-proc`](https://github.com/gainratio/edge-proc) CLI,
 `edgeproc publish`) cuts your files into pieces ("chunks"), names each chunk by the SHA-256
 of its contents, compresses it with zstd, and writes a manifest listing every file and its
 chunks. It then signs one small "pointer" file, `latest`, that names the manifest. The result
@@ -259,9 +259,9 @@ This package gets bytes into a tab intact and knows nothing about what they mean
 purpose:
 
 - **Ranking and recommendation.** The generic vector index lives here; product ranking
-  lives in [edge-reco](https://github.com/hseshadr/edge-reco).
+  lives in [edge-reco](https://github.com/gainratio/edge-reco).
 - **Sanctions screening and name matching.** That belongs to
-  [aml-filter](https://github.com/hseshadr/aml-filter).
+  [aml-filter](https://github.com/gainratio/aml-filter).
 - **Wiring to your domain.** The code that connects this package to your app is yours, which
   keeps this a dependency rather than a framework.
 - **Embedding models.** `@huggingface/transformers` is a heavy, model-specific dependency and
@@ -271,8 +271,8 @@ The rule: if a module needs to know what the bundle contains, it does not belong
 
 ## Where it came from
 
-The signed-bundle engine was extracted from [edge-reco](https://github.com/hseshadr/edge-reco),
+The signed-bundle engine was extracted from [edge-reco](https://github.com/gainratio/edge-reco),
 where it had already run in production. The package now also carries the consumer-independent
 persistence, scoped sync, progress, typed errors, and packed-vector contracts. Domain catalog
 selection and result shapes stay in the apps that use it, such as
-[AlmaMesh](https://github.com/hseshadr/almamesh), which downloads its chart engine this way.
+[AlmaMesh](https://github.com/gainratio/almamesh), which downloads its chart engine this way.

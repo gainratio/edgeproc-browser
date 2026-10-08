@@ -19,7 +19,7 @@ How to use `@gainratio/browser` 0.1.1 in an app. For how it works inside, see
 ## Publish a bundle
 
 The package checks bundles; it does not make them. Use the Python CLI from
-[`edge-proc`](https://github.com/hseshadr/edge-proc) (install with the `bundles` extra):
+[`edge-proc`](https://github.com/gainratio/edge-proc) (install with the `bundles` extra):
 
 ```bash
 uvx --from 'edge-proc[bundles]' edgeproc keygen --out keys

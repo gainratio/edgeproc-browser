@@ -3,7 +3,7 @@
 # npm release of `@gainratio/browser` via OIDC Trusted Publishing. Pushing a `v*` tag is the
 # whole trigger. There is NO npm write token in this repository, and there must never be one:
 # the credential is a short-lived OIDC token GitHub mints for this job, which npm verifies
-# against a trusted publisher registered as {hseshadr, edgeproc-browser, publish.yml}.
+# against a trusted publisher registered as {gainratio, edgeproc-browser, publish.yml}.
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────
 # READ THIS BEFORE THE FIRST RELEASE — the first publish CANNOT use this rail.
@@ -16,7 +16,7 @@
 # the `bootstrap` dist-tag (ops/npm_gainratio_bootstrap.py does this for every @gainratio
 # package), and the trusted publisher is registered against that:
 #        npm trust github @gainratio/browser --file publish.yml \
-#          --repo hseshadr/edgeproc-browser --allow-publish
+#          --repo gainratio/edgeproc-browser --allow-publish
 # It prompts for a security-key tap via a URL. `npm access` does NOT cover trusted publishers.
 # Every real version, starting with 0.1.1, is then a `v*` tag push through here, with
 # provenance. (0.1.0, under the old @edgeproc scope, was published by hand and has none.)
@@ -24,10 +24,10 @@
 # Branch protection LAST, and only while the repo has 0 open PRs: protecting with PRs open
 # leaves each one BLOCKED with no way to self-approve.
 #
-# Two more npm truths this caller encodes (see ts-publish.yml in hseshadr/ci):
+# Two more npm truths this caller encodes (see ts-publish.yml in gainratio/ci):
 #   * Re-tagging v0.1.0 just 403s. The next release must carry a HIGHER version.
 #   * `package.json` `repository.url` MUST match this GitHub repo exactly or the OIDC publish
-#     fails with ENEEDAUTH. It does: git+https://github.com/hseshadr/edgeproc-browser.git
+#     fails with ENEEDAUTH. It does: git+https://github.com/gainratio/edgeproc-browser.git
 #
 # WHY THE PIN IS A SHA, NOT `@ci-v3`: a tag can be repointed at new code; a 40-char commit
 # SHA cannot. That matters most here, because this job holds `id-token: write` — a mutable
@@ -82,7 +82,7 @@ jobs:
     permissions:
       id-token: write # OIDC — this token IS the npm credential. Nothing else may hold it.
       contents: read
-    uses: hseshadr/ci/.github/workflows/ts-publish.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
+    uses: gainratio/ci/.github/workflows/ts-publish.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
     with:
       working-directory: "."
       node-version: "24"

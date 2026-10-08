@@ -17,12 +17,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # hseshadr/ci retired its reusable-workflow catalog (7c75ff1); ci-v3.3.0 is
-    # the last release that ships secret-scan.yml and ts-publish.yml. Dependabot
-    # otherwise bumps these pins to the default-branch tip, where both files are
-    # deleted, and CI fails before any job starts. Move off them deliberately.
-    # The same pins resolve under gainratio/ci once ci moves to the org at the
-    # same commit, so both owners stay frozen.
+    # gainratio/ci (formerly hseshadr/ci) retired its reusable-workflow catalog
+    # (7c75ff1); ci-v3.3.0 is the last release that ships ts-publish.yml (the
+    # secret scan is now an inline job in ci.yml). Dependabot otherwise bumps the
+    # pin to the default-branch tip, where the file is deleted, and CI fails
+    # before any job starts. Move off it deliberately. ci moved to the org at the same commit, so both
+    # owners stay frozen in case a stale hseshadr ref ever reappears.
     ignore:
       - dependency-name: "hseshadr/ci*"
       - dependency-name: "gainratio/ci*"
