@@ -23,7 +23,9 @@ jobs:
   #
   # gitleaks-action on its own scans only the commits the event introduced (a
   # push already on main scans zero). The last step adds an explicit pass over
-  # every commit. This repo ships no .gitleaks.toml; the default ruleset applies.
+  # every commit. Both scans target the checkout root, so both load the repo's
+  # .gitleaks.toml: the default ruleset plus a rule for the stateless
+  # ghs_<APPID>_<JWT> token format the defaults miss.
   gitleaks:
     name: Secret scan / gitleaks
     # gitleaks-action lists a PR's commits over the API, which needs

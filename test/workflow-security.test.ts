@@ -216,6 +216,42 @@ describe("secret scanning", () => {
 	});
 });
 
+// GitHub App installation tokens and Actions GITHUB_TOKEN switched to a
+// stateless ghs_<APPID>_<JWT> format (~520 chars) on 2026-10-02. gitleaks
+// 8.30.1's built-in github-app-token rule only knows the classic 36-char form,
+// so the repo-root .gitleaks.toml (auto-loaded by both scan steps, which target
+// the checkout root) extends the defaults with one rule for the new shape.
+// Upstream: https://github.com/gitleaks/gitleaks/issues/2192
+describe("gitleaks config", () => {
+	const config = (): string =>
+		readFileSync(
+			fileURLToPath(new URL("../.gitleaks.toml", import.meta.url)),
+			"utf8",
+		);
+	const statelessRule = (): RegExp => {
+		const rule = config().match(
+			/id = "github-app-token-stateless"\n(?:.*\n)*?regex = '''(.+)'''/,
+		);
+		return new RegExp(rule?.[1] ?? "(?!)");
+	};
+	// Assembled at runtime so the repository scan never sees a token literal.
+	const token = `ghs${"_1234567_eyJhbGciOiJSUzI1NiJ9."}${"a1B2-c3_D4.".repeat(48)}`;
+
+	it("keeps the default ruleset loaded", () => {
+		expect(config()).toMatch(/^\[extend\]\nuseDefault = true$/m);
+	});
+
+	it("catches a stateless ghs_<APPID>_<JWT> token", () => {
+		expect(statelessRule().test(`export GITHUB_TOKEN=${token}`)).toBe(true);
+	});
+
+	it("does not fire on prose that merely names the prefix", () => {
+		expect(statelessRule().test("tokens start with ghs_ then the app id")).toBe(
+			false,
+		);
+	});
+});
+
 describe("the pin rule itself", () => {
 	it.each([
 		["a moving major tag", "actions/checkout@v5"],
