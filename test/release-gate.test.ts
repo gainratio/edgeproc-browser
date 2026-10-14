@@ -226,7 +226,18 @@ describe("publish.yml wiring", () => {
 		// v* tag policy) and npm's trusted publisher bound to it are what a
 		// workflow edit cannot remove.
 		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
-		expect(publish).toMatch(/^ {6}environment: npm-release$/m);
+		expect(publish).toMatch(/^ {4}environment: npm-release$/m);
+	});
+
+	it("publishes inline, not through ci's retired ts-publish brick", () => {
+		// The brick nested an hseshadr/ci action ref, which stopped resolving when
+		// ci moved to gainratio. An inline job is the only call shape left.
+		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
+		expect(workflow).not.toContain("ts-publish.yml@");
+		expect(publish).toMatch(/^ {6}id-token: write/m);
+		expect(publish).toContain("npm publish");
+		// A green publish is not a release: the job must ask the registry.
+		expect(publish).toMatch(/npm view "\$\{name\}@\$\{version\}" version/);
 	});
 
 	it("makes the OIDC publish job depend on it", () => {
