@@ -24,15 +24,24 @@
 # Branch protection LAST, and only while the repo has 0 open PRs: protecting with PRs open
 # leaves each one BLOCKED with no way to self-approve.
 #
-# Two more npm truths this caller encodes (see ts-publish.yml in gainratio/ci):
+# Two more npm truths the publish job encodes:
 #   * Re-tagging v0.1.0 just 403s. The next release must carry a HIGHER version.
 #   * `package.json` `repository.url` MUST match this GitHub repo exactly or the OIDC publish
 #     fails with ENEEDAUTH. It does: git+https://github.com/gainratio/edgeproc-browser.git
 #
-# WHY THE PIN IS A SHA, NOT `@ci-v3`: a tag can be repointed at new code; a 40-char commit
-# SHA cannot. That matters most here, because this job holds `id-token: write` — a mutable
-# ref anywhere in the chain reaches npm. The trailing comment records which release the SHA
-# is, and `test/workflow-security.test.ts` fails the gate if any ref here is left unpinned.
+# INLINE, NOT CENTRAL. The publish used to call gainratio/ci's reusable
+# ts-publish.yml. That brick nested an `hseshadr/ci/...` action ref, and GitHub
+# does not redirect `uses:` for a moved repo, so the next tag would have failed
+# before publishing. gainratio/ci has also retired the catalog (7c75ff1).
+#
+# PRIVILEGE SPLIT. The OIDC token IS the npm credential, and any code running in
+# the job that can mint it can publish anything. Installing dependencies (every
+# postinstall allowed), the gate and the build all run third-party code, so they
+# run in `build`, which is read-only and hands over a packed tarball. `publish`
+# never checks out or installs dependencies: it runs only a pinned npm against
+# that tarball. test/release-gate.test.ts fails the gate if this split erodes.
+# Every `uses:` is pinned to a 40-char SHA; test/workflow-security.test.ts
+# enforces that.
 name: Publish (npm, OIDC)
 
 on:
@@ -77,25 +86,127 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-  publish:
+  # Read-only: everything that executes dependency code happens here.
+  build:
     needs: release-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # Mirrors ci.yml exactly. allow-all-builds lets the toolchain binaries (biome,
+      # esbuild) run their postinstall non-interactively; without it pnpm blocks and the
+      # install hangs rather than failing loudly. This is why the job holds no token.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
+
+      # Same npm the publish job uses, so `npm pack` and `npm publish` agree on format.
+      - name: Pin npm
+        run: npm install --global --ignore-scripts npm@12.2.0
+
+      # What prepublishOnly ran when the publish packed from source: preflight (clean
+      # tree, HEAD on origin, empty dist/) and then the full gate from the tagged ref.
+      - name: Preflight (clean tree, HEAD on origin, empty dist)
+        run: npm run preflight
+
+      - name: Gate
+        run: pnpm gate
+
+      - name: Pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg"
+          npm pack --pack-destination "$RUNNER_TEMP/pkg"
+          ls -l "$RUNNER_TEMP/pkg"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/pkg/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job holding the OIDC token. No checkout, no dependency install, no repo
+  # scripts: it publishes the exact tarball `build` packed.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # The protected environment the publish runs in (see release-gate above).
+    environment: npm-release
     permissions:
       id-token: write # OIDC — this token IS the npm credential. Nothing else may hold it.
       contents: read
-    uses: gainratio/ci/.github/workflows/ts-publish.yml@8166345c9355dde54c12fa95d0457c4ea97d3e64 # ci-v3.3.0
-    with:
-      working-directory: "."
-      node-version: "24"
-      # Mirrors ci.yml exactly. allow-all-builds lets the trusted toolchain binaries (biome,
-      # esbuild) run their postinstall non-interactively; without it pnpm blocks and the
-      # install hangs rather than failing loudly.
-      install-args: "--frozen-lockfile --config.dangerously-allow-all-builds=true"
-      # The gate is lint -> typecheck -> build -> vitest (with the dist-contract spec reading
-      # real build output), no browser dependency, so re-running it from the TAGGED ref is
-      # cheap and is the only thing that proves the artefact being published is the artefact
-      # that passed.
-      run-gate: true
-      # Requires a PUBLIC repo — see step 1 of the bootstrap above.
-      provenance: true
-      # The protected environment the publish runs in (see release-gate above).
-      environment: npm-release
+    steps:
+      - name: Setup Node (registry .npmrc for OIDC)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/pkg
+
+      # OIDC trusted publishing needs npm >= 11.5.1. Exact version, no install scripts.
+      - name: Pin npm
+        run: npm install --global --ignore-scripts npm@12.2.0
+
+      # name/version come from the tarball's own package.json: there is no checkout.
+      - name: Read the tarball
+        id: pkg
+        run: |
+          shopt -s nullglob
+          tarballs=("$RUNNER_TEMP"/pkg/*.tgz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one tarball, found ${#tarballs[@]}."
+            exit 1
+          fi
+          manifest="$(tar -xzOf "${tarballs[0]}" package/package.json)"
+          {
+            echo "tarball=${tarballs[0]}"
+            echo "name=$(jq -er .name <<<"$manifest")"
+            echo "version=$(jq -er .version <<<"$manifest")"
+          } >> "$GITHUB_OUTPUT"
+
+      # No token in the repo -> npm publishes via OIDC Trusted Publishing. --provenance
+      # requires a PUBLIC repo, which this is.
+      - name: Publish to npm (OIDC Trusted Publishing)
+        env:
+          tarball: ${{ steps.pkg.outputs.tarball }}
+        run: npm publish "$tarball" --access public --provenance
+
+      # A green `npm publish` is not the same fact as "the registry serves it". Its PyPI
+      # twin let six green publish runs stack up on a package that 404'd. Ask the registry.
+      # Bound: 600s of backoff, 3x the slowest propagation measured for this portfolio
+      # (~200s, first publish of a new npm name). A timeout is a FAILURE, never a pass.
+      - name: Verify the release is actually on npm
+        env:
+          name: ${{ steps.pkg.outputs.name }}
+          version: ${{ steps.pkg.outputs.version }}
+        run: |
+          delays=(5 10 15 30 60 60 60 60 60 60 60 60 60) # 13 sleeps, exactly 600s
+          attempts=$((${#delays[@]} + 1))
+          for ((i = 0; i < attempts; i++)); do
+            if npm view "${name}@${version}" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "Verified: ${name}@${version} is live on npm."
+              exit 0
+            fi
+            if ((i < ${#delays[@]})); then
+              echo "Attempt $((i + 1))/${attempts}: not served yet; retrying in ${delays[i]}s..."
+              sleep "${delays[i]}"
+            fi
+          done
+          echo "::error::PUBLISH VERIFICATION FAILED — npm publish reported success, but the registry does not serve ${name}@${version} after ~10 minutes. Either it is still propagating (run 'npm view ${name}@${version} version' yourself) or the release never happened (check the trusted publisher for gainratio/edgeproc-browser + publish.yml + npm-release). Do not re-run this job merely to make it green."
+          exit 1

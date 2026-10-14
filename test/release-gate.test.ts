@@ -212,6 +212,16 @@ describe("publish.yml wiring", () => {
 		new URL("../.github/workflows/publish.yml", import.meta.url),
 		"utf8",
 	);
+	const jobsFrom = (name: string): string => {
+		const start = workflow.indexOf(`\n  ${name}:\n`);
+		return start === -1 ? "" : workflow.slice(start);
+	};
+	const publishJob = (): string => jobsFrom("publish");
+	const buildJob = (): string => {
+		const build = jobsFrom("build");
+		const end = build.indexOf("\n  publish:\n");
+		return end === -1 ? build : build.slice(0, end);
+	};
 
 	it("runs the gate script in its own job", () => {
 		expect(workflow).toMatch(/^ {2}release-gate:$/m);
@@ -226,11 +236,70 @@ describe("publish.yml wiring", () => {
 		// v* tag policy) and npm's trusted publisher bound to it are what a
 		// workflow edit cannot remove.
 		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
-		expect(publish).toMatch(/^ {6}environment: npm-release$/m);
+		expect(publish).toMatch(/^ {4}environment: npm-release$/m);
 	});
 
-	it("makes the OIDC publish job depend on it", () => {
+	it("publishes inline, not through ci's retired ts-publish brick", () => {
+		// The brick nested an hseshadr/ci action ref, which stopped resolving when
+		// ci moved to gainratio. An inline job is the only call shape left.
 		const publish = workflow.slice(workflow.indexOf("\n  publish:"));
-		expect(publish).toMatch(/^ {4}needs: release-gate$/m);
+		expect(workflow).not.toContain("ts-publish.yml@");
+		expect(publish).toMatch(/^ {6}id-token: write/m);
+		expect(publish).toContain("npm publish");
+		// A green publish is not a release: the job must ask the registry.
+		expect(publish).toMatch(/npm view "\$\{name\}@\$\{version\}" version/);
+	});
+
+	it("makes the OIDC publish job depend on it, through the build job", () => {
+		expect(buildJob()).toMatch(/^ {4}needs: release-gate$/m);
+		expect(publishJob()).toMatch(/^ {4}needs: build$/m);
+	});
+
+	// PRIVILEGE SPLIT. `id-token: write` IS the npm credential. Any code that runs
+	// in the job holding it can mint that token and publish anything. Installing
+	// dependencies (with every postinstall allowed), running the gate and building
+	// all execute third-party code, so they live in a read-only `build` job that
+	// hands a packed tarball across. The publish job runs only npm itself.
+	it("grants id-token: write to the publish job alone", () => {
+		expect(workflow.match(/^ +id-token: write/gm)).toHaveLength(1);
+		expect(publishJob()).toMatch(/^ {6}id-token: write/m);
+	});
+
+	it("builds and packs in a read-only job that uploads the tarball", () => {
+		const build = buildJob();
+		expect(build).toMatch(/^ {6}contents: read$/m);
+		expect(build).not.toMatch(/write/);
+		expect(build).toContain("pnpm gate");
+		expect(build).toContain("npm pack");
+		expect(build).toMatch(/uses: actions\/upload-artifact@[0-9a-f]{40}/);
+	});
+
+	it("runs no checkout and no dependency code in the id-token job", () => {
+		const publish = publishJob();
+		expect(publish).not.toMatch(/actions\/checkout@|pnpm|npm ci|npm run|npx /);
+		expect(publish).toMatch(/uses: actions\/download-artifact@[0-9a-f]{40}/);
+		expect(publish).toMatch(
+			/npm publish "\$tarball" --access public --provenance/,
+		);
+	});
+
+	it("pins the publishing npm to an exact OIDC-capable version, never @latest", () => {
+		expect(workflow).not.toContain("npm@latest");
+		const installs = [...workflow.matchAll(/(?<![\w-])npm install[^\n]*/g)].map(
+			(m) => m[0],
+		);
+		expect(installs).not.toEqual([]);
+		for (const line of installs) {
+			const v =
+				/^npm install --global --ignore-scripts npm@(\d+)\.(\d+)\.(\d+)$/.exec(
+					line,
+				);
+			expect(v, line).not.toBeNull();
+			const [major = 0, minor = 0, patch = 0] = (v ?? []).slice(1).map(Number);
+			// OIDC trusted publishing needs npm >= 11.5.1.
+			expect(major * 1e6 + minor * 1e3 + patch, line).toBeGreaterThanOrEqual(
+				11_005_001,
+			);
+		}
 	});
 });

@@ -113,12 +113,13 @@ describe("GitHub Actions token scope", () => {
 //
 // These rules assert the WIRING. That the scan actually CATCHES a secret is
 // proven separately, by planting one and watching the check go red on a PR.
-/**
- * The central ci repository's owner. ci moved hseshadr -> gainratio, and GitHub
- * does NOT redirect `uses:` for a moved repository: an `hseshadr/ci/...` ref no
- * longer resolves and the caller job fails before it starts.
- */
-const CENTRAL_CI_OWNER = "gainratio";
+//
+// CONTRACT CHANGE (2026-10-14): the last ci brick here, publish.yml's call to
+// ci's `ts-publish.yml`, is gone too. That brick nested an `hseshadr/ci/...`
+// action ref, and GitHub does NOT redirect `uses:` for a moved repository, so
+// the next tag push would have failed before publishing. gainratio/ci now ships
+// Dagger modules only (nothing at its fleet pin 8420264 is workflow_call), so
+// the publish job is inline and this repo calls NO ci brick at all.
 const GITLEAKS_ACTION_COMMIT = "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e";
 // biome-ignore lint/suspicious/noTemplateCurlyInString: a literal GitHub Actions expression, not a template.
 const LICENSE_ENV = "GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}";
@@ -158,12 +159,8 @@ describe("secret scanning", () => {
 		expect(stepOf("  - run: y", "a/b@")).toBe("");
 	});
 
-	it("calls every ci brick from gainratio/ci, never the pre-move owner", () => {
-		const refs = ciRefs();
-		expect(refs).not.toEqual([]);
-		expect(
-			refs.filter((ref) => !ref.startsWith(`${CENTRAL_CI_OWNER}/ci/`)),
-		).toEqual([]);
+	it("calls no ci brick at all: the reusable catalog is retired", () => {
+		expect(ciRefs()).toEqual([]);
 	});
 
 	it("reports under the exact check name branch protection requires", () => {
