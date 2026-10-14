@@ -143,7 +143,7 @@ jobs:
   # npm bundled with Node 24 (11.x). npm 12 changed `npm pack --json` from an
   # array to an object keyed by name, the packed-tarball test read `[]`, and
   # the publish died on a tarball that was fine. So this job mirrors that
-  # environment (registry .npmrc, npm@latest) and runs `npm publish --dry-run`,
+  # environment (registry .npmrc, the pinned npm) and runs `npm publish --dry-run`,
   # which fires prepublishOnly = `preflight && gate` under the same npm, from
   # inside an npm lifecycle, exactly as the real publish does.
   publish-path:
@@ -167,8 +167,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.dangerously-allow-all-builds=true
 
-      - name: Use the publish job's npm (npm@latest, as publish.yml does)
-        run: npm install --global npm@latest && npm --version
+      - name: Use the publish job's npm (pinned, as publish.yml does)
+        run: npm install --global --ignore-scripts npm@12.2.0 && npm --version
 
       # npm's dry run still asks the registry whether the version exists, and
       # between releases package.json names one that does ("You cannot publish
