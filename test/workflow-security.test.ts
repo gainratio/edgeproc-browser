@@ -120,9 +120,12 @@ describe("GitHub Actions token scope", () => {
 // the next tag push would have failed before publishing. gainratio/ci now ships
 // Dagger modules only (nothing at its fleet pin 8420264 is workflow_call), so
 // the publish job is inline and this repo calls NO ci brick at all.
-const GITLEAKS_ACTION_COMMIT = "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e";
-// biome-ignore lint/suspicious/noTemplateCurlyInString: a literal GitHub Actions expression, not a template.
-const LICENSE_ENV = "GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}";
+//
+// CONTRACT CHANGE (2026-10-14, later): this block used to require
+// gitleaks-action pinned to one commit SHA plus the org's GITLEAKS_LICENSE
+// secret. Dependabot runs never receive secrets, so every Dependabot PR went
+// red on this check (#51). The scan now runs the free gitleaks CLI: a pinned
+// version, its tarball verified against a pinned sha256, no secret and no token.
 
 /** Every `uses:` ref, across all workflows, that names a ci repository. */
 const ciRefs = (): readonly string[] =>
@@ -130,6 +133,17 @@ const ciRefs = (): readonly string[] =>
 		.flatMap(refsOf)
 		.map((entry) => entry.split(": ")[1] ?? "")
 		.filter((ref) => /^[^/]+\/ci\//.test(ref));
+
+/** Each job under `jobs:`, keyed by its id, as raw YAML text. */
+function jobsOf(yaml: string): ReadonlyMap<string, string> {
+	const jobs = new Map<string, string>();
+	const section = yaml.split(/^jobs:\s*$/m)[1] ?? "";
+	const parts = section.split(/^ {2}([\w-]+):\s*$/m);
+	for (let i = 1; i < parts.length; i += 2) {
+		jobs.set(parts[i] ?? "", parts[i + 1] ?? "");
+	}
+	return jobs;
+}
 
 /** The lines of the step that starts at `- uses: <prefix>`, or "" if absent. */
 function stepOf(yaml: string, prefix: string): string {
@@ -149,14 +163,14 @@ function stepOf(yaml: string, prefix: string): string {
 describe("secret scanning", () => {
 	const ciYaml = (): string =>
 		readWorkflows().find(({ file }) => file === "ci.yml")?.yaml ?? "";
-	const gitleaksStep = (): string =>
-		stepOf(ciYaml(), "gitleaks/gitleaks-action@");
+	const gitleaksJob = (): string => jobsOf(ciYaml()).get("gitleaks") ?? "";
 
-	it("finds the step it checks (guards against a vacuous pass)", () => {
+	it("finds the job and step it checks (guards against a vacuous pass)", () => {
 		expect(
 			stepOf("  - uses: a/b@c\n    env:\n      X: 1\n  - run: y", "a/b@"),
 		).toBe("  - uses: a/b@c\n    env:\n      X: 1");
 		expect(stepOf("  - run: y", "a/b@")).toBe("");
+		expect(gitleaksJob()).toContain("gitleaks git");
 	});
 
 	it("calls no ci brick at all: the reusable catalog is retired", () => {
@@ -173,23 +187,26 @@ describe("secret scanning", () => {
 		expect(ciYaml()).not.toContain("secret-scan.yml@");
 	});
 
-	it("runs gitleaks-action pinned to the ci-v3.3.0 brick's commit SHA", () => {
-		expect(gitleaksStep()).toContain(
-			`- uses: gitleaks/gitleaks-action@${GITLEAKS_ACTION_COMMIT} # v3.0.0`,
+	it("needs no secret, so Dependabot PRs can run it", () => {
+		// A pull_request-triggered workflow that reads a secret is red on every
+		// Dependabot PR, because Dependabot runs receive no secrets.
+		expect(ciYaml()).not.toMatch(/\bsecrets\./);
+		expect(gitleaksJob()).not.toContain("gitleaks/gitleaks-action");
+	});
+
+	it("verifies the pinned gitleaks tarball's sha256 before running it", () => {
+		const job = gitleaksJob();
+		expect(job).toMatch(/^\s+GITLEAKS_VERSION: "\d+\.\d+\.\d+"$/m);
+		expect(job).toMatch(/^\s+GITLEAKS_SHA256: "[0-9a-f]{64}"$/m);
+		expect(job).toContain("sha256sum --check --strict");
+		expect(job.indexOf("sha256sum --check")).toBeLessThan(
+			job.indexOf("gitleaks git"),
 		);
 	});
 
-	it("hands the action the org license from secrets, never a literal", () => {
-		// gainratio is an organization: without this the action exits before
-		// scanning with "missing gitleaks license".
-		expect(gitleaksStep()).toContain(LICENSE_ENV);
-	});
-
 	it("keeps findings in the redacted job log only", () => {
-		const step = gitleaksStep();
-		for (const flag of ["COMMENTS", "SUMMARY", "UPLOAD_ARTIFACT"]) {
-			expect(step).toContain(`GITLEAKS_ENABLE_${flag}: "false"`);
-		}
+		expect(gitleaksJob()).toContain("gitleaks git --redact");
+		expect(gitleaksJob()).not.toContain("upload-artifact");
 	});
 
 	it("checks out every commit and sweeps full history, not just the event range", () => {
@@ -197,14 +214,14 @@ describe("secret scanning", () => {
 		// already on main scans zero commits and passes.
 		const ci = ciYaml();
 		expect(stepOf(ci, "actions/checkout@")).toMatch(/^\s+fetch-depth: 0$/m);
-		expect(ci).toContain(
+		expect(gitleaksJob()).toContain(
 			'gitleaks git --redact --no-banner --log-opts="--all" .',
 		);
 	});
 
-	it("grants the job only contents and pull-requests read", () => {
-		expect(ciYaml()).toMatch(
-			/name: Secret scan \/ gitleaks\n(?:\s*#.*\n)*\s+permissions:\n\s+contents: read\n\s+pull-requests: read\n/,
+	it("grants the job only contents read", () => {
+		expect(gitleaksJob()).toMatch(
+			/^ {4}permissions:\n {6}contents: read\n {4}\S/m,
 		);
 	});
 
@@ -216,7 +233,7 @@ describe("secret scanning", () => {
 // GitHub App installation tokens and Actions GITHUB_TOKEN switched to a
 // stateless ghs_<APPID>_<JWT> format (~520 chars) on 2026-10-02. gitleaks
 // 8.30.1's built-in github-app-token rule only knows the classic 36-char form,
-// so the repo-root .gitleaks.toml (auto-loaded by both scan steps, which target
+// so the repo-root .gitleaks.toml (auto-loaded by the scan step, which targets
 // the checkout root) extends the defaults with one rule for the new shape.
 // Upstream: https://github.com/gitleaks/gitleaks/issues/2192
 describe("gitleaks config", () => {
