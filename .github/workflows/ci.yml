@@ -15,45 +15,41 @@ jobs:
   # credential lands in this public history it is burned, and a revert only
   # hides it from HEAD.
   #
-  # This job is a faithful inline copy of the job in gainratio/ci's reusable
-  # secret-scan.yml at ci-v3.3.0 (8166345), the last release that shipped it:
-  # ci retired its reusable catalog (7c75ff1). One addition: gainratio is an
-  # ORGANIZATION, and gitleaks-action refuses to scan an org repo without a
-  # license, so the action step reads the org secret GITLEAKS_LICENSE.
+  # This runs the free gitleaks CLI, not gitleaks-action. gainratio is an
+  # ORGANIZATION, and gitleaks-action refuses to scan an org repo without the
+  # GITLEAKS_LICENSE secret. Dependabot runs never get that secret, so every
+  # Dependabot PR went red here (#51). The CLI needs no secret and no token.
   #
-  # gitleaks-action on its own scans only the commits the event introduced (a
-  # push already on main scans zero). The last step adds an explicit pass over
-  # every commit. Both scans target the checkout root, so both load the repo's
-  # .gitleaks.toml: the default ruleset plus a rule for the stateless
-  # ghs_<APPID>_<JWT> token format the defaults miss.
+  # The tarball is pinned by version AND sha256 (from the release's
+  # gitleaks_<v>_checksums.txt), so a repointed release asset fails the job.
+  # The scan targets the checkout root, so it loads the repo's .gitleaks.toml:
+  # the default ruleset plus a rule for the stateless ghs_<APPID>_<JWT> token
+  # format the defaults miss. Findings stay in this job's redacted log.
   gitleaks:
     name: Secret scan / gitleaks
-    # gitleaks-action lists a PR's commits over the API, which needs
-    # pull-requests: read. The workflow-level `contents: read` does not grant it.
     permissions:
       contents: read
-      pull-requests: read
     runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Makes BASE^ resolvable for the push/PR range and lets the full-history
-          # pass reach every commit. It does NOT by itself widen the action's range.
+          # Every commit, so the scan below reaches all of history.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-          # Findings stay in this job's redacted logs. Never copy a detected
-          # credential into a PR comment, summary, or downloadable SARIF artifact.
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_SUMMARY: "false"
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
-          GITLEAKS_VERSION: "8.30.1"
-      - name: Enforce full-history scan coverage
+      - name: Install gitleaks (pinned, checksum verified)
         run: |
-          commits="$(git rev-list --count HEAD 2>/dev/null || echo '?')"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+      - name: Scan full history
+        run: |
+          commits="$(git rev-list --count --all)"
           gitleaks git --redact --no-banner --log-opts="--all" .
           echo "gitleaks swept FULL HISTORY: all ${commits} commits."
 
