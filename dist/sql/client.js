@@ -1,6 +1,6 @@
 // Main-thread proxy for the library's SQL Worker. Every call is one message;
 // the Worker runs them one at a time on a single SQLite connection.
-import { SqlImportRejectedError, SqlStorageUnavailableError, SqlTransactionEndedError, } from "./types.js";
+import { DEFAULT_SWAP_TIMEOUT_MS, SqlImportRejectedError, SqlStorageUnavailableError, SqlSwapTimeoutError, SqlTransactionEndedError, } from "./types.js";
 /**
  * Open a named SQLite database in the library's Worker: OPFS (opfs-sahpool)
  * with the device memory profile applied, FTS5, JSON1 and sqlite-vector on the
@@ -69,9 +69,12 @@ class WorkerSqlDatabase {
     #closed = false;
     /** Settles when every call queued so far has been posted or finished. */
     #tail = Promise.resolve();
-    /** Transactions queued or running. */
+    /** Transactions or swaps queued or running. */
     #exclusiveCount = 0;
-    /** Cancels for calls waiting behind a transaction (close() fires them). */
+    /** Active gated swaps queued or running. */
+    #swapCount = 0;
+    #swapTimeoutMs;
+    /** Cancels for calls waiting behind a transaction or swap (close() fires them). */
     #waiting = new Set();
     #activeTransaction;
     constructor(name, storage, connection) {
@@ -90,9 +93,15 @@ class WorkerSqlDatabase {
             return this.#call({ operation: "transaction", statements: input });
         }
         if (this.#closed) {
-            return Promise.reject(new Error("SQL database is closed"));
+            return Promise.reject(closedError());
         }
         return this.#exclusive(() => this.#interactive(input));
+    }
+    swap(work, options) {
+        if (this.#closed) {
+            return Promise.reject(closedError());
+        }
+        return this.#exclusive(() => this.#interactive(work), options?.swapTimeoutMs ?? DEFAULT_SWAP_TIMEOUT_MS);
     }
     executeMany(sql, rows) {
         return this.#call({ operation: "execute-many", sql, rows });
@@ -109,11 +118,17 @@ class WorkerSqlDatabase {
         return this.#call({ operation: "export" });
     }
     importDatabase(bytes, options) {
-        return this.#call({
+        if (this.#closed) {
+            return Promise.reject(closedError());
+        }
+        const { swapTimeoutMs = DEFAULT_SWAP_TIMEOUT_MS, ...importOptions } = options ?? {};
+        const hasImportOptions = Object.keys(importOptions).length > 0;
+        const snapshot = structuredClone({
             operation: "import",
             bytes,
-            ...(options === undefined ? {} : { options }),
+            ...(hasImportOptions ? { options: importOptions } : {}),
         });
+        return this.#exclusive(() => this.#connection.request(snapshot), swapTimeoutMs);
     }
     migrateLegacySahPool(options) {
         return this.#call({ operation: "migrate-legacy", options });
@@ -152,30 +167,61 @@ class WorkerSqlDatabase {
     #call(request) {
         if (this.#closed)
             return Promise.reject(closedError());
-        // No transaction queued or open: post now, so the arguments are copied
-        // at the call (as postMessage does) and plain calls pipeline.
+        // No transaction or swap queued or open: post now, so the arguments are
+        // copied at the call (as postMessage does) and plain calls pipeline.
         if (this.#exclusiveCount === 0) {
             return this.#connection.request(request);
         }
         // Otherwise wait for it to end, holding a copy taken now; close()
-        // fails the wait instead of leaving it queued behind user code.
+        // fails the wait instead of leaving it queued behind user code, and
+        // an active swap gates the wait to `swapTimeoutMs`.
         const snapshot = structuredClone(request);
+        const timeoutMs = this.#swapTimeoutMs;
         return new Promise((resolve, reject) => {
-            this.#waiting.add(reject);
+            let timer;
+            const cancel = (error) => {
+                if (timer !== undefined)
+                    clearTimeout(timer);
+                reject(error);
+            };
+            if (timeoutMs !== undefined) {
+                timer = setTimeout(() => {
+                    if (!this.#waiting.delete(cancel))
+                        return;
+                    reject(new SqlSwapTimeoutError(timeoutMs));
+                }, timeoutMs);
+            }
+            this.#waiting.add(cancel);
             void this.#tail.then(() => {
-                if (!this.#waiting.delete(reject))
+                if (!this.#waiting.delete(cancel))
                     return;
+                if (timer !== undefined)
+                    clearTimeout(timer);
                 this.#connection.request(snapshot).then(resolve, reject);
             });
         });
     }
     /** Run `action` alone: later calls wait until it settles. */
-    #exclusive(action) {
+    #exclusive(action, swapTimeoutMs) {
         this.#exclusiveCount += 1;
-        const run = this.#tail.then(action);
+        if (swapTimeoutMs !== undefined) {
+            this.#swapCount += 1;
+            this.#swapTimeoutMs = swapTimeoutMs;
+        }
+        const run = this.#tail.then(() => {
+            if (this.#closed)
+                throw closedError();
+            return action();
+        });
         this.#tail = run.then(() => undefined, () => undefined);
         void this.#tail.then(() => {
             this.#exclusiveCount -= 1;
+            if (swapTimeoutMs !== undefined) {
+                this.#swapCount -= 1;
+                if (this.#swapCount === 0) {
+                    this.#swapTimeoutMs = undefined;
+                }
+            }
         });
         return run;
     }

@@ -7,6 +7,21 @@ export class SqlStorageUnavailableError extends Error {
         this.reason = reason;
     }
 }
+/** Default gate timeout (ms) while an atomic database swap is in flight. */
+export const DEFAULT_SWAP_TIMEOUT_MS = 150;
+/**
+ * A query or statement waited longer than `swapTimeoutMs` behind an active
+ * database swap ({@link SqlDatabase.importDatabase} or {@link SqlDatabase.swap}).
+ */
+export class SqlSwapTimeoutError extends Error {
+    code = "sql.swap_timeout";
+    timeoutMs;
+    constructor(timeoutMs = DEFAULT_SWAP_TIMEOUT_MS, message = `SQL database swap exceeded ${timeoutMs}ms gate timeout`) {
+        super(message);
+        this.name = "SqlSwapTimeoutError";
+        this.timeoutMs = timeoutMs;
+    }
+}
 /** The incoming file was refused during validation; your database is unchanged. */
 export class SqlImportRejectedError extends Error {
     reason;

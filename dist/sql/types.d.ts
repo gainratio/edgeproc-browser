@@ -90,7 +90,17 @@ export interface SqlExpectedSchema {
      */
     readonly checks?: ReadonlyArray<string>;
 }
-export interface SqlImportOptions {
+/** Default gate timeout (ms) while an atomic database swap is in flight. */
+export declare const DEFAULT_SWAP_TIMEOUT_MS = 150;
+export interface SqlSwapOptions {
+    /**
+     * Maximum time in milliseconds a concurrent call may wait behind an active
+     * database swap ({@link SqlDatabase.importDatabase} or {@link SqlDatabase.swap})
+     * before rejecting with {@link SqlSwapTimeoutError}. Default 150 ms.
+     */
+    readonly swapTimeoutMs?: number;
+}
+export interface SqlImportOptions extends SqlSwapOptions {
     readonly expectedSchema?: SqlExpectedSchema;
     /** Refuse larger files before reading them. Default 256 MiB. */
     readonly maxBytes?: number;
@@ -101,6 +111,15 @@ export interface SqlImportOptions {
     readonly allowTriggersAndViews?: boolean;
     /** Virtual-table modules the file may use. Default `["fts5"]`. */
     readonly virtualTableModules?: ReadonlyArray<string>;
+}
+/**
+ * A query or statement waited longer than `swapTimeoutMs` behind an active
+ * database swap ({@link SqlDatabase.importDatabase} or {@link SqlDatabase.swap}).
+ */
+export declare class SqlSwapTimeoutError extends Error {
+    readonly code: "sql.swap_timeout";
+    readonly timeoutMs: number;
+    constructor(timeoutMs?: number, message?: string);
 }
 export interface SqlImportResult {
     readonly byteLength: number;

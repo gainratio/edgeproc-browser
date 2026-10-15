@@ -1,5 +1,5 @@
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
-import { type LegacySahPoolMigration, type MigrateLegacySahPoolOptions, type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlTransactionResult } from "./types.js";
+import { type LegacySahPoolMigration, type MigrateLegacySahPoolOptions, type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlSwapOptions, type SqlTransactionResult } from "./types.js";
 export interface SqlWorkerLike {
     postMessage(message: SqlWorkerRequest): void;
     terminate(): void;
@@ -40,6 +40,14 @@ export interface SqlDatabase {
      * there waits for the transaction it is part of, and never resolves.
      */
     transaction<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+    /**
+     * Gated atomic hot-swap transaction: runs `work` inside `BEGIN IMMEDIATE … COMMIT`
+     * while queuing concurrent calls behind a bounded swap gate (`swapTimeoutMs`,
+     * default 150 ms). Calls that wait longer than `swapTimeoutMs` reject with
+     * {@link SqlSwapTimeoutError}; calls that settle within the gate run against the
+     * newly committed state.
+     */
+    swap<T>(work: (tx: SqlTransaction) => Promise<T>, options?: SqlSwapOptions): Promise<T>;
     /** Bulk load: prepare once, step per row, one transaction. */
     executeMany(sql: string, rows: ReadonlyArray<SqlBind>): Promise<SqlExecResult>;
     prepare(sql: string): Promise<SqlPreparedStatement>;
@@ -47,7 +55,8 @@ export interface SqlDatabase {
     exportDatabase(): Promise<Uint8Array>;
     /**
      * Validate `bytes` (header, integrity_check, your expectations), then
-     * replace this database with it in one transaction. On any failure the
+     * replace this database with it in one transaction while gating concurrent
+     * calls up to `swapTimeoutMs` (default 150 ms). On any failure the
      * database is unchanged.
      */
     importDatabase(bytes: Uint8Array, options?: SqlImportOptions): Promise<SqlImportResult>;

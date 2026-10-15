@@ -387,10 +387,7 @@ class WorkerSqlDatabase implements SqlDatabase {
 	}
 
 	/** Run `action` alone: later calls wait until it settles. */
-	#exclusive<T>(
-		action: () => Promise<T>,
-		swapTimeoutMs?: number,
-	): Promise<T> {
+	#exclusive<T>(action: () => Promise<T>, swapTimeoutMs?: number): Promise<T> {
 		this.#exclusiveCount += 1;
 		if (swapTimeoutMs !== undefined) {
 			this.#swapCount += 1;

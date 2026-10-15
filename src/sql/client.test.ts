@@ -638,13 +638,29 @@ describe("openSqlDatabase through the Worker protocol", () => {
 	});
 
 	it("queues concurrent queries behind a fast swap() and runs them against the new state", async () => {
-		const worker = realWorker();
+		let currentLabel = "v1";
+		const worker = scriptedWorker(async (request) => {
+			if (request.operation === "tx-exec") {
+				currentLabel = "v2";
+				return {
+					id: request.id,
+					ok: true,
+					value: { changes: 1, lastInsertRowid: 1 },
+				};
+			}
+			if (request.operation === "query") {
+				return {
+					id: request.id,
+					ok: true,
+					value: [{ label: currentLabel }],
+				};
+			}
+			return { id: request.id, ok: true, value: undefined };
+		});
 		const db = await openSqlDatabase(
 			{ name: "swap-fast", persistence: "memory" },
 			{ workerFactory: () => worker },
 		);
-		await db.exec("CREATE TABLE items(id INTEGER PRIMARY KEY, label TEXT)");
-		await db.exec("INSERT INTO items VALUES (1, 'v1')");
 
 		let releaseSwap: () => void = () => undefined;
 		const swapBarrier = new Promise<void>((resolve) => {
@@ -661,9 +677,17 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		const concurrentQuery = db.query<{ label: string }>(
 			"SELECT label FROM items WHERE id = 1",
 		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		releaseSwap();
 		await swapping;
 		expect(await concurrentQuery).toEqual([{ label: "v2" }]);
+		expect(worker.requests.map((r) => r.operation)).toEqual([
+			"open",
+			"begin",
+			"tx-exec",
+			"commit",
+			"query",
+		]);
 		await db.close();
 	});
 
@@ -698,7 +722,9 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		expect(worker.requests.map((r) => r.operation)).toEqual(["open", "import"]);
 		expect(await db.query("SELECT 1 AS ok")).toEqual([{ ok: 1 }]);
 		await db.close();
-		await expect(db.swap(async () => 1)).rejects.toThrow("SQL database is closed");
+		await expect(db.swap(async () => 1)).rejects.toThrow(
+			"SQL database is closed",
+		);
 		await expect(db.importDatabase(new Uint8Array([1]))).rejects.toThrow(
 			"SQL database is closed",
 		);
