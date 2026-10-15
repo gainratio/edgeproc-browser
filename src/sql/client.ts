@@ -3,6 +3,7 @@
 
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
 import {
+	DEFAULT_SWAP_TIMEOUT_MS,
 	type LegacySahPoolMigration,
 	type MigrateLegacySahPoolOptions,
 	type SqlBind,
@@ -16,6 +17,8 @@ import {
 	type SqlStatement,
 	type SqlStorage,
 	SqlStorageUnavailableError,
+	type SqlSwapOptions,
+	SqlSwapTimeoutError,
 	SqlTransactionEndedError,
 	type SqlTransactionResult,
 } from "./types.js";
@@ -72,6 +75,17 @@ export interface SqlDatabase {
 	 * there waits for the transaction it is part of, and never resolves.
 	 */
 	transaction<T>(work: (tx: SqlTransaction) => Promise<T>): Promise<T>;
+	/**
+	 * Gated atomic hot-swap transaction: runs `work` inside `BEGIN IMMEDIATE … COMMIT`
+	 * while queuing concurrent calls behind a bounded swap gate (`swapTimeoutMs`,
+	 * default 150 ms). Calls that wait longer than `swapTimeoutMs` reject with
+	 * {@link SqlSwapTimeoutError}; calls that settle within the gate run against the
+	 * newly committed state.
+	 */
+	swap<T>(
+		work: (tx: SqlTransaction) => Promise<T>,
+		options?: SqlSwapOptions,
+	): Promise<T>;
 	/** Bulk load: prepare once, step per row, one transaction. */
 	executeMany(
 		sql: string,
@@ -82,7 +96,8 @@ export interface SqlDatabase {
 	exportDatabase(): Promise<Uint8Array>;
 	/**
 	 * Validate `bytes` (header, integrity_check, your expectations), then
-	 * replace this database with it in one transaction. On any failure the
+	 * replace this database with it in one transaction while gating concurrent
+	 * calls up to `swapTimeoutMs` (default 150 ms). On any failure the
 	 * database is unchanged.
 	 */
 	importDatabase(
@@ -198,9 +213,12 @@ class WorkerSqlDatabase implements SqlDatabase {
 	#closed = false;
 	/** Settles when every call queued so far has been posted or finished. */
 	#tail: Promise<void> = Promise.resolve();
-	/** Transactions queued or running. */
+	/** Transactions or swaps queued or running. */
 	#exclusiveCount = 0;
-	/** Cancels for calls waiting behind a transaction (close() fires them). */
+	/** Active gated swaps queued or running. */
+	#swapCount = 0;
+	#swapTimeoutMs: number | undefined;
+	/** Cancels for calls waiting behind a transaction or swap (close() fires them). */
 	readonly #waiting = new Set<(error: Error) => void>();
 	#activeTransaction: ScopedTransaction | undefined;
 
@@ -236,9 +254,22 @@ class WorkerSqlDatabase implements SqlDatabase {
 			return this.#call({ operation: "transaction", statements: input });
 		}
 		if (this.#closed) {
-			return Promise.reject(new Error("SQL database is closed"));
+			return Promise.reject(closedError());
 		}
 		return this.#exclusive(() => this.#interactive(input));
+	}
+
+	public swap<T>(
+		work: (tx: SqlTransaction) => Promise<T>,
+		options?: SqlSwapOptions,
+	): Promise<T> {
+		if (this.#closed) {
+			return Promise.reject(closedError());
+		}
+		return this.#exclusive(
+			() => this.#interactive(work),
+			options?.swapTimeoutMs ?? DEFAULT_SWAP_TIMEOUT_MS,
+		);
 	}
 
 	public executeMany(
@@ -267,11 +298,21 @@ class WorkerSqlDatabase implements SqlDatabase {
 		bytes: Uint8Array,
 		options?: SqlImportOptions,
 	): Promise<SqlImportResult> {
-		return this.#call({
-			operation: "import",
+		if (this.#closed) {
+			return Promise.reject(closedError());
+		}
+		const { swapTimeoutMs = DEFAULT_SWAP_TIMEOUT_MS, ...importOptions } =
+			options ?? {};
+		const hasImportOptions = Object.keys(importOptions).length > 0;
+		const snapshot = structuredClone({
+			operation: "import" as const,
 			bytes,
-			...(options === undefined ? {} : { options }),
+			...(hasImportOptions ? { options: importOptions } : {}),
 		});
+		return this.#exclusive(
+			() => this.#connection.request(snapshot) as Promise<SqlImportResult>,
+			swapTimeoutMs,
+		);
 	}
 
 	public migrateLegacySahPool(
@@ -311,18 +352,32 @@ class WorkerSqlDatabase implements SqlDatabase {
 
 	#call<T>(request: RequestWithoutId): Promise<T> {
 		if (this.#closed) return Promise.reject(closedError());
-		// No transaction queued or open: post now, so the arguments are copied
-		// at the call (as postMessage does) and plain calls pipeline.
+		// No transaction or swap queued or open: post now, so the arguments are
+		// copied at the call (as postMessage does) and plain calls pipeline.
 		if (this.#exclusiveCount === 0) {
 			return this.#connection.request(request) as Promise<T>;
 		}
 		// Otherwise wait for it to end, holding a copy taken now; close()
-		// fails the wait instead of leaving it queued behind user code.
+		// fails the wait instead of leaving it queued behind user code, and
+		// an active swap gates the wait to `swapTimeoutMs`.
 		const snapshot = structuredClone(request);
+		const timeoutMs = this.#swapTimeoutMs;
 		return new Promise<T>((resolve, reject) => {
-			this.#waiting.add(reject);
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const cancel = (error: Error) => {
+				if (timer !== undefined) clearTimeout(timer);
+				reject(error);
+			};
+			if (timeoutMs !== undefined) {
+				timer = setTimeout(() => {
+					if (!this.#waiting.delete(cancel)) return;
+					reject(new SqlSwapTimeoutError(timeoutMs));
+				}, timeoutMs);
+			}
+			this.#waiting.add(cancel);
 			void this.#tail.then(() => {
-				if (!this.#waiting.delete(reject)) return;
+				if (!this.#waiting.delete(cancel)) return;
+				if (timer !== undefined) clearTimeout(timer);
 				(this.#connection.request(snapshot) as Promise<T>).then(
 					resolve,
 					reject,
@@ -332,15 +387,31 @@ class WorkerSqlDatabase implements SqlDatabase {
 	}
 
 	/** Run `action` alone: later calls wait until it settles. */
-	#exclusive<T>(action: () => Promise<T>): Promise<T> {
+	#exclusive<T>(
+		action: () => Promise<T>,
+		swapTimeoutMs?: number,
+	): Promise<T> {
 		this.#exclusiveCount += 1;
-		const run = this.#tail.then(action);
+		if (swapTimeoutMs !== undefined) {
+			this.#swapCount += 1;
+			this.#swapTimeoutMs = swapTimeoutMs;
+		}
+		const run = this.#tail.then(() => {
+			if (this.#closed) throw closedError();
+			return action();
+		});
 		this.#tail = run.then(
 			() => undefined,
 			() => undefined,
 		);
 		void this.#tail.then(() => {
 			this.#exclusiveCount -= 1;
+			if (swapTimeoutMs !== undefined) {
+				this.#swapCount -= 1;
+				if (this.#swapCount === 0) {
+					this.#swapTimeoutMs = undefined;
+				}
+			}
 		});
 		return run;
 	}

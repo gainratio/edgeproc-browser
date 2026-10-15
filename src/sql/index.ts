@@ -32,6 +32,7 @@ export {
 } from "./opfsPool.js";
 export type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
 export {
+	DEFAULT_SWAP_TIMEOUT_MS,
 	type LegacySahPoolMigration,
 	type MigrateLegacySahPoolOptions,
 	type SqlBind,
@@ -49,6 +50,8 @@ export {
 	type SqlStatement,
 	type SqlStorage,
 	SqlStorageUnavailableError,
+	type SqlSwapOptions,
+	SqlSwapTimeoutError,
 	SqlTransactionEndedError,
 	type SqlTransactionResult,
 	type SqlValue,
