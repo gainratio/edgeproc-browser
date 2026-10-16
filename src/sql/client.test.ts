@@ -16,7 +16,11 @@ import {
 import { SqlEngine } from "./engine";
 import { createSqlWorkerHandler } from "./handler";
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol";
-import { SqlImportRejectedError, SqlStorageUnavailableError } from "./types";
+import {
+	SqlImportRejectedError,
+	SqlStorageUnavailableError,
+	SqlSwapTimeoutError,
+} from "./types";
 
 let sqlite: NodeSqlite;
 beforeAll(async () => {
@@ -631,6 +635,99 @@ describe("openSqlDatabase through the Worker protocol", () => {
 			ok: false,
 			error: { message: "SQL worker has no open database" },
 		});
+	});
+
+	it("queues concurrent queries behind a fast swap() and runs them against the new state", async () => {
+		let currentLabel = "v1";
+		const worker = scriptedWorker(async (request) => {
+			if (request.operation === "tx-exec") {
+				currentLabel = "v2";
+				return {
+					id: request.id,
+					ok: true,
+					value: { changes: 1, lastInsertRowid: 1 },
+				};
+			}
+			if (request.operation === "query") {
+				return {
+					id: request.id,
+					ok: true,
+					value: [{ label: currentLabel }],
+				};
+			}
+			return { id: request.id, ok: true, value: undefined };
+		});
+		const db = await openSqlDatabase(
+			{ name: "swap-fast", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+
+		let releaseSwap: () => void = () => undefined;
+		const swapBarrier = new Promise<void>((resolve) => {
+			releaseSwap = resolve;
+		});
+
+		const swapping = db.swap(
+			async (tx) => {
+				await tx.exec("UPDATE items SET label = 'v2' WHERE id = 1");
+				await swapBarrier;
+			},
+			{ swapTimeoutMs: 500 },
+		);
+		const concurrentQuery = db.query<{ label: string }>(
+			"SELECT label FROM items WHERE id = 1",
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		releaseSwap();
+		await swapping;
+		expect(await concurrentQuery).toEqual([{ label: "v2" }]);
+		expect(worker.requests.map((r) => r.operation)).toEqual([
+			"open",
+			"begin",
+			"tx-exec",
+			"commit",
+			"query",
+		]);
+		await db.close();
+	});
+
+	it("rejects concurrent queries with SqlSwapTimeoutError when a swap exceeds swapTimeoutMs", async () => {
+		const worker = scriptedWorker(async (request) => {
+			if (request.operation === "import") {
+				await new Promise((resolve) => setTimeout(resolve, 60));
+				return {
+					id: request.id,
+					ok: true,
+					value: { byteLength: 16, applicationId: 0, userVersion: 1 },
+				};
+			}
+			return { id: request.id, ok: true, value: [{ ok: 1 }] };
+		});
+		const db = await openSqlDatabase(
+			{ name: "swap-timeout", persistence: "memory" },
+			{ workerFactory: () => worker },
+		);
+		const importing = db.importDatabase(new Uint8Array([1, 2, 3]), {
+			swapTimeoutMs: 10,
+		});
+		const timedOutQuery = db.query("SELECT 1 AS ok");
+
+		await expect(timedOutQuery).rejects.toBeInstanceOf(SqlSwapTimeoutError);
+		await expect(timedOutQuery).rejects.toMatchObject({
+			code: "sql.swap_timeout",
+			timeoutMs: 10,
+		});
+		await importing;
+		// Timed-out query was never posted to the Worker; subsequent queries succeed.
+		expect(worker.requests.map((r) => r.operation)).toEqual(["open", "import"]);
+		expect(await db.query("SELECT 1 AS ok")).toEqual([{ ok: 1 }]);
+		await db.close();
+		await expect(db.swap(async () => 1)).rejects.toThrow(
+			"SQL database is closed",
+		);
+		await expect(db.importDatabase(new Uint8Array([1]))).rejects.toThrow(
+			"SQL database is closed",
+		);
 	});
 });
 
