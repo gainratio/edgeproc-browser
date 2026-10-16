@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-16
+
+Additive: `@gainratio/browser/sql` gains a bounded hot-swap gate (`SqlDatabase.swap`,
+`SqlSwapOptions`, `SqlSwapTimeoutError`, `DEFAULT_SWAP_TIMEOUT_MS = 150`).
+
+### Added
+
+- `SqlDatabase.swap(work, options)` and `SqlImportOptions.swapTimeoutMs`: queue concurrent
+  queries and statements behind an active database swap up to `swapTimeoutMs` (default
+  150 ms). Calls that settle within the gate run against the newly committed database; calls
+  that wait longer reject with `SqlSwapTimeoutError` (`code: "sql.swap_timeout"`).
+
 ## [0.4.1] - 2026-10-06
 
 A correct passphrase is never reported as wrong. Additive: new `reason` values and one new
