@@ -166,7 +166,12 @@ or an in-memory one where OPFS is refused (that copy is re-downloaded next sessi
 failure is a typed error, and the last good version stays.
 
 The Worker also reports every network request it made back to the page, so you can count
-them. More in [Architecture](docs/ARCHITECTURE.md).
+them. When your bundle contains a `.sqlite` database, such as the product catalog in
+[edge-reco](https://github.com/gainratio/edge-reco) or the sanctions list in
+[aml-filter](https://github.com/gainratio/aml-filter), the Worker opens that verified SQLite
+file in OPFS with full-text search (FTS5), JSON1, and vector search, and future updates
+download only the 64 KB pieces that changed. More in [Architecture](docs/ARCHITECTURE.md)
+and [SQL in the browser](docs/sql.md).
 
 ## What it does not do
 
@@ -206,7 +211,7 @@ them. More in [Architecture](docs/ARCHITECTURE.md).
 npm install @gainratio/browser
 ```
 
-This README documents 0.1.1, which is the same code as `main` at
+This README documents 0.4.2, which is the same code as `main` at
 the time of writing. pnpm and Bun work too. To pin an exact commit instead:
 `pnpm add github:gainratio/edgeproc-browser#<commit-sha>`.
 

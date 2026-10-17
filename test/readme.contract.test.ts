@@ -15,6 +15,7 @@ const PACKAGE = JSON.parse(
 	readFileSync(join(ROOT, "package.json"), "utf8"),
 ) as {
 	name: string;
+	version: string;
 	description: string;
 };
 const TAGLINE_LIMIT = 140;
@@ -149,8 +150,9 @@ describe("README contract", () => {
 	});
 
 	it("installs from npm and names the published version it documents", () => {
+		const baseVersion = PACKAGE.version.split("-")[0] ?? PACKAGE.version;
 		expect(section("## Install")).toContain(`npm install ${PACKAGE.name}`);
-		expect(README).toContain("0.1.1");
+		expect(section("## Install")).toContain(baseVersion);
 	});
 
 	it("links Getting started from Develop", () => {
