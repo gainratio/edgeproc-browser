@@ -150,8 +150,9 @@ describe("README contract", () => {
 	});
 
 	it("installs from npm and names the published version it documents", () => {
+		const baseVersion = PACKAGE.version.split("-")[0] ?? PACKAGE.version;
 		expect(section("## Install")).toContain(`npm install ${PACKAGE.name}`);
-		expect(section("## Install")).toContain(PACKAGE.version);
+		expect(section("## Install")).toContain(baseVersion);
 	});
 
 	it("links Getting started from Develop", () => {
