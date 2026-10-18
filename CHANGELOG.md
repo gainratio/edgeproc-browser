@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Align `docs/API.md`, `src/vector/sqlite/assets/README.md`, and `README.md` with `@gainratio/browser` `0.4.2` and accurate bundle examples.
+
 ## [0.4.2] - 2026-10-16
 
 Additive: `@gainratio/browser/sql` gains a bounded hot-swap gate (`SqlDatabase.swap`,
