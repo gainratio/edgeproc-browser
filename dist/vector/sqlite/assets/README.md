@@ -135,7 +135,7 @@ Why: `sqlite3.mjs` installs its `opfs` and `opfs-wl` VFSes by spawning
 "zombie timer", a workaround for a Worker load that fails without resolving or
 rejecting). Spawned from a URL that is a network fetch; on slow 4G under an
 8-way chunk sync it lost the race, both VFSes were skipped with a console
-warning, and `@edgeproc/browser/sqlite` could not open its durable store.
+warning, and `@gainratio/browser/sqlite` could not open its durable store.
 
 1. `sqlite3.mjs`: honour `sqlite3ApiConfig.opfsProxyUri` (upstream's documented
    client-config hook) as the proxy Worker's URI, passing the VFS name as the
