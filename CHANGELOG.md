@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Offline sync can start from a cached trust root.** The Worker fetched the
+  trust root before `syncIndex`, so a reload with no network failed before the
+  cached-bundle fallback could run. A successful online sync now persists the
+  verified root (raw key or keyring JSON); a `NetworkError` falls back to it,
+  and the cached pointer is still re-authenticated under it. A device with no
+  cached root still fails closed with the original network error.
+- **`readFile` authenticates the cached pointer before returning bytes.**
+  Materializing a file verified every chunk but never checked that the active
+  pointer was signed by the current trust root, so a swapped cache row signed by
+  a revoked key could be served. Reads now verify the pointer under the cached
+  keyring (revocation included), re-check the manifest, then reassemble. A
+  missing cached root fails closed with a clear error.
+- **Cache schema v2** adds a one-row `trust_root` table; `clear()` removes it,
+  and the schema auto-upgrades an existing v1 database in place.
+
 ### Documentation
 
 - Align `docs/API.md`, `src/vector/sqlite/assets/README.md`, and `README.md` with `@gainratio/browser` `0.4.2` and accurate bundle examples.

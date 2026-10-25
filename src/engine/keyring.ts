@@ -13,8 +13,9 @@
 // same derivation edge-proc (Python) uses.
 
 import { SignatureError, sha256Hex, verifyEd25519 } from "./crypto.js";
+import { NetworkError } from "./fetchBytes.js";
 import { IntegrityError } from "./integrity.js";
-import type { FetchBytes } from "./types.js";
+import type { CacheStore, FetchBytes } from "./types.js";
 
 export const KEYRING_SCHEMA = "edgeproc.keyring/v1";
 /** Upper bound on trust-root bytes, enforced before any decode or parse. */
@@ -235,16 +236,54 @@ export async function parseTrustRoot(bytes: Uint8Array): Promise<Keyring> {
 }
 
 /** Fetch and parse the trust root: no HTTP-cache reuse, bounded response. */
+/** Fetch the trust-root bytes (raw key or keyring JSON), size-capped. */
+export async function fetchTrustRootBytes(
+	url: string,
+	fetchBytes: FetchBytes,
+): Promise<Uint8Array> {
+	return fetchBytes(url, {
+		cache: "no-store",
+		maxBytes: MAX_TRUST_ROOT_BYTES,
+	});
+}
+
 export async function loadTrustRoot(
 	url: string,
 	fetchBytes: FetchBytes,
 ): Promise<Keyring> {
-	return parseTrustRoot(
-		await fetchBytes(url, {
-			cache: "no-store",
-			maxBytes: MAX_TRUST_ROOT_BYTES,
-		}),
-	);
+	return parseTrustRoot(await fetchTrustRootBytes(url, fetchBytes));
+}
+
+/**
+ * Trust root for a sync: fetch and persist it, or fall back to the last
+ * verified copy when the network is unreachable. The cached copy is public key
+ * material; it is only read after an online parse succeeded, and every pointer
+ * is still authenticated under it (a revoked key never verifies).
+ */
+export async function loadTrustRootForSync(
+	url: string,
+	fetchBytes: FetchBytes,
+	store: Pick<CacheStore, "readTrustRoot" | "putTrustRoot">,
+): Promise<Keyring> {
+	try {
+		const raw = await fetchTrustRootBytes(url, fetchBytes);
+		const keyring = await parseTrustRoot(raw);
+		try {
+			await store.putTrustRoot?.(raw);
+		} catch {
+			// A read-only/full store must not fail a sync that already verified.
+			// The cost is only that this device cannot start a future sync offline.
+			console.warn(
+				"atc: could not cache the verified trust root for offline use",
+			);
+		}
+		return keyring;
+	} catch (error) {
+		if (!(error instanceof NetworkError)) throw error;
+		const raw = await store.readTrustRoot?.();
+		if (raw == null) throw error;
+		return parseTrustRoot(raw);
+	}
 }
 
 /**

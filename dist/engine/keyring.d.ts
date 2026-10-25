@@ -1,6 +1,6 @@
 import { SignatureError } from "./crypto.js";
 import { IntegrityError } from "./integrity.js";
-import type { FetchBytes } from "./types.js";
+import type { CacheStore, FetchBytes } from "./types.js";
 export declare const KEYRING_SCHEMA = "edgeproc.keyring/v1";
 /** Upper bound on trust-root bytes, enforced before any decode or parse. */
 export declare const MAX_TRUST_ROOT_BYTES: number;
@@ -44,7 +44,16 @@ export declare function assertKeyring(keyring: Keyring): Promise<void>;
  */
 export declare function parseTrustRoot(bytes: Uint8Array): Promise<Keyring>;
 /** Fetch and parse the trust root: no HTTP-cache reuse, bounded response. */
+/** Fetch the trust-root bytes (raw key or keyring JSON), size-capped. */
+export declare function fetchTrustRootBytes(url: string, fetchBytes: FetchBytes): Promise<Uint8Array>;
 export declare function loadTrustRoot(url: string, fetchBytes: FetchBytes): Promise<Keyring>;
+/**
+ * Trust root for a sync: fetch and persist it, or fall back to the last
+ * verified copy when the network is unreachable. The cached copy is public key
+ * material; it is only read after an online parse succeeded, and every pointer
+ * is still authenticated under it (a revoked key never verifies).
+ */
+export declare function loadTrustRootForSync(url: string, fetchBytes: FetchBytes, store: Pick<CacheStore, "readTrustRoot" | "putTrustRoot">): Promise<Keyring>;
 /**
  * Fail-closed verify of `message` under a keyring.
  *

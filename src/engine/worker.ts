@@ -16,7 +16,7 @@ import {
 } from "./chunkDatabase.js";
 import { classifyEngineError } from "./engineError.js";
 import { fetchBytes } from "./fetchBytes.js";
-import { loadTrustRoot } from "./keyring.js";
+import { loadTrustRootForSync } from "./keyring.js";
 import {
 	type IndexedDbLayout,
 	type IndexedDbLayoutOptions,
@@ -33,13 +33,10 @@ import type {
 	ReadFileRequest,
 	SyncRequest,
 } from "./protocol.js";
-import type { SqliteCacheStore } from "./sqliteStore.js";
 import { engineStorageDeps } from "./storageDeps.js";
 import { refuseWithoutFallback } from "./storageError.js";
-import { materializeFile, syncIndex } from "./sync.js";
-import type { CacheBackend, IndexManifest, VersionPointer } from "./types.js";
-
-const DECODER = new TextDecoder();
+import { readVerifiedFile, syncIndex } from "./sync.js";
+import type { CacheBackend } from "./types.js";
 
 // This Worker fetches the signed bundle, so its traffic must be visible to the
 // tab's network counter — the window cannot see a Worker's resource timeline.
@@ -135,7 +132,11 @@ async function handleSync(req: SyncRequest): Promise<EngineResponse> {
 	return withChunkStore(configuration, async (cacheStore, storage) => {
 		// The trust root: a legacy raw 32-byte key (a keyring of one) or an
 		// edgeproc.keyring/v1 JSON document, fetched no-store and size-capped.
-		const keyring = await loadTrustRoot(req.pubkeyUrl, fetchBytes);
+		const keyring = await loadTrustRootForSync(
+			req.pubkeyUrl,
+			fetchBytes,
+			cacheStore,
+		);
 		const result = await syncIndex({
 			baseUrl: req.baseUrl,
 			store: cacheStore,
@@ -186,8 +187,7 @@ async function handleReadFile(req: ReadFileRequest): Promise<EngineResponse> {
 					cacheFallback: req.cacheFallback,
 				}),
 		async (cacheStore) => {
-			const manifest = await loadActiveManifest(cacheStore);
-			const bytes = await materializeFile(cacheStore, manifest, req.path);
+			const bytes = await readVerifiedFile(cacheStore, req.path);
 			return { ok: true, id: req.id, kind: "readFile", bytes };
 		},
 		true,
@@ -214,18 +214,6 @@ async function handleClear(req: ClearRequest): Promise<EngineResponse> {
 /** Ask the browser not to evict this origin's storage (best effort). */
 function requestPersistentStorage(): void {
 	void navigator.storage?.persist?.().catch(() => false);
-}
-
-async function loadActiveManifest(
-	cacheStore: SqliteCacheStore,
-): Promise<IndexManifest> {
-	const active: VersionPointer | null = await cacheStore.readActive();
-	if (active === null) {
-		throw new Error("no active version — sync first");
-	}
-	const raw = await cacheStore.getManifest(active.manifest_hash);
-	const manifest = JSON.parse(DECODER.decode(raw)) as IndexManifest;
-	return manifest;
 }
 
 function lockManager():

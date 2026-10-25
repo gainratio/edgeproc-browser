@@ -10,6 +10,7 @@ export class MemoryCacheStore {
     #chunks = new Map();
     #manifests = new Map();
     #active = null;
+    #trustRoot = null;
     hasChunk(chunkHash) {
         return Promise.resolve(this.#chunks.has(chunkHash));
     }
@@ -53,6 +54,13 @@ export class MemoryCacheStore {
         this.#active = null;
         return Promise.resolve(true);
     }
+    readTrustRoot() {
+        return Promise.resolve(this.#trustRoot?.slice() ?? null);
+    }
+    putTrustRoot(bytes) {
+        this.#trustRoot = bytes.slice();
+        return Promise.resolve();
+    }
     pruneInactive() {
         return Promise.resolve();
     }
@@ -60,6 +68,7 @@ export class MemoryCacheStore {
         this.#chunks.clear();
         this.#manifests.clear();
         this.#active = null;
+        this.#trustRoot = null;
         return Promise.resolve();
     }
 }

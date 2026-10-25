@@ -22,6 +22,7 @@ import {
 } from "./activePointer.js";
 import { sha256Hex } from "./crypto.js";
 import { decompressAndVerify, IntegrityError } from "./integrity.js";
+import { MAX_TRUST_ROOT_BYTES } from "./keyring.js";
 import { RollbackError } from "./sync.js";
 import type { CacheStore, VersionPointer } from "./types.js";
 
@@ -51,7 +52,7 @@ export interface LegacyImport {
 
 export type MigrationState = "none" | "copied" | "done";
 
-export const CHUNK_SCHEMA_VERSION = 1;
+export const CHUNK_SCHEMA_VERSION = 2;
 const MAX_COMPRESSED_CHUNK_BYTES = 2 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 /** Ingest is committed in batches: bounded memory, few transactions. */
@@ -80,6 +81,10 @@ CREATE TRIGGER IF NOT EXISTS active_pointer_floor_monotonic
 BEFORE UPDATE OF floor_sequence ON active_pointer
 WHEN NEW.floor_sequence < OLD.floor_sequence
 BEGIN SELECT RAISE(ABORT, 'rollback floor may not decrease'); END;
+CREATE TABLE IF NOT EXISTS trust_root(
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	body BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS legacy_migration(
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	state TEXT NOT NULL CHECK (state IN ('copied', 'done'))
@@ -302,13 +307,36 @@ export class SqliteCacheStore implements CacheStore {
 		this.#db.exec("PRAGMA incremental_vacuum");
 	}
 
-	/** The explicit reset: chunks, manifests, the pointer AND the floor. */
+	/** Last verified trust root, or null when this cache has never synced. */
+	public async readTrustRoot(): Promise<Uint8Array | null> {
+		const body = this.#db.query("SELECT body FROM trust_root WHERE id = 1")[0]
+			?.body;
+		if (!(body instanceof Uint8Array) || body.byteLength === 0) return null;
+		if (body.byteLength > MAX_TRUST_ROOT_BYTES) {
+			throw new IntegrityError("cached trust root exceeds the read cap");
+		}
+		return new Uint8Array(body);
+	}
+
+	/** Store the trust root that verified a successful sync (public keys only). */
+	public async putTrustRoot(bytes: Uint8Array): Promise<void> {
+		if (bytes.byteLength === 0 || bytes.byteLength > MAX_TRUST_ROOT_BYTES) {
+			throw new IntegrityError("trust root is empty or exceeds the read cap");
+		}
+		this.#db.exec(
+			"INSERT INTO trust_root(id, body) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET body = excluded.body",
+			[bytes],
+		);
+	}
+
+	/** The explicit reset: chunks, manifests, the pointer, the floor AND the cached trust root. */
 	public async clear(): Promise<void> {
 		this.#clearPending();
 		this.#db.immediate(() => {
 			this.#db.exec("DELETE FROM chunk");
 			this.#db.exec("DELETE FROM manifest");
 			this.#db.exec("DELETE FROM active_pointer");
+			this.#db.exec("DELETE FROM trust_root");
 		});
 		this.#db.exec("PRAGMA incremental_vacuum");
 	}

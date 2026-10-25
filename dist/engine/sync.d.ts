@@ -112,4 +112,14 @@ export declare const MAX_CONCURRENT_CHUNK_READS = 8;
  */
 export declare function syncIndex(args: SyncArgs | KeyringSyncArgs): Promise<SyncResult>;
 export declare function materializeFile(store: CacheStore, manifest: IndexManifest, path: string): Promise<Uint8Array>;
+/**
+ * Read one file from the cache only after re-authenticating the active pointer
+ * under the cached trust root, then verify the manifest and every chunk.
+ *
+ * A read is not a sync: it must work with no network, so it uses the trust root
+ * persisted by the last successful sync. If that root is absent, or the pointer
+ * is signed by a revoked/unknown key (or has been swapped for another signed
+ * release), the read fails closed instead of trusting the rows at rest.
+ */
+export declare function readVerifiedFile(store: CacheStore, path: string): Promise<Uint8Array>;
 //# sourceMappingURL=sync.d.ts.map
