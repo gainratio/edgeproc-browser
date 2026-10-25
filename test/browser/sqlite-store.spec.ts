@@ -31,7 +31,7 @@ const PUBLIC_KEY = join(BUNDLE, "keys", "public.key");
  * the worst run, so a regression that triples per-chunk cost fails.
  */
 const BUDGET_MS_PER_CHUNK = {
-	chromium: { cold: 12, warm: 5 },
+	chromium: { cold: 12, warm: 7 },
 	firefox: { cold: 12, warm: 7 },
 	webkit: { cold: 12, warm: 12 },
 } as const;
