@@ -22,7 +22,7 @@ export interface LegacyImport {
     readonly pointers: ReadonlyArray<VersionPointer | null>;
 }
 export type MigrationState = "none" | "copied" | "done";
-export declare const CHUNK_SCHEMA_VERSION = 1;
+export declare const CHUNK_SCHEMA_VERSION = 2;
 export declare class SqliteCacheStore implements CacheStore {
     #private;
     private constructor();
@@ -49,7 +49,11 @@ export declare class SqliteCacheStore implements CacheStore {
      * `secure_delete` on (the SQL seam sets it for OPFS), deleted bytes are
      * overwritten, not just unlinked. */
     pruneInactive(): Promise<void>;
-    /** The explicit reset: chunks, manifests, the pointer AND the floor. */
+    /** Last verified trust root, or null when this cache has never synced. */
+    readTrustRoot(): Promise<Uint8Array | null>;
+    /** Store the trust root that verified a successful sync (public keys only). */
+    putTrustRoot(bytes: Uint8Array): Promise<void>;
+    /** The explicit reset: chunks, manifests, the pointer, the floor AND the cached trust root. */
     clear(): Promise<void>;
     migrationState(): MigrationState;
     /**

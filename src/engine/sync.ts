@@ -6,7 +6,12 @@ import { canonicalBytes, type JsonValue } from "./canonical.js";
 import { sha256Hex } from "./crypto.js";
 import { NetworkError } from "./fetchBytes.js";
 import { IntegrityError, MAX_DECOMPRESSED_CHUNK_BYTES } from "./integrity.js";
-import { assertKeyring, type Keyring, verifyWithKeyring } from "./keyring.js";
+import {
+	assertKeyring,
+	type Keyring,
+	parseTrustRoot,
+	verifyWithKeyring,
+} from "./keyring.js";
 import { isQuotaError } from "./storageError.js";
 import type {
 	CacheStore,
@@ -1130,4 +1135,40 @@ export async function materializeFile(
 	path: string,
 ): Promise<Uint8Array> {
 	return reassemble(fileEntry(manifest, path), chunkReader(store));
+}
+
+/**
+ * Read one file from the cache only after re-authenticating the active pointer
+ * under the cached trust root, then verify the manifest and every chunk.
+ *
+ * A read is not a sync: it must work with no network, so it uses the trust root
+ * persisted by the last successful sync. If that root is absent, or the pointer
+ * is signed by a revoked/unknown key (or has been swapped for another signed
+ * release), the read fails closed instead of trusting the rows at rest.
+ */
+export async function readVerifiedFile(
+	store: CacheStore,
+	path: string,
+): Promise<Uint8Array> {
+	const rawTrustRoot = await store.readTrustRoot?.();
+	if (rawTrustRoot == null) {
+		throw new IntegrityError(
+			"no cached trust root — sync once while online before reading offline",
+		);
+	}
+	const keyring = await parseTrustRoot(rawTrustRoot);
+	const active = await store.readActive();
+	if (active === null) throw new Error("no active version — sync first");
+	await verifyWithKeyring(
+		keyring,
+		pointerSigningBytes(active),
+		active.signature,
+		active.key_id,
+	);
+	const manifest = parseJson(
+		await store.getManifest(active.manifest_hash),
+		"cached manifest",
+	);
+	assertManifest(manifest, active);
+	return materializeFile(store, manifest, path);
 }

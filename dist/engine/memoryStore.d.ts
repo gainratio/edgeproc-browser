@@ -9,6 +9,8 @@ export declare class MemoryCacheStore implements CacheStore {
     readActive(): Promise<VersionPointer | null>;
     promote(pointer: VersionPointer): Promise<void>;
     clearActiveIf(expected: VersionPointer): Promise<boolean>;
+    readTrustRoot(): Promise<Uint8Array | null>;
+    putTrustRoot(bytes: Uint8Array): Promise<void>;
     pruneInactive(): Promise<void>;
     clear(): Promise<void>;
 }

@@ -13,6 +13,7 @@ export class MemoryCacheStore implements CacheStore {
 	readonly #chunks = new Map<string, Uint8Array>();
 	readonly #manifests = new Map<string, Uint8Array>();
 	#active: VersionPointer | null = null;
+	#trustRoot: Uint8Array | null = null;
 
 	public hasChunk(chunkHash: string): Promise<boolean> {
 		return Promise.resolve(this.#chunks.has(chunkHash));
@@ -77,6 +78,15 @@ export class MemoryCacheStore implements CacheStore {
 		return Promise.resolve(true);
 	}
 
+	public readTrustRoot(): Promise<Uint8Array | null> {
+		return Promise.resolve(this.#trustRoot?.slice() ?? null);
+	}
+
+	public putTrustRoot(bytes: Uint8Array): Promise<void> {
+		this.#trustRoot = bytes.slice();
+		return Promise.resolve();
+	}
+
 	public pruneInactive(): Promise<void> {
 		return Promise.resolve();
 	}
@@ -85,6 +95,7 @@ export class MemoryCacheStore implements CacheStore {
 		this.#chunks.clear();
 		this.#manifests.clear();
 		this.#active = null;
+		this.#trustRoot = null;
 		return Promise.resolve();
 	}
 }

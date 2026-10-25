@@ -93,6 +93,12 @@ export interface CacheStore {
     pruneInactive(): Promise<void>;
     /** Explicitly clear this cache namespace. */
     clear(): Promise<void>;
+    /** Last verified trust-root bytes (raw key or keyring JSON), if the store
+     * persists one. Optional so external CacheStore implementations do not
+     * break; without it, offline reads fail closed after a cache-only start. */
+    readTrustRoot?(): Promise<Uint8Array | null>;
+    /** Persist the trust root that verified a successful sync, for offline use. */
+    putTrustRoot?(bytes: Uint8Array): Promise<void>;
 }
 /** Transport seam: fetch raw bytes for a URL (injectable for tests). */
 export interface FetchBytesOptions {
