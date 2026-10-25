@@ -2,7 +2,7 @@
 
 For web developers: have the browser check that downloaded data was signed by you and not changed, then keep it for offline use.
 
-**`npm install @gainratio/browser`** (version 0.4.2; `@edgeproc/browser` is the old, deprecated name)
+**`npm install @gainratio/browser`** (version 0.4.3; `@edgeproc/browser` is the old, deprecated name)
 
 [![CI](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
@@ -210,7 +210,7 @@ that changed. More in [Architecture](docs/ARCHITECTURE.md) and
 npm install @gainratio/browser
 ```
 
-This README documents 0.4.2, which is the same code as `main` at
+This README documents 0.4.3, which is the same code as `main` at
 the time of writing. pnpm and Bun work too. To pin an exact commit instead:
 `pnpm add github:gainratio/edgeproc-browser#<commit-sha>`.
 
