@@ -67,8 +67,9 @@ export function importDatabase(
 			`import is ${input.byteLength} bytes; limit ${maxBytes}`,
 		);
 	}
-	// One private copy: the bytes validated are exactly the bytes swapped in.
-	const bytes = input.slice();
+	// The import is synchronous and the caller transfers ownership: no second
+	// 75 MB copy (that copy was enough to OOM iOS during a full catalogue import).
+	const bytes = input;
 	assertHeader(bytes);
 	const header = validate(serializer, bytes, options);
 	swapIn(raw, serializer, bytes);
