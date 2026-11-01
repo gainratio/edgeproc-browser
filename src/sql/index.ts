@@ -10,6 +10,7 @@ export type {
 export {
   exportDatabase,
   importDatabase,
+  importDatabaseFromStream,
   migrateLegacySahPool,
   type OpenSqlDatabaseOptions,
   openSqlDatabase,

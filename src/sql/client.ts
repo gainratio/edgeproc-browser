@@ -24,7 +24,7 @@ import {
 } from "./types.js";
 
 export interface SqlWorkerLike {
-	postMessage(message: SqlWorkerRequest): void;
+	postMessage(message: SqlWorkerRequest, transfer?: Transferable[]): void;
 	terminate(): void;
 	addEventListener(
 		type: "message",
@@ -181,12 +181,12 @@ class Connection {
 		);
 	}
 
-	public request(request: RequestWithoutId): Promise<unknown> {
+	public request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<unknown> {
 		if (this.#terminal !== undefined) return Promise.reject(this.#terminal);
 		const id = this.#nextId++;
 		return new Promise((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
-			this.#worker.postMessage({ ...request, id } as SqlWorkerRequest);
+			this.#worker.postMessage({ ...request, id } as SqlWorkerRequest, transfer);
 		});
 	}
 
@@ -510,6 +510,36 @@ export async function exportDatabase(
  * write while the import runs; if one already has it open, this fails
  * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
  */
+export async function importDatabaseFromStream(
+	name: string,
+	stream: ReadableStream<Uint8Array>,
+	options: Omit<SqlDatabaseOptions, "name" | "persistence"> &
+		OpenSqlDatabaseOptions = {},
+): Promise<SqlStorage> {
+	const { workerFactory = defaultWorkerFactory, ...dbOptions } = options;
+	const connection = new Connection(workerFactory());
+	const channel = new MessageChannel();
+	const reader = stream.getReader();
+	channel.port1.onmessage = async () => {
+		try {
+			const next = await reader.read();
+			channel.port1.postMessage(
+				next.done === true ? { done: true } : { chunk: next.value },
+			);
+		} catch (error) {
+			channel.port1.postMessage({ error: String(error) });
+		}
+	};
+	try {
+		return (await connection.request(
+			{ operation: "import-stream", options: { ...dbOptions, name, persistence: "opfs" }, port: channel.port2 },
+			[channel.port2],
+		)) as SqlStorage;
+	} finally {
+		connection.terminate(new Error("stream import finished"));
+	}
+}
+
 export async function importDatabase(
 	target: SqlDatabase | string,
 	bytes: Uint8Array,

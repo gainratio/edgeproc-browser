@@ -54,6 +54,11 @@ export type SqlWorkerRequest = WithId<
 			readonly operation: "migrate-legacy";
 			readonly options: MigrateLegacySahPoolOptions;
 	  }
+	| {
+			readonly operation: "import-stream";
+			readonly options: SqlDatabaseOptions;
+			readonly port: MessagePort;
+	  }
 	| { readonly operation: "runtime-info" }
 	| { readonly operation: "close" }
 >;

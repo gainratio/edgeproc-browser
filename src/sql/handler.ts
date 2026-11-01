@@ -30,13 +30,28 @@ export type SqlEngineOpener = (
 	context: { readonly transient: boolean },
 ) => Promise<OpenedSqlEngine>;
 
+export type SqlStreamImporter = (
+	options: SqlDatabaseOptions,
+	port: MessagePort,
+) => Promise<unknown>;
+
 export function createSqlWorkerHandler(
 	open: SqlEngineOpener,
+	importStream?: SqlStreamImporter,
 ): (request: SqlWorkerRequest) => Promise<SqlWorkerResponse> {
 	let current: OpenedSqlEngine | undefined;
 	let queue: Promise<unknown> = Promise.resolve();
 
 	const dispatch = async (request: SqlWorkerRequest): Promise<unknown> => {
+		if (request.operation === "import-stream") {
+			if (importStream === undefined) {
+				throw new Error("streaming import is not available in this worker");
+			}
+			if (current !== undefined) {
+				throw new Error("close the open database before importing");
+			}
+			return importStream(request.options, request.port);
+		}
 		if (request.operation === "open") {
 			if (current !== undefined) {
 				throw new Error("SQL worker already has an open database");
