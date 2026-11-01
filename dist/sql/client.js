@@ -35,13 +35,13 @@ class Connection {
         worker.addEventListener("error", (event) => this.terminate(new Error(`SQL worker failed: ${event.message}`)));
         worker.addEventListener("messageerror", () => this.terminate(new Error("SQL worker returned an unreadable message")));
     }
-    request(request) {
+    request(request, transfer = []) {
         if (this.#terminal !== undefined)
             return Promise.reject(this.#terminal);
         const id = this.#nextId++;
         return new Promise((resolve, reject) => {
             this.#pending.set(id, { resolve, reject });
-            this.#worker.postMessage({ ...request, id });
+            this.#worker.postMessage({ ...request, id }, transfer);
         });
     }
     terminate(error) {
@@ -310,6 +310,31 @@ export async function exportDatabase(target, options = {}) {
  * write while the import runs; if one already has it open, this fails
  * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
  */
+export async function importDatabaseFromStream(name, stream, options = {}) {
+    const { workerFactory = defaultWorkerFactory, ...dbOptions } = options;
+    const connection = new Connection(workerFactory());
+    const channel = new MessageChannel();
+    const reader = stream.getReader();
+    channel.port1.onmessage = async () => {
+        try {
+            const next = await reader.read();
+            channel.port1.postMessage(next.done === true ? { done: true } : { chunk: next.value });
+        }
+        catch (error) {
+            channel.port1.postMessage({ error: String(error) });
+        }
+    };
+    try {
+        return (await connection.request({
+            operation: "import-stream",
+            options: { ...dbOptions, name, persistence: "opfs" },
+            port: channel.port2,
+        }, [channel.port2]));
+    }
+    finally {
+        connection.terminate(new Error("stream import finished"));
+    }
+}
 export async function importDatabase(target, bytes, options = {}) {
     const { workerFactory, ...importOptions } = options;
     return withDatabase(target, workerFactory === undefined ? {} : { workerFactory }, (db) => db.importDatabase(bytes, importOptions));

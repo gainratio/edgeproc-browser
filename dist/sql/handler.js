@@ -1,10 +1,19 @@
 // The Worker side of the protocol, free of Worker globals so it can be driven
 // in-process by tests. Requests run strictly one at a time, in arrival order.
 import { SqlImportRejectedError, SqlStorageUnavailableError, } from "./types.js";
-export function createSqlWorkerHandler(open) {
+export function createSqlWorkerHandler(open, importStream) {
     let current;
     let queue = Promise.resolve();
     const dispatch = async (request) => {
+        if (request.operation === "import-stream") {
+            if (importStream === undefined) {
+                throw new Error("streaming import is not available in this worker");
+            }
+            if (current !== undefined) {
+                throw new Error("close the open database before importing");
+            }
+            return importStream(request.options, request.port);
+        }
         if (request.operation === "open") {
             if (current !== undefined) {
                 throw new Error("SQL worker already has an open database");

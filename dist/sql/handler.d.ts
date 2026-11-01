@@ -11,5 +11,6 @@ export interface OpenedSqlEngine {
 export type SqlEngineOpener = (options: SqlDatabaseOptions, context: {
     readonly transient: boolean;
 }) => Promise<OpenedSqlEngine>;
-export declare function createSqlWorkerHandler(open: SqlEngineOpener): (request: SqlWorkerRequest) => Promise<SqlWorkerResponse>;
+export type SqlStreamImporter = (options: SqlDatabaseOptions, port: MessagePort) => Promise<unknown>;
+export declare function createSqlWorkerHandler(open: SqlEngineOpener, importStream?: SqlStreamImporter): (request: SqlWorkerRequest) => Promise<SqlWorkerResponse>;
 //# sourceMappingURL=handler.d.ts.map

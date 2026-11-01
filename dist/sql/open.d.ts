@@ -36,6 +36,8 @@ export interface SqlStorageDeps<R> {
         readonly OpfsSAHPoolDb: new (file: string) => R;
         /** opfs-sahpool: close the pool's sync access handles (no data loss). */
         pauseVfs?(): unknown;
+        /** sqlite3.mjs PoolUtil.importDb(name, callback): stream a DB into OPFS. */
+        importDb?(name: string, callback: () => Promise<Uint8Array | undefined>): Promise<number>;
     } & Partial<SahPoolSlots>>;
     readonly locks: SqlLocks | undefined;
     readonly warn: (message: string) => void;
@@ -65,6 +67,16 @@ export interface OpenSqlStorageContext {
      */
     readonly transient?: boolean;
 }
+/**
+ * Stream a complete SQLite database into the named OPFS pool without ever
+ * materializing it in JavaScript. The callback supplies decompressed bytes in
+ * order; sqlite3's PoolUtil.importDb writes each chunk straight to the
+ * sync-access handle. The database is opened only after the import completes.
+ *
+ * This is the 100k/iOS path: a 75 MB catalogue must not pass through a second
+ * in-memory SQLite database or a second byte copy.
+ */
+export declare function importSqlStorageFromChunks<R>(deps: SqlStorageDeps<R>, options: SqlDatabaseOptions, chunks: AsyncIterable<Uint8Array>, { transient }?: OpenSqlStorageContext): Promise<OpenedSqlStorage<R>>;
 export declare function openSqlStorage<R>(deps: SqlStorageDeps<R>, options: SqlDatabaseOptions, { transient }?: OpenSqlStorageContext): Promise<OpenedSqlStorage<R>>;
 /** Held, alongside the owner lock, by a bounded operation on `pool`. */
 export declare function poolOperationLock(pool: string): string;

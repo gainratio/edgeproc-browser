@@ -7,14 +7,43 @@ import { createSqlConnectionControl } from "./control.js";
 import { SqlEngine } from "./engine.js";
 import { createSqlWorkerHandler } from "./handler.js";
 import { asLegacySahPool, createJournalRecovery, migrateLegacySahPool, opfsPoolExists, } from "./legacy.js";
-import { openSqlStorage, ownerLockWaitMs } from "./open.js";
+import { importSqlStorageFromChunks, openSqlStorage, ownerLockWaitMs, } from "./open.js";
 import { sahPoolInstallOptions } from "./sahPool.js";
 import { createSqlSerializer } from "./serializer.js";
 import { loadSqlite, workerStorageDeps, } from "./workerRuntime.js";
-const handle = createSqlWorkerHandler(openEngine);
+const handle = createSqlWorkerHandler(openEngine, importStream);
 self.onmessage = (event) => {
     void handle(event.data).then((response) => self.postMessage(response));
 };
+async function importStream(options, port) {
+    const sqlite = await loadSqlite();
+    const profile = resolveMemoryProfile(options.memoryProfile ?? "auto");
+    const opened = await importSqlStorageFromChunks(workerStorageDeps(sqlite, ownerLockWaitMs(profile.tier), profile.tempStore), options, portChunks(port));
+    try {
+        return opened.storage;
+    }
+    finally {
+        opened.raw.close();
+        await opened.release();
+    }
+}
+function portChunks(port) {
+    return {
+        async *[Symbol.asyncIterator]() {
+            for (;;) {
+                port.postMessage({ type: "pull" });
+                const message = await new Promise((resolve) => {
+                    port.onmessage = (event) => resolve(event.data);
+                });
+                if (message.done === true)
+                    return;
+                if (message.chunk === undefined)
+                    throw new Error("empty import chunk");
+                yield message.chunk;
+            }
+        },
+    };
+}
 async function openEngine(options, context) {
     const sqlite = await loadSqlite();
     const profile = resolveMemoryProfile(options.memoryProfile ?? "auto");

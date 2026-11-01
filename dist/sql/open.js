@@ -36,6 +36,58 @@ export const SQL_POOL_PREFIX = "edgeproc-sql-";
 export async function sqlDatabasePoolName(name) {
     return `${SQL_POOL_PREFIX}${await stableIdentity(name)}`;
 }
+/**
+ * Stream a complete SQLite database into the named OPFS pool without ever
+ * materializing it in JavaScript. The callback supplies decompressed bytes in
+ * order; sqlite3's PoolUtil.importDb writes each chunk straight to the
+ * sync-access handle. The database is opened only after the import completes.
+ *
+ * This is the 100k/iOS path: a 75 MB catalogue must not pass through a second
+ * in-memory SQLite database or a second byte copy.
+ */
+export async function importSqlStorageFromChunks(deps, options, chunks, { transient = true } = {}) {
+    const persistence = options.persistence ?? "opfs";
+    if (persistence !== "opfs") {
+        throw new TypeError("streaming import requires OPFS persistence");
+    }
+    const pool = await sqlDatabasePoolName(options.name);
+    const owner = await acquireOwnerLease(deps, pool);
+    if (owner === undefined) {
+        throw new SqlStorageUnavailableError("pool-in-use", "another context owns it");
+    }
+    const release = transient ? await markOperation(deps, pool, owner) : owner;
+    try {
+        const vfs = await installWithinLockWait(deps, pool);
+        if (vfs.importDb === undefined) {
+            throw new SqlStorageUnavailableError("opfs-unavailable", "this SQLite build cannot stream an OPFS import");
+        }
+        const file = `/${pool}.sqlite3`;
+        if (countsSlots(vfs)) {
+            await reserveSahPoolSlots(vfs, file, deps.tempStore);
+        }
+        const iterator = chunks[Symbol.asyncIterator]();
+        await vfs.importDb(file, async () => {
+            const next = await iterator.next();
+            return next.done === true ? undefined : next.value;
+        });
+        return {
+            raw: new vfs.OpfsSAHPoolDb(file),
+            storage: { persistence: "opfs", pool, file },
+            release: async () => {
+                try {
+                    vfs.pauseVfs?.();
+                }
+                finally {
+                    await release();
+                }
+            },
+        };
+    }
+    catch (error) {
+        await release();
+        throw error;
+    }
+}
 export async function openSqlStorage(deps, options, { transient = false } = {}) {
     const persistence = options.persistence ?? "opfs";
     if (persistence === "memory") {

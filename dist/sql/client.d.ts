@@ -1,7 +1,7 @@
 import type { SqlWorkerRequest, SqlWorkerResponse } from "./protocol.js";
 import { type LegacySahPoolMigration, type MigrateLegacySahPoolOptions, type SqlBind, type SqlDatabaseOptions, type SqlExecResult, type SqlImportOptions, type SqlImportResult, type SqlRow, type SqlRuntimeInfo, type SqlStatement, type SqlStorage, type SqlSwapOptions, type SqlTransactionResult } from "./types.js";
 export interface SqlWorkerLike {
-    postMessage(message: SqlWorkerRequest): void;
+    postMessage(message: SqlWorkerRequest, transfer?: Transferable[]): void;
     terminate(): void;
     addEventListener(type: "message", listener: (event: MessageEvent<SqlWorkerResponse>) => void): void;
     addEventListener(type: "error", listener: (event: ErrorEvent) => void): void;
@@ -91,6 +91,7 @@ export declare function exportDatabase(target: SqlDatabase | string, options?: O
  * write while the import runs; if one already has it open, this fails
  * closed with {@link SqlStorageUnavailableError} ("pool-in-use").
  */
+export declare function importDatabaseFromStream(name: string, stream: ReadableStream<Uint8Array>, options?: Omit<SqlDatabaseOptions, "name" | "persistence"> & OpenSqlDatabaseOptions): Promise<SqlStorage>;
 export declare function importDatabase(target: SqlDatabase | string, bytes: Uint8Array, options?: SqlImportOptions & OpenSqlDatabaseOptions): Promise<SqlImportResult>;
 /**
  * Move a legacy opfs-sahpool database into `to` (an open handle, or a name
