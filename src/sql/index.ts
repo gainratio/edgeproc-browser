@@ -13,7 +13,6 @@ export {
   migrateLegacySahPool,
   type OpenSqlDatabaseOptions,
   openSqlDatabase,
-  importSqlStorageFromChunks,
   type SqlDatabase,
   type SqlPreparedStatement,
   type SqlTransaction,
@@ -21,7 +20,7 @@ export {
   type SqlWorkerLike,
 } from "./client.js";
 export { PINNED_SQLITE_VERSION, PINNED_VECTOR_VERSION } from "./engine.js";
-export { sqlDatabasePoolName } from "./open.js";
+export { importSqlStorageFromChunks, sqlDatabasePoolName } from "./open.js";
 export {
   type OpfsPoolRemoval,
   type OpfsRoot,
