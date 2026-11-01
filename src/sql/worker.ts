@@ -59,11 +59,12 @@ function portChunks(port: MessagePort): AsyncIterable<Uint8Array> {
 		async *[Symbol.asyncIterator]() {
 			for (;;) {
 				port.postMessage({ type: "pull" });
-				const message = await new Promise<{ readonly done?: boolean; readonly chunk?: Uint8Array }>(
-					(resolve) => {
-						port.onmessage = (event) => resolve(event.data);
-					},
-				);
+				const message = await new Promise<{
+					readonly done?: boolean;
+					readonly chunk?: Uint8Array;
+				}>((resolve) => {
+					port.onmessage = (event) => resolve(event.data);
+				});
 				if (message.done === true) return;
 				if (message.chunk === undefined) throw new Error("empty import chunk");
 				yield message.chunk;

@@ -11,27 +11,27 @@
 import type { MemoryTier, TempStore } from "../sqlite/memoryProfile.js";
 import { reserveSahPoolSlots, type SahPoolSlots } from "./sahPool.js";
 import {
-  type SqlDatabaseOptions,
-  type SqlFallbackReason,
-  type SqlStorage,
-  SqlStorageUnavailableError,
+	type SqlDatabaseOptions,
+	type SqlFallbackReason,
+	type SqlStorage,
+	SqlStorageUnavailableError,
 } from "./types.js";
 
 /** The slice of the Web Locks API this module uses. */
 export interface SqlLocks {
-  request<T>(
-    name: string,
-    options: {
-      readonly mode?: "exclusive";
-      readonly signal?: AbortSignal;
-      readonly ifAvailable?: boolean;
-    },
-    callback: (lock: unknown) => Promise<T>,
-  ): Promise<T>;
-  /** Web Locks snapshot; used to confirm a live owner after a timed-out wait. */
-  query?(): Promise<{
-    readonly held?: ReadonlyArray<{ readonly name?: string }>;
-  }>;
+	request<T>(
+		name: string,
+		options: {
+			readonly mode?: "exclusive";
+			readonly signal?: AbortSignal;
+			readonly ifAvailable?: boolean;
+		},
+		callback: (lock: unknown) => Promise<T>,
+	): Promise<T>;
+	/** Web Locks snapshot; used to confirm a live owner after a timed-out wait. */
+	query?(): Promise<{
+		readonly held?: ReadonlyArray<{ readonly name?: string }>;
+	}>;
 }
 
 /**
@@ -43,13 +43,13 @@ export interface SqlLocks {
  * tier waits less than 4 s and slower tiers wait longer.
  */
 export function ownerLockWaitMs(tier: MemoryTier): number {
-  return OWNER_LOCK_WAIT_MS[tier];
+	return OWNER_LOCK_WAIT_MS[tier];
 }
 
 const OWNER_LOCK_WAIT_MS: Readonly<Record<MemoryTier, number>> = Object.freeze({
-  full: 4_000,
-  lite: 8_000,
-  minimal: 16_000,
+	full: 4_000,
+	lite: 8_000,
+	minimal: 16_000,
 });
 
 /**
@@ -60,52 +60,52 @@ const OWNER_LOCK_WAIT_MS: Readonly<Record<MemoryTier, number>> = Object.freeze({
 export const OPERATION_WAIT_BUDGETS = 15;
 
 export interface SqlStorageDeps<R> {
-  readonly openMemory: () => R;
-  readonly installPool: (poolName: string) => Promise<
-    {
-      readonly OpfsSAHPoolDb: new (file: string) => R;
-      /** opfs-sahpool: close the pool's sync access handles (no data loss). */
-      pauseVfs?(): unknown;
-      /** sqlite3.mjs PoolUtil.importDb(name, callback): stream a DB into OPFS. */
-      importDb?(
-        name: string,
-        callback: () => Promise<Uint8Array | undefined>,
-      ): Promise<number>;
-    } & Partial<SahPoolSlots>
-  >;
-  readonly locks: SqlLocks | undefined;
-  readonly warn: (message: string) => void;
-  /** How long to wait for a previous owner before giving up. */
-  readonly lockWaitMs: number;
-  /** The connection's PRAGMA temp_store: temp files need pool slots. */
-  readonly tempStore: TempStore;
+	readonly openMemory: () => R;
+	readonly installPool: (poolName: string) => Promise<
+		{
+			readonly OpfsSAHPoolDb: new (file: string) => R;
+			/** opfs-sahpool: close the pool's sync access handles (no data loss). */
+			pauseVfs?(): unknown;
+			/** sqlite3.mjs PoolUtil.importDb(name, callback): stream a DB into OPFS. */
+			importDb?(
+				name: string,
+				callback: () => Promise<Uint8Array | undefined>,
+			): Promise<number>;
+		} & Partial<SahPoolSlots>
+	>;
+	readonly locks: SqlLocks | undefined;
+	readonly warn: (message: string) => void;
+	/** How long to wait for a previous owner before giving up. */
+	readonly lockWaitMs: number;
+	/** The connection's PRAGMA temp_store: temp files need pool slots. */
+	readonly tempStore: TempStore;
 }
 
 export interface OpenedSqlStorage<R> {
-  readonly raw: R;
-  readonly storage: SqlStorage;
-  /**
-   * Free the pool's handles and owner lock. Call after closing the
-   * connection; it resolves once the lock is actually free, so a removal or
-   * reopen that follows never sees this context as the owner.
-   */
-  release(): Promise<void>;
+	readonly raw: R;
+	readonly storage: SqlStorage;
+	/**
+	 * Free the pool's handles and owner lock. Call after closing the
+	 * connection; it resolves once the lock is actually free, so a removal or
+	 * reopen that follows never sees this context as the owner.
+	 */
+	release(): Promise<void>;
 }
 
 export const SQL_POOL_PREFIX = "edgeproc-sql-";
 
 /** The opfs-sahpool VFS name a database name maps to (OPFS dir: `.${pool}`). */
 export async function sqlDatabasePoolName(name: string): Promise<string> {
-  return `${SQL_POOL_PREFIX}${await stableIdentity(name)}`;
+	return `${SQL_POOL_PREFIX}${await stableIdentity(name)}`;
 }
 
 export interface OpenSqlStorageContext {
-  /**
-   * A bounded operation (an import, export or migration by name), not a
-   * connection: it also holds `${pool}-operation`, so a context that times
-   * out waiting for the owner lock knows to wait for it to finish.
-   */
-  readonly transient?: boolean;
+	/**
+	 * A bounded operation (an import, export or migration by name), not a
+	 * connection: it also holds `${pool}-operation`, so a context that times
+	 * out waiting for the owner lock knows to wait for it to finish.
+	 */
+	readonly transient?: boolean;
 }
 
 /**
@@ -118,114 +118,114 @@ export interface OpenSqlStorageContext {
  * in-memory SQLite database or a second byte copy.
  */
 export async function importSqlStorageFromChunks<R>(
-  deps: SqlStorageDeps<R>,
-  options: SqlDatabaseOptions,
-  chunks: AsyncIterable<Uint8Array>,
-  { transient = true }: OpenSqlStorageContext = {},
+	deps: SqlStorageDeps<R>,
+	options: SqlDatabaseOptions,
+	chunks: AsyncIterable<Uint8Array>,
+	{ transient = true }: OpenSqlStorageContext = {},
 ): Promise<OpenedSqlStorage<R>> {
-  const persistence = options.persistence ?? "opfs";
-  if (persistence !== "opfs") {
-    throw new TypeError("streaming import requires OPFS persistence");
-  }
-  const pool = await sqlDatabasePoolName(options.name);
-  const owner = await acquireOwnerLease(deps, pool);
-  if (owner === undefined) {
-    throw new SqlStorageUnavailableError(
-      "pool-in-use",
-      "another context owns it",
-    );
-  }
-  const release = transient ? await markOperation(deps, pool, owner) : owner;
-  try {
-    const vfs = await installWithinLockWait(deps, pool);
-    if (vfs.importDb === undefined) {
-      throw new SqlStorageUnavailableError(
-        "opfs-unavailable",
-        "this SQLite build cannot stream an OPFS import",
-      );
-    }
-    const file = `/${pool}.sqlite3`;
-    if (countsSlots(vfs)) {
-      await reserveSahPoolSlots(vfs, file, deps.tempStore);
-    }
-    const iterator = chunks[Symbol.asyncIterator]();
-    await vfs.importDb(file, async () => {
-      const next = await iterator.next();
-      return next.done === true ? undefined : next.value;
-    });
-    return {
-      raw: new vfs.OpfsSAHPoolDb(file),
-      storage: { persistence: "opfs", pool, file },
-      release: async () => {
-        try {
-          vfs.pauseVfs?.();
-        } finally {
-          await release();
-        }
-      },
-    };
-  } catch (error) {
-    await release();
-    throw error;
-  }
+	const persistence = options.persistence ?? "opfs";
+	if (persistence !== "opfs") {
+		throw new TypeError("streaming import requires OPFS persistence");
+	}
+	const pool = await sqlDatabasePoolName(options.name);
+	const owner = await acquireOwnerLease(deps, pool);
+	if (owner === undefined) {
+		throw new SqlStorageUnavailableError(
+			"pool-in-use",
+			"another context owns it",
+		);
+	}
+	const release = transient ? await markOperation(deps, pool, owner) : owner;
+	try {
+		const vfs = await installWithinLockWait(deps, pool);
+		if (vfs.importDb === undefined) {
+			throw new SqlStorageUnavailableError(
+				"opfs-unavailable",
+				"this SQLite build cannot stream an OPFS import",
+			);
+		}
+		const file = `/${pool}.sqlite3`;
+		if (countsSlots(vfs)) {
+			await reserveSahPoolSlots(vfs, file, deps.tempStore);
+		}
+		const iterator = chunks[Symbol.asyncIterator]();
+		await vfs.importDb(file, async () => {
+			const next = await iterator.next();
+			return next.done === true ? undefined : next.value;
+		});
+		return {
+			raw: new vfs.OpfsSAHPoolDb(file),
+			storage: { persistence: "opfs", pool, file },
+			release: async () => {
+				try {
+					vfs.pauseVfs?.();
+				} finally {
+					await release();
+				}
+			},
+		};
+	} catch (error) {
+		await release();
+		throw error;
+	}
 }
 
 export async function openSqlStorage<R>(
-  deps: SqlStorageDeps<R>,
-  options: SqlDatabaseOptions,
-  { transient = false }: OpenSqlStorageContext = {},
+	deps: SqlStorageDeps<R>,
+	options: SqlDatabaseOptions,
+	{ transient = false }: OpenSqlStorageContext = {},
 ): Promise<OpenedSqlStorage<R>> {
-  const persistence = options.persistence ?? "opfs";
-  if (persistence === "memory") {
-    return {
-      raw: deps.openMemory(),
-      storage: { persistence: "memory", reason: "requested" },
-      release: async () => undefined,
-    };
-  }
-  if (persistence !== "opfs") {
-    throw new TypeError(`unsupported SQL persistence: ${String(persistence)}`);
-  }
-  const pool = await sqlDatabasePoolName(options.name);
-  const owner = await acquireOwnerLease(deps, pool);
-  if (owner === undefined) {
-    return fallBack(deps, options, "pool-in-use", "another context owns it");
-  }
-  const release = transient ? await markOperation(deps, pool, owner) : owner;
-  try {
-    const vfs = await installWithinLockWait(deps, pool);
-    const file = `/${pool}.sqlite3`;
-    if (countsSlots(vfs)) {
-      await reserveSahPoolSlots(vfs, file, deps.tempStore);
-    }
-    return {
-      raw: new vfs.OpfsSAHPoolDb(file),
-      storage: { persistence: "opfs", pool, file },
-      // Free the handles BEFORE the lock, so the next owner (a reopen, a
-      // reloaded tab) can open them the moment it gets the lock.
-      release: async () => {
-        try {
-          vfs.pauseVfs?.();
-        } finally {
-          await release();
-        }
-      },
-    };
-  } catch (error) {
-    await release();
-    const reason = isPoolContentionError(error)
-      ? "pool-in-use"
-      : "opfs-unavailable";
-    return fallBack(deps, options, reason, describe(error));
-  }
+	const persistence = options.persistence ?? "opfs";
+	if (persistence === "memory") {
+		return {
+			raw: deps.openMemory(),
+			storage: { persistence: "memory", reason: "requested" },
+			release: async () => undefined,
+		};
+	}
+	if (persistence !== "opfs") {
+		throw new TypeError(`unsupported SQL persistence: ${String(persistence)}`);
+	}
+	const pool = await sqlDatabasePoolName(options.name);
+	const owner = await acquireOwnerLease(deps, pool);
+	if (owner === undefined) {
+		return fallBack(deps, options, "pool-in-use", "another context owns it");
+	}
+	const release = transient ? await markOperation(deps, pool, owner) : owner;
+	try {
+		const vfs = await installWithinLockWait(deps, pool);
+		const file = `/${pool}.sqlite3`;
+		if (countsSlots(vfs)) {
+			await reserveSahPoolSlots(vfs, file, deps.tempStore);
+		}
+		return {
+			raw: new vfs.OpfsSAHPoolDb(file),
+			storage: { persistence: "opfs", pool, file },
+			// Free the handles BEFORE the lock, so the next owner (a reopen, a
+			// reloaded tab) can open them the moment it gets the lock.
+			release: async () => {
+				try {
+					vfs.pauseVfs?.();
+				} finally {
+					await release();
+				}
+			},
+		};
+	} catch (error) {
+		await release();
+		const reason = isPoolContentionError(error)
+			? "pool-in-use"
+			: "opfs-unavailable";
+		return fallBack(deps, options, reason, describe(error));
+	}
 }
 
 /** Real pools count their slots; test doubles may not. */
 function countsSlots(pool: Partial<SahPoolSlots>): pool is SahPoolSlots {
-  return (
-    typeof pool.getFileNames === "function" &&
-    typeof pool.reserveMinimumCapacity === "function"
-  );
+	return (
+		typeof pool.getFileNames === "function" &&
+		typeof pool.reserveMinimumCapacity === "function"
+	);
 }
 
 const INSTALL_RETRY_INITIAL_DELAY_MS = 25;
@@ -239,40 +239,40 @@ const INSTALL_RETRY_MAX_DELAY_MS = 400;
  * to let go of the lock) before the caller reports pool-in-use.
  */
 async function installWithinLockWait<R>(
-  deps: SqlStorageDeps<R>,
-  pool: string,
+	deps: SqlStorageDeps<R>,
+	pool: string,
 ): ReturnType<SqlStorageDeps<R>["installPool"]> {
-  const deadline = Date.now() + deps.lockWaitMs;
-  let delayMs = INSTALL_RETRY_INITIAL_DELAY_MS;
-  for (;;) {
-    try {
-      return await deps.installPool(pool);
-    } catch (error) {
-      if (!isPoolContentionError(error) || Date.now() + delayMs > deadline) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_DELAY_MS);
-    }
-  }
+	const deadline = Date.now() + deps.lockWaitMs;
+	let delayMs = INSTALL_RETRY_INITIAL_DELAY_MS;
+	for (;;) {
+		try {
+			return await deps.installPool(pool);
+		} catch (error) {
+			if (!isPoolContentionError(error) || Date.now() + delayMs > deadline) {
+				throw error;
+			}
+			await new Promise((resolve) => setTimeout(resolve, delayMs));
+			delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_DELAY_MS);
+		}
+	}
 }
 
 function fallBack<R>(
-  deps: SqlStorageDeps<R>,
-  options: SqlDatabaseOptions,
-  reason: SqlFallbackReason,
-  detail: string,
+	deps: SqlStorageDeps<R>,
+	options: SqlDatabaseOptions,
+	reason: SqlFallbackReason,
+	detail: string,
 ): OpenedSqlStorage<R> {
-  const message = `SQL database "${options.name}" could not use OPFS (${reason}: ${detail})`;
-  if ((options.fallback ?? "none") !== "memory") {
-    throw new SqlStorageUnavailableError(reason, message);
-  }
-  deps.warn(`${message}; opened in memory instead`);
-  return {
-    raw: deps.openMemory(),
-    storage: { persistence: "memory", reason, detail },
-    release: async () => undefined,
-  };
+	const message = `SQL database "${options.name}" could not use OPFS (${reason}: ${detail})`;
+	if ((options.fallback ?? "none") !== "memory") {
+		throw new SqlStorageUnavailableError(reason, message);
+	}
+	deps.warn(`${message}; opened in memory instead`);
+	return {
+		raw: deps.openMemory(),
+		storage: { persistence: "memory", reason, detail },
+		release: async () => undefined,
+	};
 }
 
 type Lease = () => Promise<void>;
@@ -285,57 +285,57 @@ type Lease = () => Promise<void>;
  * take the lock again within the same budget. A live connection: undefined.
  */
 async function acquireOwnerLease<R>(
-  deps: SqlStorageDeps<R>,
-  pool: string,
+	deps: SqlStorageDeps<R>,
+	pool: string,
 ): Promise<Lease | undefined> {
-  const owner = poolOwnerLock(pool);
-  const lease = await acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
-  if (lease !== undefined || deps.locks?.query === undefined) return lease;
-  const held = new Set(
-    ((await deps.locks.query()).held ?? []).map((lock) => lock.name),
-  );
-  if (held.has(poolOperationLock(pool))) {
-    return acquirePoolLease(
-      deps.locks,
-      owner,
-      deps.lockWaitMs * OPERATION_WAIT_BUDGETS,
-    );
-  }
-  if (!held.has(owner)) {
-    return acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
-  }
-  return undefined;
+	const owner = poolOwnerLock(pool);
+	const lease = await acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+	if (lease !== undefined || deps.locks?.query === undefined) return lease;
+	const held = new Set(
+		((await deps.locks.query()).held ?? []).map((lock) => lock.name),
+	);
+	if (held.has(poolOperationLock(pool))) {
+		return acquirePoolLease(
+			deps.locks,
+			owner,
+			deps.lockWaitMs * OPERATION_WAIT_BUDGETS,
+		);
+	}
+	if (!held.has(owner)) {
+		return acquirePoolLease(deps.locks, owner, deps.lockWaitMs);
+	}
+	return undefined;
 }
 
 /** Hold `${pool}-operation` too; free it only after the owner lock. */
 async function markOperation<R>(
-  deps: SqlStorageDeps<R>,
-  pool: string,
-  owner: Lease,
+	deps: SqlStorageDeps<R>,
+	pool: string,
+	owner: Lease,
 ): Promise<Lease> {
-  // Free whenever the owner lock is ours: nobody else takes it without it.
-  const marker = await acquirePoolLease(
-    deps.locks,
-    poolOperationLock(pool),
-    deps.lockWaitMs,
-  );
-  return async () => {
-    try {
-      await owner();
-    } finally {
-      await marker?.();
-    }
-  };
+	// Free whenever the owner lock is ours: nobody else takes it without it.
+	const marker = await acquirePoolLease(
+		deps.locks,
+		poolOperationLock(pool),
+		deps.lockWaitMs,
+	);
+	return async () => {
+		try {
+			await owner();
+		} finally {
+			await marker?.();
+		}
+	};
 }
 
 /** Held, alongside the owner lock, by a bounded operation on `pool`. */
 export function poolOperationLock(pool: string): string {
-  return `${pool}-operation`;
+	return `${pool}-operation`;
 }
 
 /** The Web Lock every owner of the opfs-sahpool `pool` holds while open. */
 export function poolOwnerLock(pool: string): string {
-  return `${pool}-owner`;
+	return `${pool}-owner`;
 }
 
 /**
@@ -345,62 +345,62 @@ export function poolOwnerLock(pool: string): string {
  * what lets close() promise "the next owner can have it now".
  */
 export function acquirePoolLease(
-  locks: SqlLocks | undefined,
-  name: string,
-  waitMs: number,
+	locks: SqlLocks | undefined,
+	name: string,
+	waitMs: number,
 ): Promise<(() => Promise<void>) | undefined> {
-  if (locks === undefined) return Promise.resolve(async () => undefined);
-  let unhold: () => void = () => undefined;
-  const held = new Promise<void>((resolve) => {
-    unhold = resolve;
-  });
-  return new Promise((resolve, reject) => {
-    const settled = locks.request(
-      name,
-      Number.isFinite(waitMs)
-        ? { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }
-        : { mode: "exclusive" },
-      async () => {
-        resolve(async () => {
-          unhold();
-          await settled;
-        });
-        await held;
-      },
-    );
-    settled.catch((error: unknown) => {
-      if (isLockTimeout(error)) resolve(undefined);
-      else reject(error);
-    });
-  });
+	if (locks === undefined) return Promise.resolve(async () => undefined);
+	let unhold: () => void = () => undefined;
+	const held = new Promise<void>((resolve) => {
+		unhold = resolve;
+	});
+	return new Promise((resolve, reject) => {
+		const settled = locks.request(
+			name,
+			Number.isFinite(waitMs)
+				? { mode: "exclusive", signal: AbortSignal.timeout(waitMs) }
+				: { mode: "exclusive" },
+			async () => {
+				resolve(async () => {
+					unhold();
+					await settled;
+				});
+				await held;
+			},
+		);
+		settled.catch((error: unknown) => {
+			if (isLockTimeout(error)) resolve(undefined);
+			else reject(error);
+		});
+	});
 }
 
 /** DOMException is not an Error subclass in every realm, so match by name. */
 export function isLockTimeout(error: unknown): boolean {
-  const name = (error as { readonly name?: unknown } | null)?.name;
-  return name === "AbortError" || name === "TimeoutError";
+	const name = (error as { readonly name?: unknown } | null)?.name;
+	return name === "AbortError" || name === "TimeoutError";
 }
 
 export function isPoolContentionError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "NoModificationAllowedError" ||
-      /access handles? cannot be created|NoModificationAllowedError/i.test(
-        error.message,
-      ))
-  );
+	return (
+		error instanceof Error &&
+		(error.name === "NoModificationAllowedError" ||
+			/access handles? cannot be created|NoModificationAllowedError/i.test(
+				error.message,
+			))
+	);
 }
 
 function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+	return error instanceof Error ? error.message : String(error);
 }
 
 export async function stableIdentity(name: string): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(name)),
-  );
-  return [...digest]
-    .slice(0, 16)
-    .map((value) => value.toString(16).padStart(2, "0"))
-    .join("");
+	const digest = new Uint8Array(
+		await crypto.subtle.digest("SHA-256", new TextEncoder().encode(name)),
+	);
+	return [...digest]
+		.slice(0, 16)
+		.map((value) => value.toString(16).padStart(2, "0"))
+		.join("");
 }

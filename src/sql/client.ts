@@ -181,12 +181,18 @@ class Connection {
 		);
 	}
 
-	public request(request: RequestWithoutId, transfer: Transferable[] = []): Promise<unknown> {
+	public request(
+		request: RequestWithoutId,
+		transfer: Transferable[] = [],
+	): Promise<unknown> {
 		if (this.#terminal !== undefined) return Promise.reject(this.#terminal);
 		const id = this.#nextId++;
 		return new Promise((resolve, reject) => {
 			this.#pending.set(id, { resolve, reject });
-			this.#worker.postMessage({ ...request, id } as SqlWorkerRequest, transfer);
+			this.#worker.postMessage(
+				{ ...request, id } as SqlWorkerRequest,
+				transfer,
+			);
 		});
 	}
 
@@ -532,7 +538,11 @@ export async function importDatabaseFromStream(
 	};
 	try {
 		return (await connection.request(
-			{ operation: "import-stream", options: { ...dbOptions, name, persistence: "opfs" }, port: channel.port2 },
+			{
+				operation: "import-stream",
+				options: { ...dbOptions, name, persistence: "opfs" },
+				port: channel.port2,
+			},
 			[channel.port2],
 		)) as SqlStorage;
 	} finally {
