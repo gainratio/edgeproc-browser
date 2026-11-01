@@ -9,6 +9,7 @@ import { MEMORY_PROFILES } from "../sqlite/memoryProfile";
 import { loadNodeSqlite, type NodeSqlite } from "./__fixtures__/nodeSqlite";
 import {
 	exportDatabase,
+	importDatabaseFromStream,
 	migrateLegacySahPool,
 	openSqlDatabase,
 	type SqlWorkerLike,
@@ -39,8 +40,16 @@ class InProcessWorker implements SqlWorkerLike {
 		this.#handle = handle;
 	}
 
-	public postMessage(request: SqlWorkerRequest): void {
-		const cloned = structuredClone(request);
+	public postMessage(
+		request: SqlWorkerRequest,
+		transfer?: ReadonlyArray<Transferable>,
+	): void {
+		const cloned =
+			transfer !== undefined && transfer.length > 0
+				? structuredClone(request, {
+						transfer: [...transfer] as Transferable[],
+					})
+				: structuredClone(request);
 		this.requests.push(cloned);
 		void this.#handle(cloned).then((response) =>
 			this.emit("message", { data: structuredClone(response) }),
@@ -728,6 +737,64 @@ describe("openSqlDatabase through the Worker protocol", () => {
 		await expect(db.importDatabase(new Uint8Array([1]))).rejects.toThrow(
 			"SQL database is closed",
 		);
+	});
+
+	it("importDatabaseFromStream pulls chunks over MessagePort and propagates stream errors", async () => {
+		const received: Uint8Array[] = [];
+		const handle = createSqlWorkerHandler(
+			async () => {
+				throw new Error("unexpected open");
+			},
+			async (_options, port) => {
+				try {
+					for (;;) {
+						port.postMessage({ type: "pull" });
+						const msg = await new Promise<{
+							readonly done?: boolean;
+							readonly chunk?: Uint8Array;
+							readonly error?: string;
+						}>((resolve) => {
+							port.onmessage = (event) => resolve(event.data);
+						});
+						if (msg.error !== undefined) throw new Error(msg.error);
+						if (msg.done === true) break;
+						if (msg.chunk === undefined) throw new Error("empty import chunk");
+						received.push(msg.chunk);
+					}
+					return { persistence: "opfs", pool: "p", file: "/p.sqlite3" };
+				} finally {
+					port.close();
+				}
+			},
+		);
+
+		const okStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1, 2]));
+				controller.enqueue(new Uint8Array([3, 4]));
+				controller.close();
+			},
+		});
+		const storage = await importDatabaseFromStream("streamed", okStream, {
+			workerFactory: () => new InProcessWorker(handle),
+		});
+		expect(storage).toEqual({
+			persistence: "opfs",
+			pool: "p",
+			file: "/p.sqlite3",
+		});
+		expect(received).toEqual([new Uint8Array([1, 2]), new Uint8Array([3, 4])]);
+
+		const badStream = new ReadableStream<Uint8Array>({
+			pull() {
+				throw new Error("chunk sha256 mismatch");
+			},
+		});
+		await expect(
+			importDatabaseFromStream("streamed", badStream, {
+				workerFactory: () => new InProcessWorker(handle),
+			}),
+		).rejects.toThrow(/chunk sha256 mismatch/);
 	});
 });
 

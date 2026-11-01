@@ -332,6 +332,8 @@ export async function importDatabaseFromStream(name, stream, options = {}) {
         }, [channel.port2]));
     }
     finally {
+        channel.port1.close();
+        reader.releaseLock();
         connection.terminate(new Error("stream import finished"));
     }
 }

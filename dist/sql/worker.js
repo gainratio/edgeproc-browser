@@ -30,16 +30,23 @@ async function importStream(options, port) {
 function portChunks(port) {
     return {
         async *[Symbol.asyncIterator]() {
-            for (;;) {
-                port.postMessage({ type: "pull" });
-                const message = await new Promise((resolve) => {
-                    port.onmessage = (event) => resolve(event.data);
-                });
-                if (message.done === true)
-                    return;
-                if (message.chunk === undefined)
-                    throw new Error("empty import chunk");
-                yield message.chunk;
+            try {
+                for (;;) {
+                    port.postMessage({ type: "pull" });
+                    const message = await new Promise((resolve) => {
+                        port.onmessage = (event) => resolve(event.data);
+                    });
+                    if (message.error !== undefined)
+                        throw new Error(message.error);
+                    if (message.done === true)
+                        return;
+                    if (message.chunk === undefined)
+                        throw new Error("empty import chunk");
+                    yield message.chunk;
+                }
+            }
+            finally {
+                port.close();
             }
         },
     };

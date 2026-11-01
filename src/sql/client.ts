@@ -546,6 +546,8 @@ export async function importDatabaseFromStream(
 			[channel.port2],
 		)) as SqlStorage;
 	} finally {
+		channel.port1.close();
+		reader.releaseLock();
 		connection.terminate(new Error("stream import finished"));
 	}
 }
