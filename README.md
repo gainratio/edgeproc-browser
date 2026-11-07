@@ -4,6 +4,8 @@ For web developers: have the browser check that downloaded data was signed by yo
 
 **`npm install @gainratio/browser`** (version 0.4.4; `@edgeproc/browser` is the old, deprecated name)
 
+**Docs:** [browser.gainratio.com](https://browser.gainratio.com/) · [Getting started](https://browser.gainratio.com/docs/) · [Examples](https://browser.gainratio.com/examples/)
+
 [![CI](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/gainratio/edgeproc-browser/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@gainratio/browser)](https://www.npmjs.com/package/@gainratio/browser)
 [![License](https://img.shields.io/github/license/gainratio/edgeproc-browser)](LICENSE)
