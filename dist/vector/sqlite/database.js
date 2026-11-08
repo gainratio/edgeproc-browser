@@ -21,8 +21,14 @@ const TABLE = "edgeproc_vectors";
 const METADATA_TABLE = "edgeproc_vector_metadata";
 const LOOKUP_TABLE = "edgeproc_vector_lookup_keys";
 const CONFIG_TABLE = "edgeproc_vector_config";
+const QUANTIZE_TABLE = `vector0_${TABLE}_embedding`;
 const SQLITE_MAX_BIND_PARAMETERS = 32_766;
 const MAX_LOOKUP_QUERY_KEYS = 64;
+const TURBOQUANT_MIN_ROWS = 256;
+const TURBOQUANT_OVERSAMPLE_FACTOR = 8;
+const TURBOQUANT_MIN_CANDIDATES = 512;
+const DIRECT_ID_LOOKUP_THRESHOLD = 256;
+const BATCH_INSERT_RUN_LIMIT = 512;
 /** Exact FLOAT32 cosine index backed by SQLite plus sqlite-vector. */
 export class SqliteDatabaseVectorIndex {
     name;
@@ -30,6 +36,8 @@ export class SqliteDatabaseVectorIndex {
     capabilities;
     #database;
     #disposed = false;
+    #quantizeReady = false;
+    #mutated = false;
     constructor(options, database, persistent = true) {
         validateOptions(options);
         this.name = options.name;
@@ -45,21 +53,22 @@ export class SqliteDatabaseVectorIndex {
     }
     async insert(records) {
         this.#assertOpen();
-        const accepted = records.map((record) => validateAndCopyRecord(record, this.dimension));
+        const accepted = records.map((record) => ({
+            ...validateAndCopyRecord(record, this.dimension),
+            lookupKeys: [],
+        }));
         this.#database.transaction(() => {
-            for (const record of accepted) {
-                this.#replaceRecord(record, []);
-            }
+            this.#replaceRecords(accepted);
         });
+        this.#invalidateQuantize();
     }
     async insertKeyed(records) {
         this.#assertOpen();
         const accepted = records.map((record) => validateAndCopyKeyedRecord(record, this.dimension));
         this.#database.transaction(() => {
-            for (const record of accepted) {
-                this.#replaceRecord(record, record.lookupKeys);
-            }
+            this.#replaceRecords(accepted);
         });
+        this.#invalidateQuantize();
     }
     async lookupIds(keys, maxDocumentFrequency) {
         this.#assertOpen();
@@ -114,6 +123,12 @@ export class SqliteDatabaseVectorIndex {
             return [];
         }
         const scoped = filterClause(filters, "v");
+        if (scoped.sql.length === 0) {
+            const rowCount = this.#unscopedRowCount();
+            if (rowCount >= TURBOQUANT_MIN_ROWS) {
+                return this.#searchTurboQuant(query, limit, rowCount);
+            }
+        }
         const rows = this.#database.selectObjects(`SELECT v.id AS id, scan.distance AS distance, v.metadata_json AS metadata_json
 			 FROM vector_full_scan('${TABLE}', 'embedding', ?) AS scan
 			 JOIN ${TABLE} AS v ON v.rowid = scan.rowid
@@ -129,6 +144,9 @@ export class SqliteDatabaseVectorIndex {
         if (unique.length === 0) {
             return [];
         }
+        if (unique.length <= DIRECT_ID_LOOKUP_THRESHOLD) {
+            return this.#searchByIdsDirect(query, unique);
+        }
         const hits = [];
         for (const idsChunk of chunks(unique, SQLITE_MAX_BIND_PARAMETERS - 1)) {
             const placeholders = idsChunk.map(() => "?").join(", ");
@@ -138,7 +156,7 @@ export class SqliteDatabaseVectorIndex {
 				 WHERE v.id IN (${placeholders})`, [vectorBytes(query), ...idsChunk]);
             hits.push(...rows.map(decodeHit));
         }
-        hits.sort((left, right) => left.distance - right.distance || compareCodeUnits(left.id, right.id));
+        hits.sort(compareHits);
         return hits;
     }
     async delete(ids, filters) {
@@ -154,19 +172,29 @@ export class SqliteDatabaseVectorIndex {
         const scoped = filterClause(filters, TABLE);
         const placeholders = unique.map(() => "?").join(", ");
         this.#database.exec(`DELETE FROM ${TABLE} WHERE id IN (${placeholders})${scoped.sql.replace("WHERE", " AND")}`, [...unique, ...scoped.bind]);
-        return requireFiniteNumber(this.#database.selectObjects("SELECT changes() AS changed")[0]?.changed, "SQLite delete count");
+        const changed = requireFiniteNumber(this.#database.selectObjects("SELECT changes() AS changed")[0]?.changed, "SQLite delete count");
+        if (changed > 0) {
+            this.#invalidateQuantize();
+        }
+        return changed;
     }
     async deleteWhere(filters) {
         this.#assertOpen();
         validateRequiredMetadata(filters, "filters");
         const scoped = filterClause(filters, TABLE);
         this.#database.exec(`DELETE FROM ${TABLE} ${scoped.sql}`, scoped.bind);
-        return changedRowCount(this.#database, "SQLite metadata delete count");
+        const changed = changedRowCount(this.#database, "SQLite metadata delete count");
+        if (changed > 0) {
+            this.#invalidateQuantize();
+        }
+        return changed;
     }
     async clear() {
         this.#assertOpen();
         this.#database.exec(`DELETE FROM ${TABLE}`);
-        return changedRowCount(this.#database, "SQLite clear count");
+        const changed = changedRowCount(this.#database, "SQLite clear count");
+        this.#cleanupQuantize();
+        return changed;
     }
     async stats(filters) {
         this.#assertOpen();
@@ -198,6 +226,7 @@ export class SqliteDatabaseVectorIndex {
         if (this.#disposed) {
             return;
         }
+        this.#cleanupQuantize();
         this.#disposed = true;
         this.#database.close();
     }
@@ -235,22 +264,121 @@ export class SqliteDatabaseVectorIndex {
         if (storedDimension !== this.dimension) {
             throw new Error(`vector index ${JSON.stringify(this.name)} has dimension ${storedDimension}; requested ${this.dimension}`);
         }
-        this.#database.selectObjects(`SELECT vector_init('${TABLE}', 'embedding', ?) AS initialized`, [`dimension=${this.dimension},type=FLOAT32,distance=COSINE`]);
+        this.#database.selectObjects(`SELECT vector_init('${TABLE}', 'embedding', ?) AS initialized`, [
+            `dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4`,
+        ]);
     }
     #assertOpen() {
         if (this.#disposed) {
             throw new Error(`vector index ${JSON.stringify(this.name)} is disposed`);
         }
     }
-    #replaceRecord(record, lookupKeys) {
-        this.#database.exec(`DELETE FROM ${TABLE} WHERE id = ?`, [record.id]);
-        this.#database.exec(`INSERT INTO ${TABLE}(id, embedding, metadata_json) VALUES(?, vector_as_f32(?), ?)`, [record.id, vectorBytes(record.vector), JSON.stringify(record.metadata)]);
-        for (const [key, value] of Object.entries(record.metadata)) {
-            const encoded = encodeScalar(value);
-            this.#database.exec(`INSERT INTO ${METADATA_TABLE}(record_id, key, kind, value_text, value_number) VALUES(?, ?, ?, ?, ?)`, [record.id, key, encoded.kind, encoded.text, encoded.number]);
+    #unscopedRowCount() {
+        return requireFiniteNumber(this.#database.selectObjects(`SELECT COUNT(*) AS count FROM ${TABLE}`)[0]
+            ?.count, "SQLite vector count");
+    }
+    #invalidateQuantize() {
+        this.#quantizeReady = false;
+        this.#mutated = true;
+    }
+    #cleanupQuantize() {
+        this.#quantizeReady = false;
+        this.#mutated = true;
+        this.#database.selectObjects(`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`);
+    }
+    #ensureTurboQuant(rowCount) {
+        if (this.#quantizeReady) {
+            return;
         }
-        for (const key of lookupKeys) {
-            this.#database.exec(`INSERT INTO ${LOOKUP_TABLE}(record_id, namespace, lookup_key) VALUES(?, ?, ?)`, [record.id, key.namespace, key.value]);
+        if (this.#mutated || !this.#hasQuantizedRows(rowCount)) {
+            this.#database.selectObjects(`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`);
+            this.#database.selectObjects(`SELECT vector_quantize('${TABLE}', 'embedding')`);
+            this.#mutated = false;
+        }
+        this.#database.selectObjects(`SELECT vector_quantize_preload('${TABLE}', 'embedding')`);
+        this.#quantizeReady = true;
+    }
+    #hasQuantizedRows(rowCount) {
+        const exists = this.#database.selectObjects("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?", [QUANTIZE_TABLE])[0];
+        if (exists === undefined) {
+            return false;
+        }
+        const quantizedCount = requireFiniteNumber(this.#database.selectObjects(`SELECT COALESCE(SUM(counter), 0) AS count FROM ${QUANTIZE_TABLE}`)[0]?.count, "quantized vector count");
+        return quantizedCount === rowCount;
+    }
+    #searchTurboQuant(query, limit, rowCount) {
+        this.#ensureTurboQuant(rowCount);
+        const candidateLimit = Math.min(rowCount, Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES));
+        const rows = this.#database.selectObjects(`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
+			 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
+			 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`, [vectorBytes(query), candidateLimit]);
+        const hits = rows.map((row) => decodeRescoredHit(row, query, this.dimension));
+        hits.sort(compareHits);
+        return hits.slice(0, limit);
+    }
+    #searchByIdsDirect(query, unique) {
+        const placeholders = unique.map(() => "?").join(", ");
+        const rows = this.#database.selectObjects(`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
+			 FROM ${TABLE} AS v
+			 WHERE v.id IN (${placeholders})`, unique);
+        const hits = rows.map((row) => decodeRescoredHit(row, query, this.dimension));
+        hits.sort(compareHits);
+        return hits;
+    }
+    #replaceRecords(records) {
+        for (const run of distinctIdRuns(records, BATCH_INSERT_RUN_LIMIT)) {
+            this.#replaceDistinctRun(run);
+        }
+    }
+    #replaceDistinctRun(run) {
+        const deletePlaceholders = run.map(() => "?").join(", ");
+        this.#database.exec(`DELETE FROM ${TABLE} WHERE id IN (${deletePlaceholders})`, run.map((record) => record.id));
+        const vectorPlaceholders = run
+            .map(() => "(?, vector_as_f32(?), ?)")
+            .join(", ");
+        const vectorBind = [];
+        const metadataRows = [];
+        const lookupRows = [];
+        for (const record of run) {
+            vectorBind.push(record.id, vectorBytes(record.vector), JSON.stringify(record.metadata));
+            for (const [key, value] of Object.entries(record.metadata)) {
+                const encoded = encodeScalar(value);
+                metadataRows.push([
+                    record.id,
+                    key,
+                    encoded.kind,
+                    encoded.text,
+                    encoded.number,
+                ]);
+            }
+            for (const key of record.lookupKeys) {
+                lookupRows.push([record.id, key.namespace, key.value]);
+            }
+        }
+        this.#database.exec(`INSERT INTO ${TABLE}(id, embedding, metadata_json) VALUES ${vectorPlaceholders}`, vectorBind);
+        this.#insertMetadataRows(metadataRows);
+        this.#insertLookupRows(lookupRows);
+    }
+    #insertMetadataRows(rows) {
+        const maxRows = Math.floor(SQLITE_MAX_BIND_PARAMETERS / 5);
+        for (const chunk of chunks(rows, maxRows)) {
+            const placeholders = chunk.map(() => "(?, ?, ?, ?, ?)").join(", ");
+            const bind = [];
+            for (const [recordId, key, kind, text, num] of chunk) {
+                bind.push(recordId, key, kind, text, num);
+            }
+            this.#database.exec(`INSERT INTO ${METADATA_TABLE}(record_id, key, kind, value_text, value_number) VALUES ${placeholders}`, bind);
+        }
+    }
+    #insertLookupRows(rows) {
+        const maxRows = Math.floor(SQLITE_MAX_BIND_PARAMETERS / 3);
+        for (const chunk of chunks(rows, maxRows)) {
+            const placeholders = chunk.map(() => "(?, ?, ?)").join(", ");
+            const bind = [];
+            for (const [recordId, namespace, value] of chunk) {
+                bind.push(recordId, namespace, value);
+            }
+            this.#database.exec(`INSERT INTO ${LOOKUP_TABLE}(record_id, namespace, lookup_key) VALUES ${placeholders}`, bind);
         }
     }
 }
@@ -427,6 +555,65 @@ function decodeHit(row) {
         distance: requireFiniteNumber(row.distance, "search result distance"),
         metadata: decodeMetadata(row.metadata_json),
     };
+}
+function decodeRescoredHit(row, query, dimension) {
+    return {
+        id: requireString(row.id, "search result id"),
+        distance: cosineDistanceF32(query, row.embedding, dimension),
+        metadata: decodeMetadata(row.metadata_json),
+    };
+}
+function cosineDistanceF32(query, embeddingBytes, dimension) {
+    const candidate = decodeEmbeddingView(embeddingBytes, dimension);
+    let dot = 0;
+    let queryNorm = 0;
+    let candidateNorm = 0;
+    for (let index = 0; index < dimension; index += 1) {
+        const q = query[index] ?? 0;
+        const c = candidate[index] ?? 0;
+        dot = Math.fround(dot + Math.fround(q * c));
+        queryNorm = Math.fround(queryNorm + Math.fround(q * q));
+        candidateNorm = Math.fround(candidateNorm + Math.fround(c * c));
+    }
+    const denominator = Math.fround(Math.fround(Math.sqrt(queryNorm)) * Math.fround(Math.sqrt(candidateNorm)));
+    if (denominator === 0) {
+        return 1;
+    }
+    return Math.max(0, Math.fround(1 - Math.fround(dot / denominator)));
+}
+function decodeEmbeddingView(bytes, dimension) {
+    if (!(bytes instanceof Uint8Array)) {
+        throw new TypeError("SQLite returned a non-BLOB embedding");
+    }
+    if (bytes.byteLength !== dimension * Float32Array.BYTES_PER_ELEMENT) {
+        throw new RangeError(`stored vector has ${bytes.byteLength} bytes; expected ${dimension * Float32Array.BYTES_PER_ELEMENT}`);
+    }
+    if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+        return new Float32Array(bytes.buffer, bytes.byteOffset, dimension);
+    }
+    const aligned = bytes.slice();
+    return new Float32Array(aligned.buffer, aligned.byteOffset, dimension);
+}
+function compareHits(left, right) {
+    return left.distance - right.distance || compareCodeUnits(left.id, right.id);
+}
+function distinctIdRuns(records, maxRecordsPerRun) {
+    const runs = [];
+    let current = [];
+    let seen = new Set();
+    for (const record of records) {
+        if (seen.has(record.id) || current.length >= maxRecordsPerRun) {
+            runs.push(current);
+            current = [];
+            seen = new Set();
+        }
+        seen.add(record.id);
+        current.push(record);
+    }
+    if (current.length > 0) {
+        runs.push(current);
+    }
+    return runs;
 }
 function decodeMetadata(value) {
     const json = requireString(value, "stored metadata");

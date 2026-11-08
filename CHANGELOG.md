@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-11-07
+
+Faster SQLite vector search, named-record scoring, and batch indexing via bundled `TurboQuant` (`qtype=TURBOQUANT,qbits=4`) with exact `FLOAT32` rescoring.
+
+### Changed
+
+- **Preloaded `TurboQuant` with exact `FLOAT32` rescoring (`SqliteDatabaseVectorIndex.search`).** Unscoped searches on tables with $\ge 256$ vectors now initialize `sqlite-vector` with `qtype=TURBOQUANT,qbits=4`, persist and preload 4-bit quantized codes (`vector_quantize` / `vector_quantize_preload`), retrieve an oversampled candidate pool via `vector_quantize_scan`, and rescore exact IEEE-754 `FLOAT32` cosine distances. Warm OPFS opens reuse the persisted quantized table without re-quantizing.
+- **Primary-key fast path for small `searchByIds` batches.** Batches of up to 256 IDs fetch matching records directly by primary key and score exact `FLOAT32` cosine distance instead of scanning the entire vector table.
+- **Multi-row batched `insert` and `insertKeyed`.** Runs of distinct record IDs batch `DELETE`, vector `INSERT`, metadata `INSERT`, and lookup-key `INSERT` statements within each transaction.
+
 ## [0.4.3] - 2026-10-25
 
 Offline sync and cached reads now trust the pinned root, not the rows at rest.
