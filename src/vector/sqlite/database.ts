@@ -83,8 +83,14 @@ const TABLE = "edgeproc_vectors";
 const METADATA_TABLE = "edgeproc_vector_metadata";
 const LOOKUP_TABLE = "edgeproc_vector_lookup_keys";
 const CONFIG_TABLE = "edgeproc_vector_config";
+const QUANTIZE_TABLE = `vector0_${TABLE}_embedding`;
 const SQLITE_MAX_BIND_PARAMETERS = 32_766;
 const MAX_LOOKUP_QUERY_KEYS = 64;
+const TURBOQUANT_MIN_ROWS = 256;
+const TURBOQUANT_OVERSAMPLE_FACTOR = 8;
+const TURBOQUANT_MIN_CANDIDATES = 512;
+const DIRECT_ID_LOOKUP_THRESHOLD = 256;
+const BATCH_INSERT_RUN_LIMIT = 512;
 
 /** Exact FLOAT32 cosine index backed by SQLite plus sqlite-vector. */
 export class SqliteDatabaseVectorIndex implements VectorIndex {
@@ -93,6 +99,8 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 	public readonly capabilities: VectorIndexCapabilities;
 	readonly #database: SqliteDatabase;
 	#disposed = false;
+	#quantizeReady = false;
+	#mutated = false;
 
 	public constructor(
 		options: SqliteVectorIndexOptions,
@@ -114,14 +122,14 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 
 	public async insert(records: ReadonlyArray<VectorRecord>): Promise<void> {
 		this.#assertOpen();
-		const accepted = records.map((record) =>
-			validateAndCopyRecord(record, this.dimension),
-		);
+		const accepted = records.map((record) => ({
+			...validateAndCopyRecord(record, this.dimension),
+			lookupKeys: [] as ReadonlyArray<SqliteLookupKey>,
+		}));
 		this.#database.transaction(() => {
-			for (const record of accepted) {
-				this.#replaceRecord(record, []);
-			}
+			this.#replaceRecords(accepted);
 		});
+		this.#invalidateQuantize();
 	}
 
 	public async insertKeyed(
@@ -132,10 +140,9 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 			validateAndCopyKeyedRecord(record, this.dimension),
 		);
 		this.#database.transaction(() => {
-			for (const record of accepted) {
-				this.#replaceRecord(record, record.lookupKeys);
-			}
+			this.#replaceRecords(accepted);
 		});
+		this.#invalidateQuantize();
 	}
 
 	public async lookupIds(
@@ -210,6 +217,12 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		}
 
 		const scoped = filterClause(filters, "v");
+		if (scoped.sql.length === 0) {
+			const rowCount = this.#unscopedRowCount();
+			if (rowCount >= TURBOQUANT_MIN_ROWS) {
+				return this.#searchTurboQuant(query, limit, rowCount);
+			}
+		}
 		const rows = this.#database.selectObjects(
 			`SELECT v.id AS id, scan.distance AS distance, v.metadata_json AS metadata_json
 			 FROM vector_full_scan('${TABLE}', 'embedding', ?) AS scan
@@ -232,6 +245,9 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		if (unique.length === 0) {
 			return [];
 		}
+		if (unique.length <= DIRECT_ID_LOOKUP_THRESHOLD) {
+			return this.#searchByIdsDirect(query, unique);
+		}
 		const hits: VectorHit[] = [];
 		for (const idsChunk of chunks(unique, SQLITE_MAX_BIND_PARAMETERS - 1)) {
 			const placeholders = idsChunk.map(() => "?").join(", ");
@@ -244,10 +260,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 			);
 			hits.push(...rows.map(decodeHit));
 		}
-		hits.sort(
-			(left, right) =>
-				left.distance - right.distance || compareCodeUnits(left.id, right.id),
-		);
+		hits.sort(compareHits);
 		return hits;
 	}
 
@@ -270,10 +283,14 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 			`DELETE FROM ${TABLE} WHERE id IN (${placeholders})${scoped.sql.replace("WHERE", " AND")}`,
 			[...unique, ...scoped.bind],
 		);
-		return requireFiniteNumber(
+		const changed = requireFiniteNumber(
 			this.#database.selectObjects("SELECT changes() AS changed")[0]?.changed,
 			"SQLite delete count",
 		);
+		if (changed > 0) {
+			this.#invalidateQuantize();
+		}
+		return changed;
 	}
 
 	public async deleteWhere(filters: Metadata): Promise<number> {
@@ -281,13 +298,22 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		validateRequiredMetadata(filters, "filters");
 		const scoped = filterClause(filters, TABLE);
 		this.#database.exec(`DELETE FROM ${TABLE} ${scoped.sql}`, scoped.bind);
-		return changedRowCount(this.#database, "SQLite metadata delete count");
+		const changed = changedRowCount(
+			this.#database,
+			"SQLite metadata delete count",
+		);
+		if (changed > 0) {
+			this.#invalidateQuantize();
+		}
+		return changed;
 	}
 
 	public async clear(): Promise<number> {
 		this.#assertOpen();
 		this.#database.exec(`DELETE FROM ${TABLE}`);
-		return changedRowCount(this.#database, "SQLite clear count");
+		const changed = changedRowCount(this.#database, "SQLite clear count");
+		this.#cleanupQuantize();
+		return changed;
 	}
 
 	public async stats(filters?: Metadata): Promise<VectorStats> {
@@ -340,6 +366,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		if (this.#disposed) {
 			return;
 		}
+		this.#cleanupQuantize();
 		this.#disposed = true;
 		this.#database.close();
 	}
@@ -390,7 +417,9 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		}
 		this.#database.selectObjects(
 			`SELECT vector_init('${TABLE}', 'embedding', ?) AS initialized`,
-			[`dimension=${this.dimension},type=FLOAT32,distance=COSINE`],
+			[
+				`dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4`,
+			],
 		);
 	}
 
@@ -400,26 +429,184 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		}
 	}
 
-	#replaceRecord(
-		record: VectorRecord,
-		lookupKeys: ReadonlyArray<SqliteLookupKey>,
-	): void {
-		this.#database.exec(`DELETE FROM ${TABLE} WHERE id = ?`, [record.id]);
-		this.#database.exec(
-			`INSERT INTO ${TABLE}(id, embedding, metadata_json) VALUES(?, vector_as_f32(?), ?)`,
-			[record.id, vectorBytes(record.vector), JSON.stringify(record.metadata)],
+	#unscopedRowCount(): number {
+		return requireFiniteNumber(
+			this.#database.selectObjects(`SELECT COUNT(*) AS count FROM ${TABLE}`)[0]
+				?.count,
+			"SQLite vector count",
 		);
-		for (const [key, value] of Object.entries(record.metadata)) {
-			const encoded = encodeScalar(value);
+	}
+
+	#invalidateQuantize(): void {
+		this.#quantizeReady = false;
+		this.#mutated = true;
+	}
+
+	#cleanupQuantize(): void {
+		this.#quantizeReady = false;
+		this.#mutated = true;
+		this.#database.selectObjects(
+			`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
+		);
+	}
+
+	#ensureTurboQuant(rowCount: number): void {
+		if (this.#quantizeReady) {
+			return;
+		}
+		if (this.#mutated || !this.#hasQuantizedRows(rowCount)) {
+			this.#database.selectObjects(
+				`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
+			);
+			this.#database.selectObjects(
+				`SELECT vector_quantize('${TABLE}', 'embedding')`,
+			);
+			this.#mutated = false;
+		}
+		this.#database.selectObjects(
+			`SELECT vector_quantize_preload('${TABLE}', 'embedding')`,
+		);
+		this.#quantizeReady = true;
+	}
+
+	#hasQuantizedRows(rowCount: number): boolean {
+		const exists = this.#database.selectObjects(
+			"SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+			[QUANTIZE_TABLE],
+		)[0];
+		if (exists === undefined) {
+			return false;
+		}
+		const quantizedCount = requireFiniteNumber(
+			this.#database.selectObjects(
+				`SELECT COALESCE(SUM(counter), 0) AS count FROM ${QUANTIZE_TABLE}`,
+			)[0]?.count,
+			"quantized vector count",
+		);
+		return quantizedCount === rowCount;
+	}
+
+	#searchTurboQuant(
+		query: Float32Array,
+		limit: number,
+		rowCount: number,
+	): ReadonlyArray<VectorHit> {
+		this.#ensureTurboQuant(rowCount);
+		const candidateLimit = Math.min(
+			rowCount,
+			Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES),
+		);
+		const rows = this.#database.selectObjects(
+			`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
+			 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
+			 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`,
+			[vectorBytes(query), candidateLimit],
+		);
+		const hits = rows.map((row) =>
+			decodeRescoredHit(row, query, this.dimension),
+		);
+		hits.sort(compareHits);
+		return hits.slice(0, limit);
+	}
+
+	#searchByIdsDirect(
+		query: Float32Array,
+		unique: ReadonlyArray<string>,
+	): ReadonlyArray<VectorHit> {
+		const placeholders = unique.map(() => "?").join(", ");
+		const rows = this.#database.selectObjects(
+			`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
+			 FROM ${TABLE} AS v
+			 WHERE v.id IN (${placeholders})`,
+			unique,
+		);
+		const hits = rows.map((row) =>
+			decodeRescoredHit(row, query, this.dimension),
+		);
+		hits.sort(compareHits);
+		return hits;
+	}
+
+	#replaceRecords(records: ReadonlyArray<SqliteKeyedVectorRecord>): void {
+		for (const run of distinctIdRuns(records, BATCH_INSERT_RUN_LIMIT)) {
+			this.#replaceDistinctRun(run);
+		}
+	}
+
+	#replaceDistinctRun(run: ReadonlyArray<SqliteKeyedVectorRecord>): void {
+		const deletePlaceholders = run.map(() => "?").join(", ");
+		this.#database.exec(
+			`DELETE FROM ${TABLE} WHERE id IN (${deletePlaceholders})`,
+			run.map((record) => record.id),
+		);
+		const vectorPlaceholders = run
+			.map(() => "(?, vector_as_f32(?), ?)")
+			.join(", ");
+		const vectorBind: SqliteValue[] = [];
+		const metadataRows: Array<
+			readonly [string, string, string, string | null, number | null]
+		> = [];
+		const lookupRows: Array<readonly [string, string, string]> = [];
+		for (const record of run) {
+			vectorBind.push(
+				record.id,
+				vectorBytes(record.vector),
+				JSON.stringify(record.metadata),
+			);
+			for (const [key, value] of Object.entries(record.metadata)) {
+				const encoded = encodeScalar(value);
+				metadataRows.push([
+					record.id,
+					key,
+					encoded.kind,
+					encoded.text,
+					encoded.number,
+				]);
+			}
+			for (const key of record.lookupKeys) {
+				lookupRows.push([record.id, key.namespace, key.value]);
+			}
+		}
+		this.#database.exec(
+			`INSERT INTO ${TABLE}(id, embedding, metadata_json) VALUES ${vectorPlaceholders}`,
+			vectorBind,
+		);
+		this.#insertMetadataRows(metadataRows);
+		this.#insertLookupRows(lookupRows);
+	}
+
+	#insertMetadataRows(
+		rows: ReadonlyArray<
+			readonly [string, string, string, string | null, number | null]
+		>,
+	): void {
+		const maxRows = Math.floor(SQLITE_MAX_BIND_PARAMETERS / 5);
+		for (const chunk of chunks(rows, maxRows)) {
+			const placeholders = chunk.map(() => "(?, ?, ?, ?, ?)").join(", ");
+			const bind: SqliteValue[] = [];
+			for (const [recordId, key, kind, text, num] of chunk) {
+				bind.push(recordId, key, kind, text, num);
+			}
 			this.#database.exec(
-				`INSERT INTO ${METADATA_TABLE}(record_id, key, kind, value_text, value_number) VALUES(?, ?, ?, ?, ?)`,
-				[record.id, key, encoded.kind, encoded.text, encoded.number],
+				`INSERT INTO ${METADATA_TABLE}(record_id, key, kind, value_text, value_number) VALUES ${placeholders}`,
+				bind,
 			);
 		}
-		for (const key of lookupKeys) {
+	}
+
+	#insertLookupRows(
+		rows: ReadonlyArray<readonly [string, string, string]>,
+	): void {
+		const maxRows = Math.floor(SQLITE_MAX_BIND_PARAMETERS / 3);
+		for (const chunk of chunks(rows, maxRows)) {
+			const placeholders = chunk.map(() => "(?, ?, ?)").join(", ");
+			const bind: SqliteValue[] = [];
+			for (const [recordId, namespace, value] of chunk) {
+				bind.push(recordId, namespace, value);
+			}
 			this.#database.exec(
-				`INSERT INTO ${LOOKUP_TABLE}(record_id, namespace, lookup_key) VALUES(?, ?, ?)`,
-				[record.id, key.namespace, key.value],
+				`INSERT INTO ${LOOKUP_TABLE}(record_id, namespace, lookup_key) VALUES ${placeholders}`,
+				bind,
 			);
 		}
 	}
@@ -667,6 +854,85 @@ function decodeHit(row: Readonly<Record<string, unknown>>): VectorHit {
 		distance: requireFiniteNumber(row.distance, "search result distance"),
 		metadata: decodeMetadata(row.metadata_json),
 	};
+}
+
+function decodeRescoredHit(
+	row: Readonly<Record<string, unknown>>,
+	query: Float32Array,
+	dimension: number,
+): VectorHit {
+	return {
+		id: requireString(row.id, "search result id"),
+		distance: cosineDistanceF32(query, row.embedding, dimension),
+		metadata: decodeMetadata(row.metadata_json),
+	};
+}
+
+function cosineDistanceF32(
+	query: Float32Array,
+	embeddingBytes: unknown,
+	dimension: number,
+): number {
+	const candidate = decodeEmbeddingView(embeddingBytes, dimension);
+	let dot = 0;
+	let queryNorm = 0;
+	let candidateNorm = 0;
+	for (let index = 0; index < dimension; index += 1) {
+		const q = query[index] ?? 0;
+		const c = candidate[index] ?? 0;
+		dot = Math.fround(dot + Math.fround(q * c));
+		queryNorm = Math.fround(queryNorm + Math.fround(q * q));
+		candidateNorm = Math.fround(candidateNorm + Math.fround(c * c));
+	}
+	const denominator = Math.fround(
+		Math.fround(Math.sqrt(queryNorm)) * Math.fround(Math.sqrt(candidateNorm)),
+	);
+	if (denominator === 0) {
+		return 1;
+	}
+	return Math.max(0, Math.fround(1 - Math.fround(dot / denominator)));
+}
+
+function decodeEmbeddingView(bytes: unknown, dimension: number): Float32Array {
+	if (!(bytes instanceof Uint8Array)) {
+		throw new TypeError("SQLite returned a non-BLOB embedding");
+	}
+	if (bytes.byteLength !== dimension * Float32Array.BYTES_PER_ELEMENT) {
+		throw new RangeError(
+			`stored vector has ${bytes.byteLength} bytes; expected ${dimension * Float32Array.BYTES_PER_ELEMENT}`,
+		);
+	}
+	if (bytes.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0) {
+		return new Float32Array(bytes.buffer, bytes.byteOffset, dimension);
+	}
+	const aligned = bytes.slice();
+	return new Float32Array(aligned.buffer, aligned.byteOffset, dimension);
+}
+
+function compareHits(left: VectorHit, right: VectorHit): number {
+	return left.distance - right.distance || compareCodeUnits(left.id, right.id);
+}
+
+function distinctIdRuns(
+	records: ReadonlyArray<SqliteKeyedVectorRecord>,
+	maxRecordsPerRun: number,
+): ReadonlyArray<ReadonlyArray<SqliteKeyedVectorRecord>> {
+	const runs: SqliteKeyedVectorRecord[][] = [];
+	let current: SqliteKeyedVectorRecord[] = [];
+	let seen = new Set<string>();
+	for (const record of records) {
+		if (seen.has(record.id) || current.length >= maxRecordsPerRun) {
+			runs.push(current);
+			current = [];
+			seen = new Set<string>();
+		}
+		seen.add(record.id);
+		current.push(record);
+	}
+	if (current.length > 0) {
+		runs.push(current);
+	}
+	return runs;
 }
 
 function decodeMetadata(value: unknown): Metadata {

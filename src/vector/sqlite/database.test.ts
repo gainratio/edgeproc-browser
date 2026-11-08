@@ -40,8 +40,14 @@ async function openMemoryDatabase(): Promise<SqliteDatabase> {
 function observeSelects(database: SqliteDatabase): {
 	readonly database: SqliteDatabase;
 	readonly vectorFullScanCount: () => number;
+	readonly vectorQuantizeCount: () => number;
+	readonly vectorQuantizePreloadCount: () => number;
+	readonly vectorQuantizeScanCount: () => number;
 } {
 	let vectorFullScanCount = 0;
+	let vectorQuantizeCount = 0;
+	let vectorQuantizePreloadCount = 0;
+	let vectorQuantizeScanCount = 0;
 	return {
 		database: {
 			exec: (sql, bind) => database.exec(sql, bind),
@@ -49,12 +55,24 @@ function observeSelects(database: SqliteDatabase): {
 				if (sql.includes("vector_full_scan")) {
 					vectorFullScanCount += 1;
 				}
+				if (sql.includes("SELECT vector_quantize(")) {
+					vectorQuantizeCount += 1;
+				}
+				if (sql.includes("SELECT vector_quantize_preload(")) {
+					vectorQuantizePreloadCount += 1;
+				}
+				if (sql.includes("vector_quantize_scan")) {
+					vectorQuantizeScanCount += 1;
+				}
 				return database.selectObjects(sql, bind);
 			},
 			transaction: (callback) => database.transaction(callback),
 			close: () => database.close(),
 		},
 		vectorFullScanCount: () => vectorFullScanCount,
+		vectorQuantizeCount: () => vectorQuantizeCount,
+		vectorQuantizePreloadCount: () => vectorQuantizePreloadCount,
+		vectorQuantizeScanCount: () => vectorQuantizeScanCount,
 	};
 }
 
@@ -379,6 +397,89 @@ describe("SqliteDatabaseVectorIndex", () => {
 				),
 		).toThrow(/has dimension 2; requested 3/);
 		await first.dispose();
+	});
+
+	it("scores small searchByIds batches via primary key without a full vector scan", async () => {
+		const observed = observeSelects(await openMemoryDatabase());
+		const index = new SqliteDatabaseVectorIndex(
+			{ name: "direct-batch", dimension: 2 },
+			observed.database,
+			false,
+		);
+		await index.insert([
+			{ id: "near", vector: new Float32Array([1, 0]), metadata: {} },
+			{ id: "far", vector: new Float32Array([0, 1]), metadata: {} },
+		]);
+		const hits = await index.searchByIds(new Float32Array([1, 0]), [
+			"far",
+			"near",
+			"missing",
+		]);
+		expect(hits.map(({ id }) => id)).toEqual(["near", "far"]);
+		expect(hits[0]?.distance).toBe(0);
+		expect(observed.vectorFullScanCount()).toBe(0);
+		await index.dispose();
+	});
+
+	it("uses preloaded TurboQuant with exact float32 rescoring and warm-reuses quantized tables", async () => {
+		const rawDb = await openMemoryDatabase();
+		const observed = observeSelects(rawDb);
+		const index = new SqliteDatabaseVectorIndex(
+			{ name: "turboquant", dimension: 4 },
+			observed.database,
+			false,
+		);
+		const records = Array.from({ length: 300 }, (_, i) => {
+			const angle = (i / 300) * Math.PI;
+			return {
+				id: `row-${String(i).padStart(3, "0")}`,
+				vector: new Float32Array([Math.cos(angle), Math.sin(angle), 0, 0]),
+				metadata: { ordinal: i },
+			};
+		});
+		await index.insert(records);
+
+		const first = await index.search(new Float32Array([1, 0, 0, 0]), 5);
+		expect(first[0]?.id).toBe("row-000");
+		expect(first[0]?.distance).toBe(0);
+		expect(observed.vectorQuantizeCount()).toBe(1);
+		expect(observed.vectorQuantizePreloadCount()).toBe(1);
+		expect(observed.vectorQuantizeScanCount()).toBe(1);
+
+		// Second search reuses the preloaded quantized buffer without re-quantizing.
+		await index.search(new Float32Array([0, 1, 0, 0]), 5);
+		expect(observed.vectorQuantizeCount()).toBe(1);
+		expect(observed.vectorQuantizePreloadCount()).toBe(1);
+		expect(observed.vectorQuantizeScanCount()).toBe(2);
+
+		// Warm-reopening the same database preloads existing quantized rows without re-quantizing.
+		const reopened = new SqliteDatabaseVectorIndex(
+			{ name: "turboquant", dimension: 4 },
+			observed.database,
+			false,
+		);
+		const warm = await reopened.search(new Float32Array([1, 0, 0, 0]), 3);
+		expect(warm[0]?.id).toBe("row-000");
+		expect(observed.vectorQuantizeCount()).toBe(1);
+		expect(observed.vectorQuantizePreloadCount()).toBe(2);
+		expect(observed.vectorQuantizeScanCount()).toBe(3);
+
+		// Mutating the index invalidates and rebuilds the quantized table on the next search.
+		await reopened.insert([
+			{
+				id: "row-exact",
+				vector: new Float32Array([0, 0, 1, 0]),
+				metadata: { ordinal: 999 },
+			},
+		]);
+		const afterInsert = await reopened.search(
+			new Float32Array([0, 0, 1, 0]),
+			1,
+		);
+		expect(afterInsert[0]?.id).toBe("row-exact");
+		expect(afterInsert[0]?.distance).toBe(0);
+		expect(observed.vectorQuantizeCount()).toBe(2);
+		await reopened.dispose();
 	});
 });
 
