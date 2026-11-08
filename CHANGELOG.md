@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-11-08
+
+Disk-paged `TurboQuant` governed by SQLite's page cache and memory PRAGMAs (`PRAGMA cache_size`, `PRAGMA soft_heap_limit`, `PRAGMA hard_heap_limit`) without pinning vector blocks in RAM.
+
+### Fixed
+
+- **Disk-paged `TurboQuant` without `vector_quantize_preload` (`SqliteDatabaseVectorIndex.search`).** `vector_quantize_scan` now reads the `vector0_*` SQLite B-tree table directly through SQLite's bounded page cache instead of calling `vector_quantize_preload` (which duplicated the table into an un-evictable `sqlite3_malloc` RAM buffer outside `PRAGMA cache_size`). If `vector_quantize` or `vector_quantize_scan` encounters a tight `PRAGMA hard_heap_limit` (`SQLITE_NOMEM`), `SqliteDatabaseVectorIndex` cleans up and falls back transparently to streaming `vector_full_scan`.
+
 ## [0.4.5] - 2026-11-07
 
 Faster SQLite vector search, named-record scoring, and batch indexing via bundled `TurboQuant` (`qtype=TURBOQUANT,qbits=4`) with exact `FLOAT32` rescoring.

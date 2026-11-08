@@ -126,7 +126,10 @@ export class SqliteDatabaseVectorIndex {
         if (scoped.sql.length === 0) {
             const rowCount = this.#unscopedRowCount();
             if (rowCount >= TURBOQUANT_MIN_ROWS) {
-                return this.#searchTurboQuant(query, limit, rowCount);
+                const quantizedHits = this.#trySearchTurboQuant(query, limit, rowCount);
+                if (quantizedHits !== undefined) {
+                    return quantizedHits;
+                }
             }
         }
         const rows = this.#database.selectObjects(`SELECT v.id AS id, scan.distance AS distance, v.metadata_json AS metadata_json
@@ -226,7 +229,6 @@ export class SqliteDatabaseVectorIndex {
         if (this.#disposed) {
             return;
         }
-        this.#cleanupQuantize();
         this.#disposed = true;
         this.#database.close();
     }
@@ -293,9 +295,9 @@ export class SqliteDatabaseVectorIndex {
         if (this.#mutated || !this.#hasQuantizedRows(rowCount)) {
             this.#database.selectObjects(`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`);
             this.#database.selectObjects(`SELECT vector_quantize('${TABLE}', 'embedding')`);
+            this.#database.exec("PRAGMA shrink_memory");
             this.#mutated = false;
         }
-        this.#database.selectObjects(`SELECT vector_quantize_preload('${TABLE}', 'embedding')`);
         this.#quantizeReady = true;
     }
     #hasQuantizedRows(rowCount) {
@@ -306,15 +308,22 @@ export class SqliteDatabaseVectorIndex {
         const quantizedCount = requireFiniteNumber(this.#database.selectObjects(`SELECT COALESCE(SUM(counter), 0) AS count FROM ${QUANTIZE_TABLE}`)[0]?.count, "quantized vector count");
         return quantizedCount === rowCount;
     }
-    #searchTurboQuant(query, limit, rowCount) {
-        this.#ensureTurboQuant(rowCount);
-        const candidateLimit = Math.min(rowCount, Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES));
-        const rows = this.#database.selectObjects(`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
-			 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
-			 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`, [vectorBytes(query), candidateLimit]);
-        const hits = rows.map((row) => decodeRescoredHit(row, query, this.dimension));
-        hits.sort(compareHits);
-        return hits.slice(0, limit);
+    #trySearchTurboQuant(query, limit, rowCount) {
+        try {
+            this.#ensureTurboQuant(rowCount);
+            const candidateLimit = Math.min(rowCount, Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES));
+            const rows = this.#database.selectObjects(`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
+				 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
+				 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`, [vectorBytes(query), candidateLimit]);
+            const hits = rows.map((row) => decodeRescoredHit(row, query, this.dimension));
+            hits.sort(compareHits);
+            return hits.slice(0, limit);
+        }
+        catch {
+            this.#cleanupQuantize();
+            this.#database.exec("PRAGMA shrink_memory");
+            return undefined;
+        }
     }
     #searchByIdsDirect(query, unique) {
         const placeholders = unique.map(() => "?").join(", ");

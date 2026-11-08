@@ -421,7 +421,7 @@ describe("SqliteDatabaseVectorIndex", () => {
 		await index.dispose();
 	});
 
-	it("uses preloaded TurboQuant with exact float32 rescoring and warm-reuses quantized tables", async () => {
+	it("uses disk-paged TurboQuant without preload, rescores exact float32, and falls back to vector_full_scan on SQLITE_NOMEM", async () => {
 		const rawDb = await openMemoryDatabase();
 		const observed = observeSelects(rawDb);
 		const index = new SqliteDatabaseVectorIndex(
@@ -443,16 +443,16 @@ describe("SqliteDatabaseVectorIndex", () => {
 		expect(first[0]?.id).toBe("row-000");
 		expect(first[0]?.distance).toBe(0);
 		expect(observed.vectorQuantizeCount()).toBe(1);
-		expect(observed.vectorQuantizePreloadCount()).toBe(1);
+		expect(observed.vectorQuantizePreloadCount()).toBe(0);
 		expect(observed.vectorQuantizeScanCount()).toBe(1);
 
-		// Second search reuses the preloaded quantized buffer without re-quantizing.
+		// Second search reuses the SQLite quantized table without re-quantizing or preloading.
 		await index.search(new Float32Array([0, 1, 0, 0]), 5);
 		expect(observed.vectorQuantizeCount()).toBe(1);
-		expect(observed.vectorQuantizePreloadCount()).toBe(1);
+		expect(observed.vectorQuantizePreloadCount()).toBe(0);
 		expect(observed.vectorQuantizeScanCount()).toBe(2);
 
-		// Warm-reopening the same database preloads existing quantized rows without re-quantizing.
+		// Warm-reopening the same database reuses existing quantized rows without re-quantizing or preloading.
 		const reopened = new SqliteDatabaseVectorIndex(
 			{ name: "turboquant", dimension: 4 },
 			observed.database,
@@ -461,7 +461,7 @@ describe("SqliteDatabaseVectorIndex", () => {
 		const warm = await reopened.search(new Float32Array([1, 0, 0, 0]), 3);
 		expect(warm[0]?.id).toBe("row-000");
 		expect(observed.vectorQuantizeCount()).toBe(1);
-		expect(observed.vectorQuantizePreloadCount()).toBe(2);
+		expect(observed.vectorQuantizePreloadCount()).toBe(0);
 		expect(observed.vectorQuantizeScanCount()).toBe(3);
 
 		// Mutating the index invalidates and rebuilds the quantized table on the next search.
@@ -479,7 +479,40 @@ describe("SqliteDatabaseVectorIndex", () => {
 		expect(afterInsert[0]?.id).toBe("row-exact");
 		expect(afterInsert[0]?.distance).toBe(0);
 		expect(observed.vectorQuantizeCount()).toBe(2);
-		await reopened.dispose();
+		expect(observed.vectorQuantizePreloadCount()).toBe(0);
+
+		// When vector_quantize fails under a tight heap limit (SQLITE_NOMEM), search falls back to vector_full_scan.
+		await reopened.insert([
+			{
+				id: "row-nomem-fallback",
+				vector: new Float32Array([0, 0, 0, 1]),
+				metadata: { ordinal: 1000 },
+			},
+		]);
+		const nomemDb: SqliteDatabase = {
+			exec: (sql, bind) => observed.database.exec(sql, bind),
+			selectObjects: (sql, bind) => {
+				if (sql.includes("SELECT vector_quantize(")) {
+					throw new Error("SQLITE_NOMEM: sqlite3 result code 7: out of memory");
+				}
+				return observed.database.selectObjects(sql, bind);
+			},
+			transaction: (callback) => observed.database.transaction(callback),
+			close: () => observed.database.close(),
+		};
+		const fallbackIndex = new SqliteDatabaseVectorIndex(
+			{ name: "turboquant", dimension: 4 },
+			nomemDb,
+			false,
+		);
+		const fallbackHits = await fallbackIndex.search(
+			new Float32Array([0, 0, 0, 1]),
+			1,
+		);
+		expect(fallbackHits[0]?.id).toBe("row-nomem-fallback");
+		expect(fallbackHits[0]?.distance).toBe(0);
+		expect(observed.vectorFullScanCount()).toBe(1);
+		await fallbackIndex.dispose();
 	});
 });
 

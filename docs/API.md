@@ -1,6 +1,6 @@
 # API guide
 
-How to use `@gainratio/browser` 0.4.5 in an app. For how it works inside, see
+How to use `@gainratio/browser` 0.4.6 in an app. For how it works inside, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What you import
