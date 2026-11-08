@@ -420,7 +420,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		this.#database.selectObjects(
 			`SELECT vector_init('${TABLE}', 'embedding', ?) AS initialized`,
 			[
-				`dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4`,
+				`dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4,max_memory=1MB`,
 			],
 		);
 	}
@@ -477,13 +477,18 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		if (exists === undefined) {
 			return false;
 		}
+		const row = this.#database.selectObjects(
+			`SELECT COALESCE(SUM(counter), 0) AS count, COALESCE(MAX(length(data)), 0) AS max_bytes FROM ${QUANTIZE_TABLE}`,
+		)[0];
 		const quantizedCount = requireFiniteNumber(
-			this.#database.selectObjects(
-				`SELECT COALESCE(SUM(counter), 0) AS count FROM ${QUANTIZE_TABLE}`,
-			)[0]?.count,
+			row?.count,
 			"quantized vector count",
 		);
-		return quantizedCount === rowCount;
+		const maxBytes = requireFiniteNumber(
+			row?.max_bytes,
+			"quantized block size",
+		);
+		return quantizedCount === rowCount && maxBytes <= 2_097_152;
 	}
 
 	#trySearchTurboQuant(
@@ -502,7 +507,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 			);
 			const rows = this.#database.selectObjects(
 				`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
-				 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
+				 FROM vector_quantize_scan_stream('${TABLE}', 'embedding', ?, ?) AS scan
 				 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`,
 				[vectorBytes(query), candidateLimit],
 			);

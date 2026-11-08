@@ -267,7 +267,7 @@ export class SqliteDatabaseVectorIndex {
             throw new Error(`vector index ${JSON.stringify(this.name)} has dimension ${storedDimension}; requested ${this.dimension}`);
         }
         this.#database.selectObjects(`SELECT vector_init('${TABLE}', 'embedding', ?) AS initialized`, [
-            `dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4`,
+            `dimension=${this.dimension},type=FLOAT32,distance=COSINE,qtype=TURBOQUANT,qbits=4,max_memory=1MB`,
         ]);
     }
     #assertOpen() {
@@ -305,15 +305,17 @@ export class SqliteDatabaseVectorIndex {
         if (exists === undefined) {
             return false;
         }
-        const quantizedCount = requireFiniteNumber(this.#database.selectObjects(`SELECT COALESCE(SUM(counter), 0) AS count FROM ${QUANTIZE_TABLE}`)[0]?.count, "quantized vector count");
-        return quantizedCount === rowCount;
+        const row = this.#database.selectObjects(`SELECT COALESCE(SUM(counter), 0) AS count, COALESCE(MAX(length(data)), 0) AS max_bytes FROM ${QUANTIZE_TABLE}`)[0];
+        const quantizedCount = requireFiniteNumber(row?.count, "quantized vector count");
+        const maxBytes = requireFiniteNumber(row?.max_bytes, "quantized block size");
+        return quantizedCount === rowCount && maxBytes <= 2_097_152;
     }
     #trySearchTurboQuant(query, limit, rowCount) {
         try {
             this.#ensureTurboQuant(rowCount);
             const candidateLimit = Math.min(rowCount, Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES));
             const rows = this.#database.selectObjects(`SELECT v.id AS id, v.embedding AS embedding, v.metadata_json AS metadata_json
-				 FROM vector_quantize_scan('${TABLE}', 'embedding', ?, ?) AS scan
+				 FROM vector_quantize_scan_stream('${TABLE}', 'embedding', ?, ?) AS scan
 				 JOIN ${TABLE} AS v ON v.rowid = scan.rowid`, [vectorBytes(query), candidateLimit]);
             const hits = rows.map((row) => decodeRescoredHit(row, query, this.dimension));
             hits.sort(compareHits);
