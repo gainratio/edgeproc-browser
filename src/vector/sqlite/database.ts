@@ -100,6 +100,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 	readonly #database: SqliteDatabase;
 	#disposed = false;
 	#quantizeReady = false;
+	#quantizeDisabled = false;
 	#mutated = false;
 
 	public constructor(
@@ -115,7 +116,11 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 			? CAPABILITIES
 			: Object.freeze({ ...CAPABILITIES, persistent: false });
 		if (options.memoryProfile !== undefined) {
-			applyMemoryProfile(database, resolveMemoryProfile(options.memoryProfile));
+			const effectiveProfile =
+				!persistent && options.memoryProfile === "auto"
+					? "full"
+					: options.memoryProfile;
+			applyMemoryProfile(database, resolveMemoryProfile(effectiveProfile));
 		}
 		this.#initialize();
 	}
@@ -219,7 +224,7 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		const scoped = filterClause(filters, "v");
 		if (scoped.sql.length === 0) {
 			const rowCount = this.#unscopedRowCount();
-			if (rowCount >= TURBOQUANT_MIN_ROWS) {
+			if (rowCount >= TURBOQUANT_MIN_ROWS && this.#ensureTurboQuant(rowCount)) {
 				return this.#searchTurboQuant(query, limit, rowCount);
 			}
 		}
@@ -439,34 +444,53 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 
 	#invalidateQuantize(): void {
 		this.#quantizeReady = false;
+		this.#quantizeDisabled = false;
 		this.#mutated = true;
 	}
 
 	#cleanupQuantize(): void {
 		this.#quantizeReady = false;
+		this.#quantizeDisabled = false;
 		this.#mutated = true;
 		this.#database.selectObjects(
 			`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
 		);
 	}
 
-	#ensureTurboQuant(rowCount: number): void {
+	#ensureTurboQuant(rowCount: number): boolean {
 		if (this.#quantizeReady) {
-			return;
+			return true;
 		}
-		if (this.#mutated || !this.#hasQuantizedRows(rowCount)) {
-			this.#database.selectObjects(
-				`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
-			);
-			this.#database.selectObjects(
-				`SELECT vector_quantize('${TABLE}', 'embedding')`,
-			);
-			this.#mutated = false;
+		if (this.#quantizeDisabled) {
+			return false;
 		}
-		this.#database.selectObjects(
-			`SELECT vector_quantize_preload('${TABLE}', 'embedding')`,
-		);
-		this.#quantizeReady = true;
+		try {
+			if (this.#mutated || !this.#hasQuantizedRows(rowCount)) {
+				this.#database.selectObjects(
+					`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
+				);
+				this.#database.selectObjects(
+					`SELECT vector_quantize('${TABLE}', 'embedding')`,
+				);
+				this.#mutated = false;
+			}
+			this.#database.selectObjects(
+				`SELECT vector_quantize_preload('${TABLE}', 'embedding')`,
+			);
+			this.#quantizeReady = true;
+			return true;
+		} catch {
+			try {
+				this.#database.selectObjects(
+					`SELECT vector_quantize_cleanup('${TABLE}', 'embedding')`,
+				);
+			} catch {
+				// Best-effort cleanup after SQLITE_NOMEM under a constrained heap limit.
+			}
+			this.#quantizeReady = false;
+			this.#quantizeDisabled = true;
+			return false;
+		}
 	}
 
 	#hasQuantizedRows(rowCount: number): boolean {
@@ -491,7 +515,6 @@ export class SqliteDatabaseVectorIndex implements VectorIndex {
 		limit: number,
 		rowCount: number,
 	): ReadonlyArray<VectorHit> {
-		this.#ensureTurboQuant(rowCount);
 		const candidateLimit = Math.min(
 			rowCount,
 			Math.max(limit * TURBOQUANT_OVERSAMPLE_FACTOR, TURBOQUANT_MIN_CANDIDATES),

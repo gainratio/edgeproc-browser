@@ -481,6 +481,36 @@ describe("SqliteDatabaseVectorIndex", () => {
 		expect(observed.vectorQuantizeCount()).toBe(2);
 		await reopened.dispose();
 	});
+
+	it("falls back to vector_full_scan when vector_quantize fails under a tight heap limit", async () => {
+		const rawDb = await openMemoryDatabase();
+		const observed = observeSelects({
+			...rawDb,
+			selectObjects(sql, bind) {
+				if (sql.includes("vector_quantize(")) {
+					throw new Error("SQLITE_NOMEM: sqlite3 result code 7: out of memory");
+				}
+				return rawDb.selectObjects(sql, bind);
+			},
+		});
+		const index = new SqliteDatabaseVectorIndex(
+			{ name: "turboquant-fallback", dimension: 2 },
+			observed.database,
+			false,
+		);
+		await index.insert(
+			Array.from({ length: 260 }, (_, i) => ({
+				id: `row-${String(i).padStart(3, "0")}`,
+				vector: new Float32Array([i === 0 ? 1 : 0, i === 0 ? 0 : 1]),
+				metadata: {},
+			})),
+		);
+		const hits = await index.search(new Float32Array([1, 0]), 2);
+		expect(hits[0]?.id).toBe("row-000");
+		expect(hits[0]?.distance).toBe(0);
+		expect(observed.vectorFullScanCount()).toBe(1);
+		await index.dispose();
+	});
 });
 
 describe("SqliteDatabaseVectorIndex memory profile wiring", () => {

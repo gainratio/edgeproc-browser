@@ -5,6 +5,12 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-11-07
+
+### Fixed
+
+- **Non-persistent (`:memory:`) `memoryProfile: "auto"` resolution and `TurboQuant` fallback (`SqliteDatabaseVectorIndex`).** Non-persistent (`:memory:`) databases opened with `memoryProfile: "auto"` resolve to `"full"` because the entire table and lookup-key index reside in SQLite's heap, and `search()` falls back to `vector_full_scan` if `vector_quantize` or `vector_quantize_preload` fails under a constrained `hard_heap_limit`.
+
 ## [0.4.5] - 2026-11-07
 
 Faster SQLite vector search, named-record scoring, and batch indexing via bundled `TurboQuant` (`qtype=TURBOQUANT,qbits=4`) with exact `FLOAT32` rescoring.
